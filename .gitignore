@@ -1,0 +1,40 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+dist-ssr/
+src-tauri/target/
+src-tauri/gen/
+
+# Bundled sidecar binaries + model weights (never commit these)
+src-tauri/binaries/
+models/
+*.gguf
+*.bin
+
+# Local data
+*.db
+*.db-shm
+*.db-wal
+orion.db*
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+id_ed25519*
+id_rsa*
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+
+# Logs
+*.log
+npm-debug.log*

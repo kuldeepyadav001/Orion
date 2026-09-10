@@ -1,0 +1,104 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel superseded runs on the same branch.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  frontend:
+    name: Frontend — lint & build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+      - run: npm ci
+      - name: Lint
+        run: npm run lint
+      - name: Build
+        run: npm run build
+
+  rust:
+    name: Rust — fmt, clippy & test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Tauri system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libappindicator3-dev \
+            librsvg2-dev patchelf libssl-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # The frontend build output must exist before Tauri's build script runs.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+      - run: npm ci && npm run build
+
+      - name: Format check
+        working-directory: src-tauri
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        working-directory: src-tauri
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Test
+        working-directory: src-tauri
+        run: cargo test --all
+
+  audit:
+    name: Security — dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: cargo-audit
+        run: |
+          cargo install cargo-audit --locked
+          cd src-tauri && cargo audit
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: npm audit
+        run: npm audit --audit-level=high || true
+
+  # Guardrail: fails the build if credentials or model weights are ever committed.
+  hygiene:
+    name: Repo hygiene
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: No secrets or weights in the tree
+        run: |
+          set -e
+          if git ls-files | grep -E '\.(gguf|bin|pem|key)$|id_ed25519|id_rsa|^\.env$'; then
+            echo "::error::Credentials or model weights must never be committed."
+            exit 1
+          fi
+          echo "clean"
+      - name: LICENSE present
+        run: test -f LICENSE || { echo "::error::LICENSE missing"; exit 1; }
