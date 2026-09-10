@@ -1,8 +1,27 @@
 # ORION — PROJECT STATE
 
 **Last updated:** 2026-09-10
-**Current state:** `READY_TO_BUILD` (pending repo creation)
-**Current phase:** Architecture locked → M0 not started
+**Current state:** `BUILDING`
+**Current phase:** M0 — scaffold pushed, runtime verification pending
+**Repo:** git@github.com:kuldeepyadav001/Orion.git (`main` @ `7046d4f`)
+
+---
+
+## M0 progress
+
+| Item | State | Evidence |
+|---|---|---|
+| Repo scaffold, docs, LICENSE, CI | ✅ done | pushed to `main` |
+| Rust core compiles | ✅ verified | `cargo test` — 5/5 pass |
+| Frontend builds + lints | ✅ verified | `vite build` ok · oxlint 0 errors |
+| SQLite migration ladder | ✅ verified | 5 unit tests incl. Serina B-1 regression |
+| Sidecar spawn + streaming chat | ⏳ **not runtime-verified** | needs a desktop with a GUI + model |
+| Tauri full build (`cargo tauri build`) | ⏳ not run | sandbox has no gtk/webkit; runs in CI + your laptop |
+
+**Honest status:** the code is written, compiles, and its logic is unit-tested. It has **not
+yet been run as a desktop app** — this sandbox has no display server, GTK/WebKit, or model
+weights. First real launch happens on your laptop. Expect small fixes; that is normal and
+expected for a first scaffold.
 
 ---
 
