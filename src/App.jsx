@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import SystemPanel from "./SystemPanel";
 
 /**
  * Orion M0 shell.
@@ -16,6 +17,7 @@ export default function App() {
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
   const [engine, setEngine] = useState({ state: "starting", detail: "" });
+  const [showSystem, setShowSystem] = useState(false);
 
   const chatRef = useRef(null);
   const taRef = useRef(null);
@@ -164,6 +166,9 @@ export default function App() {
           ORI<span>O</span>N
         </div>
         <div className="spacer" />
+        <button className="ghost small" onClick={() => setShowSystem(true)}>
+          System
+        </button>
         <div className="status" title={engine.detail || label}>
           <span className={`dot ${dotClass}`} />
           {label}
@@ -235,6 +240,8 @@ export default function App() {
           Orion runs entirely offline · pre-alpha M0
         </div>
       </footer>
+
+      {showSystem && <SystemPanel onClose={() => setShowSystem(false)} />}
     </div>
   );
 }
