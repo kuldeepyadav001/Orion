@@ -306,3 +306,99 @@ button.stop {
 ::-webkit-scrollbar-thumb:hover {
   background: #2f4266;
 }
+
+/* ---------- file drop (M3) ---------- */
+
+.dropzone-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  background: rgba(8, 10, 14, 0.78);
+  backdrop-filter: blur(3px);
+  pointer-events: none;
+}
+
+.dropzone-inner {
+  border: 2px dashed rgba(120, 170, 255, 0.55);
+  border-radius: 16px;
+  padding: 40px 56px;
+  text-align: center;
+  background: rgba(18, 22, 30, 0.9);
+}
+
+.dropzone-icon {
+  font-size: 34px;
+  line-height: 1;
+  color: rgba(120, 170, 255, 0.9);
+  margin-bottom: 12px;
+}
+
+.dropzone-title {
+  margin: 0 0 6px;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.dropzone-hint {
+  margin: 0;
+  font-size: 13px;
+  opacity: 0.62;
+}
+
+.drop-result {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 40;
+  max-width: 380px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  font-size: 13px;
+  background: rgba(22, 28, 38, 0.97);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+}
+
+.drop-result.has-errors {
+  border-color: rgba(240, 170, 90, 0.45);
+}
+
+.drop-result-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 600;
+}
+
+.drop-result-close {
+  margin-left: auto;
+  background: none;
+  border: 0;
+  color: inherit;
+  opacity: 0.5;
+  font-size: 17px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+}
+
+.drop-result-close:hover {
+  opacity: 1;
+}
+
+.drop-rejected {
+  margin: 8px 0 0;
+  padding-left: 16px;
+  opacity: 0.78;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.drop-more {
+  list-style: none;
+  margin-left: -16px;
+  opacity: 0.6;
+  font-style: italic;
+}

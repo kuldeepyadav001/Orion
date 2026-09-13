@@ -19,24 +19,39 @@
         "minHeight": 480,
         "resizable": true,
         "fullscreen": false,
-        "theme": "Dark"
+        "theme": "Dark",
+        "visible": false
       }
     ],
     "security": {
       "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: asset: http://asset.localhost; connect-src 'self' ipc: http://ipc.localhost",
-      "capabilities": ["default"]
+      "capabilities": [
+        "default"
+      ]
+    },
+    "trayIcon": {
+      "id": "orion-tray",
+      "iconPath": "icons/32x32.png",
+      "iconAsTemplate": true,
+      "tooltip": "Orion"
     }
   },
   "bundle": {
     "active": true,
-    "targets": ["deb", "appimage", "nsis"],
+    "targets": [
+      "deb",
+      "appimage",
+      "nsis"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/icon.ico",
       "icons/icon.png"
     ],
-    "externalBin": ["binaries/llama-server"],
+    "externalBin": [
+      "binaries/llama-server"
+    ],
     "shortDescription": "A private, offline-first personal AI",
     "longDescription": "Orion is a private AI assistant that runs entirely on your own machine. It chats, reads your documents, and acts on your behalf within a strict permission boundary. No cloud, no API keys, no data leaving your device."
   }

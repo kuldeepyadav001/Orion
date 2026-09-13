@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import DropZone from "./DropZone.jsx";
 
 /**
  * Orion M0 shell.
@@ -16,6 +17,13 @@ export default function App() {
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
   const [engine, setEngine] = useState({ state: "starting", detail: "" });
+  const [hotkey, setHotkey] = useState("");
+
+  // The label is computed in Rust so it matches the chord actually
+  // registered, and uses the right glyphs for this platform.
+  useEffect(() => {
+    invoke("hotkey_label").then(setHotkey).catch(() => {});
+  }, []);
 
   const chatRef = useRef(null);
   const taRef = useRef(null);
@@ -159,6 +167,14 @@ export default function App() {
 
   return (
     <div className="app">
+      <DropZone
+        onAccepted={(paths) => {
+          // M3 proves the intake path. Ingestion lands when M2 merges;
+          // until then the user still gets honest feedback about what was
+          // accepted rather than a silent no-op.
+          console.info("accepted for ingestion:", paths);
+        }}
+      />
       <header className="topbar">
         <div className="brand">
           ORI<span>O</span>N
@@ -181,6 +197,12 @@ export default function App() {
               Press <kbd>Enter</kbd> to send · <kbd>Shift</kbd>+<kbd>Enter</kbd> for a new
               line
             </div>
+            {hotkey && (
+              <div className="hint">
+                Press <kbd>{hotkey}</kbd> from anywhere to summon Orion · drop
+                files here to add them
+              </div>
+            )}
           </div>
         ) : (
           <div className="chat-inner">

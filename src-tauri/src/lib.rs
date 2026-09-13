@@ -10,6 +10,7 @@
 pub mod db;
 pub mod engine;
 pub mod error;
+pub mod presence;
 
 use std::sync::Arc;
 
@@ -273,6 +274,67 @@ async fn start_engine(app: tauri::AppHandle, engine: Arc<Engine>) {
 /* ------------------------------------------------------------------ */
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+
+/// Assess files the webview reports as dropped, without ingesting them yet.
+/// The renderer never gets to decide what is readable; that is policy.
+#[tauri::command]
+async fn assess_dropped_files(paths: Vec<String>) -> Result<DropSummary> {
+    let paths: Vec<std::path::PathBuf> = paths.into_iter().map(Into::into).collect();
+    let a = presence::assess(&paths, &presence::RealFs);
+    Ok(DropSummary {
+        summary: a.summary(),
+        accepted: a
+            .accepted
+            .iter()
+            .map(|p| p.to_string_lossy().to_string())
+            .collect(),
+        rejected: a
+            .rejected
+            .iter()
+            .map(|(p, why)| {
+                (
+                    p.file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_default(),
+                    why.clone(),
+                )
+            })
+            .collect(),
+        truncated: a.truncated,
+    })
+}
+
+#[derive(serde::Serialize)]
+pub struct DropSummary {
+    pub summary: String,
+    pub accepted: Vec<String>,
+    /// (file name, reason) — the path is deliberately not sent to the
+    /// renderer, which has no need for the user's directory layout.
+    pub rejected: Vec<(String, String)>,
+    pub truncated: bool,
+}
+
+/// The hotkey label to show in the UI, formatted for this platform.
+#[tauri::command]
+fn hotkey_label() -> String {
+    presence::Hotkey::default_global().display_for(presence::Platform::current())
+}
+
+/// Files handed to us on the command line, filtered through the drop policy.
+fn files_from_args(args: &[String]) -> Vec<std::path::PathBuf> {
+    let paths: Vec<std::path::PathBuf> = args
+        .iter()
+        .skip(1) // argv[0] is the executable
+        .filter(|a| !a.starts_with('-'))
+        .map(std::path::PathBuf::from)
+        .collect();
+
+    if paths.is_empty() {
+        return Vec::new();
+    }
+    presence::assess(&paths, &presence::RealFs).accepted
+}
+
 pub fn run() {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -281,13 +343,38 @@ pub fn run() {
         )
         .init();
 
+    let boot = std::time::Instant::now();
+    let mut trace = presence::StartupTrace::new();
+
     tauri::Builder::default()
+        // Single instance must be registered first, so a second launch is
+        // short-circuited before it does any setup work of its own.
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            tracing::info!("second instance launched");
+            presence::tauri_glue::activate(app, presence::Activation::SecondInstance);
+
+            let files = files_from_args(&args);
+            if !files.is_empty() {
+                use tauri::Emitter;
+                presence::tauri_glue::activate(app, presence::Activation::FileDrop);
+                let _ = app.emit("files://opened", files);
+            }
+        }))
         .plugin(tauri_plugin_shell::init())
-        .setup(|app| {
-            let data_dir = db::data_dir()?;
-            let database = Db::open(&data_dir.join("orion.db"))?;
-            // M0 uses a single rolling session; M1 adds the history sidebar.
-            let session_id = database.create_session("New chat")?;
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .setup(move |app| {
+            use presence::tauri_glue::timed;
+
+            trace.record(presence::Phase::RuntimeInit, boot.elapsed());
+
+            let database = timed(&mut trace, presence::Phase::Database, || -> Result<Db> {
+                let data_dir = db::data_dir()?;
+                Db::open(&data_dir.join("orion.db"))
+            })?;
+
+            let session_id = timed(&mut trace, presence::Phase::Config, || {
+                database.create_session("New chat")
+            })?;
 
             let engine = Arc::new(Engine::new());
 
@@ -297,6 +384,37 @@ pub fn run() {
                 session_id: Mutex::new(session_id),
             });
 
+            timed(&mut trace, presence::Phase::SystemIntegration, || {
+                if let Err(e) = presence::tauri_glue::build_tray(app.handle()) {
+                    // A missing tray is survivable; the window still works.
+                    tracing::error!(error = %e, "tray icon could not be created");
+                }
+                presence::tauri_glue::register_hotkey(app.handle(), None)
+            });
+
+            timed(&mut trace, presence::Phase::WindowShow, || {
+                if let Some(w) = app.get_webview_window(presence::tauri_glue::MAIN_WINDOW) {
+                    let _ = w.show();
+                }
+            });
+
+            // Files passed on the command line, e.g. "Open with Orion".
+            let files = files_from_args(&std::env::args().collect::<Vec<_>>());
+            if !files.is_empty() {
+                use tauri::Emitter;
+                let _ = app.emit("files://opened", files);
+            }
+
+            tracing::info!("\n{}", trace.render());
+            if !trace.within_gate() {
+                tracing::warn!(
+                    "cold start exceeded the {:?} gate",
+                    presence::startup::COLD_START_BUDGET
+                );
+            }
+
+            // Everything below here is deliberately AFTER the window is up.
+            // See presence::startup::DeferredWork for why.
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 start_engine(handle, engine).await;
@@ -304,10 +422,20 @@ pub fn run() {
 
             Ok(())
         })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                // Orion lives in the tray; closing hides it so the global
+                // hotkey keeps working. Quit is in the tray menu.
+                api.prevent_close();
+                let _ = window.hide();
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             engine_status,
             send_message,
-            cancel_generation
+            cancel_generation,
+            assess_dropped_files,
+            hotkey_label
         ])
         .run(tauri::generate_context!())
         .expect("error while running Orion");
