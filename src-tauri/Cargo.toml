@@ -60,4 +60,17 @@ opt-level = "s"
 lto = true
 codegen-units = 1
 strip = true
-panic = "abort"
+# NOT panic = "abort".
+#
+# `abort` produces a slightly smaller binary, and that was the original
+# setting. It was wrong. Orion parses untrusted PDFs, DOCX and XLSX with
+# third-party parsers (lopdf, zip, quick-xml); a panic in any of them is a
+# realistic outcome for a malformed file, and under `abort` the entire
+# application dies with no error message and an unsaved chat.
+#
+# `catch_unwind` in ingest::binary::guard is a no-op under `abort` — verified
+# empirically, not assumed: the guarded call terminates the process and the
+# line after it never runs. Keeping `abort` would have meant every
+# panic-containment test in M2 passed in debug and protected nothing in
+# release, which is worse than having no guard at all because it looks safe.
+panic = "unwind"

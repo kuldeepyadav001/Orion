@@ -5,10 +5,17 @@
 //! liability we would have to audit and keep pinned. The implementation is
 //! validated below against the NIST published test vectors.
 //!
-//! NOTE FOR MERGE: the M1 branch (`feat/m1-hardware-profiler`) carries an
-//! identical implementation inside `models.rs` for model-download
-//! verification. When these branches meet on `main`, delete that copy and
-//! have `models.rs` call this module.
+//! NOTE FOR MERGE: the M1 branch (`feat/m1-hardware-profiler`) carries a
+//! separate SHA-256 inside `models.rs` for model-download verification. The
+//! two are **not** identical — M1 uses a `while !data.is_empty()` buffering
+//! loop, this one uses an `as_chunks` fast path. M1's version was re-tested
+//! against the NIST vectors, every split point of a multi-block input, and
+//! nine different streaming chunk sizes: it is correct. The buffering bug
+//! found here (see `streaming_matches_one_shot_at_every_boundary`) never
+//! affected M1 or model downloads.
+//!
+//! When these branches meet on `main`, delete M1's copy and have `models.rs`
+//! call this module — one implementation with one test suite, not two.
 
 const K: [u32; 64] = [
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,

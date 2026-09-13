@@ -1,7 +1,7 @@
 # M2 — Document Intelligence: evidence
 
 Branch: `feat/m2-documents-rag`, cut from `main` at `3784c8f`.
-Status: **compiles clean, 208 tests green, clippy `-D warnings` clean.**
+Status: **compiles clean, 215 tests green, clippy `-D warnings` clean.**
 All formats implemented, including PDF, DOCX and XLSX, and verified against
 real files produced by Word/Excel/PDF writers. Not yet run inside the Tauri
 app — see "What is still unverified".
@@ -16,7 +16,7 @@ app — see "What is still unverified".
 | Binary extraction | `ingest/binary.rs` | PDF, DOCX, XLSX → `Block`s, hardened |
 | Structure-aware chunking | `ingest/chunker.rs` | `Block`s → `Chunk`s with heading trail + page |
 | Ingestion entry point | `ingest/mod.rs` | path → `IngestedDocument`, 64 MB cap |
-| SHA-256 | `hashing.rs` | opaque document ids (also used by M1's downloader) |
+| SHA-256 | `hashing.rs` | opaque document ids |
 | Embeddings | `rag/embed.rs` | bge-small-en-v1.5, 384-dim, dedicated sidecar |
 | Hybrid search | `rag/search.rs` | BM25 + cosine, fused with RRF |
 | Persistence | `rag/store.rs` | SQLite FTS5 + vector BLOBs, one file |
@@ -105,6 +105,16 @@ on branches that are not being manually tested.
    input, discarding buffered bytes. Only reproduced when one call ended
    mid-block and the next was smaller than the remaining space — split 193 of
    200. Caught by testing *every* split point, not a few.
+
+   **Correction.** An earlier version of this document, and a commit message,
+   implied M1's model-download verifier shared this bug. It does not. M1 has a
+   *separate* SHA-256 in `models.rs` built on a `while !data.is_empty()` loop
+   that is immune to this failure. It was re-tested against the NIST vectors,
+   every split point of a 200-byte input, and nine streaming chunk sizes — all
+   pass. **Model downloads were never at risk.** The two implementations should
+   still be merged into one when the branches meet, but for the ordinary reason
+   that duplicated crypto means duplicated maintenance, not because either is
+   broken.
 2. **Citations pointed at the wrong page.** A chunk spanning a page break
    inherited the earlier page number. The user opens the PDF, the quote is
    not on that page, and every other citation loses credibility. Page breaks
@@ -123,6 +133,55 @@ on branches that are not being manually tested.
 6. **Two fusion tests asserted the wrong thing** — they demanded an exact rank
    rather than the property that matters (the exact-match chunk is present and
    near the top). Fixed the tests, not the code.
+
+---
+
+## The panic-containment defect (found after M2 was "done")
+
+The most serious bug in M2 was not in a parser. It was in the thing meant to
+protect them.
+
+`ingest::binary::guard` wraps every parse in `catch_unwind` so a panic inside
+`lopdf`, `zip` or `quick-xml` becomes a clean error instead of a crash. Eight
+tests covered it. All of them passed. **None of them tested anything**, because
+the release profile set `panic = "abort"`, and `catch_unwind` does not catch
+under `abort` — the process just dies.
+
+So the shipped behaviour was: user opens a malformed PDF, Orion terminates
+instantly with no error and an unsaved chat lost. The tests said it was handled.
+
+### Why no test could have caught it
+
+Three things were verified rather than assumed:
+
+| Check | Result |
+|---|---|
+| Full M2 suite under `panic = "abort"` | **215 passed** — identical to unwind |
+| Build script reading `CARGO_CFG_PANIC` with abort in the profile | reports `unwind` |
+| Equivalent release *binary* with abort | **SIGABRT, exit 134** |
+
+`cargo test` always builds with unwind regardless of profile, and so do build
+scripts. A unit test and a `build.rs` check were both written, both appeared to
+work, and both were discarded once measured — they could not observe the
+setting they were guarding.
+
+The guard that does work is `#[cfg(panic = "abort")] compile_error!(...)` inside
+the crate, which reflects the real strategy at compile time. Verified in both
+directions: the abort build fails with an actionable message, the normal build
+is unaffected.
+
+### A second bug in the same function
+
+`guard` swapped the **process-global** panic hook with `set_hook`/`take_hook` on
+every call. Two documents ingested concurrently would race — one thread could
+install the silencing hook permanently, or restore another thread's temporary
+one. Now the hook is installed once via `Once`, and a thread-local depth counter
+decides whether to silence, so a panic on an unrelated thread still prints
+normally instead of being swallowed.
+
+Both are covered by new tests, including one that runs 8 threads × 25 guarded
+panics concurrently, and one asserting every public binary entry point is
+actually wrapped in `guard` so a future format cannot be added unprotected.
 
 ---
 

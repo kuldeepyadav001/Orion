@@ -17,6 +17,33 @@
 //! * **Bound the work.** Page counts, sheet counts, row counts and nesting
 //!   depth all have ceilings. An 8 GB machine must not be DoS'd by a document.
 
+// Orion parses untrusted PDF, DOCX and XLSX files with third-party parsers
+// (lopdf, zip, quick-xml). A panic in any of them on a malformed file is a
+// realistic outcome, so every parse below is wrapped in `catch_unwind` and
+// turned into a clean error for the user.
+//
+// `catch_unwind` is a NO-OP under `panic = "abort"`: the process simply
+// terminates. The original release profile set `abort`, which made the guard
+// and all of its tests decorative — a hostile file would have killed the app
+// with no message and an unsaved chat lost.
+//
+// This check has to be here, in the crate, rather than in a test or a build
+// script. Both of those always compile with unwind regardless of the profile,
+// which was verified rather than assumed:
+//   * the entire M2 suite passes identically under `abort` and `unwind`
+//   * a build script sees CARGO_CFG_PANIC=unwind even when the profile says abort
+//   * the equivalent release *binary* dies with SIGABRT (exit 134)
+// So no test can catch this regression. `cfg(panic)` reflects the real
+// strategy at compile time and is the only reliable guard.
+#[cfg(panic = "abort")]
+compile_error!(
+    "Orion must be built with panic = \"unwind\". The document parsers rely on \
+     catch_unwind to contain panics from malformed PDF/DOCX/XLSX files; under \
+     panic = \"abort\" that containment silently does nothing and a hostile \
+     file terminates the application. Remove panic = \"abort\" from the \
+     release profile in src-tauri/Cargo.toml."
+);
+
 use std::io::Read;
 
 use crate::error::{OrionError, Result};
@@ -48,27 +75,67 @@ const MAX_XML_DEPTH: usize = 256;
 ///
 /// This is not paranoia about our own code — it is about `lopdf`, `zip` and
 /// `quick-xml`, which are third-party parsers processing hostile input. A
-/// panic in any of them would otherwise unwind through the Tauri command and
-/// abort the process, because the release profile sets `panic = "abort"`.
-/// Under `abort` this hook cannot save us, so the real mitigation is that
-/// ingestion runs on a dedicated worker; this guard covers debug builds and
-/// documents the intent.
+/// panic in any of them would otherwise unwind out of the Tauri command and
+/// take the application down, losing the user's unsaved chat.
+///
+/// Two things had to be true for this to actually work, and originally
+/// neither was:
+///
+/// 1. **The release profile must unwind, not abort.** `catch_unwind` is a
+///    no-op under `panic = "abort"` — the process simply dies. That was the
+///    original setting, which meant every panic test here passed in debug and
+///    protected nothing in a release build. See the comment in `Cargo.toml`.
+///
+/// 2. **The panic hook must not be swapped per call.** `set_hook`/`take_hook`
+///    are process-global. The first version replaced the hook around every
+///    parse, so two documents ingested concurrently would race: one thread
+///    could restore the silencing hook as the permanent one, or restore
+///    another thread's temporary hook. It is installed exactly once instead.
+fn silence_parser_panics() {
+    use std::sync::Once;
+    static HOOK: Once = Once::new();
+
+    HOOK.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            // Panics raised inside a guarded parse are expected on malformed
+            // input and are reported to the user as a clean error, so they do
+            // not need a backtrace on stderr. A hostile file should not be
+            // able to spray the user's logs either.
+            if GUARD_DEPTH.with(|d| d.get()) > 0 {
+                tracing::debug!("contained parser panic: {info}");
+                return;
+            }
+            previous(info);
+        }));
+    });
+}
+
+thread_local! {
+    /// Non-zero while this thread is inside a guarded parse. Thread-local so
+    /// a panic on an unrelated thread still prints normally — silencing every
+    /// panic process-wide would hide real bugs.
+    static GUARD_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
 fn guard<T, F>(what: &str, f: F) -> Result<T>
 where
     F: FnOnce() -> Result<T> + std::panic::UnwindSafe,
 {
-    let prev = std::panic::take_hook();
-    // Silence the default panic printer: a hostile file should not be able to
-    // spray the user's logs with backtraces.
-    std::panic::set_hook(Box::new(|_| {}));
+    silence_parser_panics();
+
+    GUARD_DEPTH.with(|d| d.set(d.get() + 1));
     let result = std::panic::catch_unwind(f);
-    std::panic::set_hook(prev);
+    GUARD_DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
 
     match result {
         Ok(r) => r,
-        Err(_) => Err(OrionError::Config(format!(
-            "{what} could not be parsed: the file appears to be corrupt or malformed"
-        ))),
+        Err(_) => {
+            tracing::warn!(format = what, "parser panicked on a malformed file");
+            Err(OrionError::Config(format!(
+                "{what} could not be parsed: the file appears to be corrupt or malformed"
+            )))
+        }
     }
 }
 
@@ -952,6 +1019,109 @@ pub fn column_index(cell_ref: &str) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /* ---------- panic containment ---------- */
+
+    #[test]
+    fn a_panicking_parser_becomes_an_error_not_a_crash() {
+        let r: Result<()> = guard("Test format", || panic!("simulated parser explosion"));
+        assert!(r.is_err());
+        let msg = format!("{}", r.unwrap_err());
+        assert!(
+            msg.contains("Test format"),
+            "error should name the format: {msg}"
+        );
+        assert!(msg.contains("corrupt or malformed"), "{msg}");
+    }
+
+    #[test]
+    fn the_guard_passes_success_through_untouched() {
+        let r = guard("Test", || Ok(42u32));
+        assert_eq!(r.unwrap(), 42);
+    }
+
+    #[test]
+    fn the_guard_passes_ordinary_errors_through_unchanged() {
+        // A clean parse failure must keep its specific message rather than
+        // being flattened into the generic "corrupt" text.
+        let r: Result<()> = guard("Test", || {
+            Err(OrionError::Config("this PDF is password-protected".into()))
+        });
+        let msg = format!("{}", r.unwrap_err());
+        assert!(
+            msg.contains("password-protected"),
+            "specific error was lost: {msg}"
+        );
+    }
+
+    #[test]
+    fn an_out_of_bounds_index_inside_a_parser_is_contained() {
+        // The realistic shape of a parser bug, rather than an explicit panic.
+        let r: Result<u8> = guard("Test", || {
+            let v: Vec<u8> = vec![1, 2, 3];
+            #[allow(clippy::indexing_slicing)]
+            Ok(v[99])
+        });
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn guards_survive_concurrent_use() {
+        // The original implementation swapped the process-global panic hook
+        // on every call, so two threads ingesting at once could leave the
+        // silencing hook installed permanently, or restore each other's.
+        // This asserts concurrent guarded parses all behave.
+        let mut handles = Vec::new();
+        for i in 0..8 {
+            handles.push(std::thread::spawn(move || {
+                for _ in 0..25 {
+                    let panicked: Result<()> = guard("Concurrent", || panic!("boom {i}"));
+                    assert!(panicked.is_err());
+                    let fine = guard("Concurrent", || Ok(i));
+                    assert_eq!(fine.unwrap(), i);
+                }
+            }));
+        }
+        for h in handles {
+            h.join()
+                .expect("a worker thread died; the guard is not thread-safe");
+        }
+    }
+
+    #[test]
+    fn the_guard_depth_returns_to_zero() {
+        // A leaked depth counter would permanently silence this thread's
+        // panics, hiding genuine bugs elsewhere in the app.
+        assert_eq!(GUARD_DEPTH.with(|d| d.get()), 0, "depth leaked before test");
+        let _ = guard("Test", || Ok(()));
+        assert_eq!(
+            GUARD_DEPTH.with(|d| d.get()),
+            0,
+            "depth leaked after success"
+        );
+        let _: Result<()> = guard("Test", || panic!("x"));
+        assert_eq!(GUARD_DEPTH.with(|d| d.get()), 0, "depth leaked after panic");
+    }
+
+    #[test]
+    fn every_public_binary_entry_point_is_guarded() {
+        // If a new format is added without wrapping it in `guard`, a
+        // malformed file of that type takes the app down. Cheap structural
+        // check against that regression.
+        let src = include_str!("binary.rs");
+        for func in [
+            "pub fn pdf_blocks",
+            "pub fn docx_blocks",
+            "pub fn xlsx_blocks",
+        ] {
+            let start = src.find(func).unwrap_or_else(|| panic!("{func} not found"));
+            let body = &src[start..(start + 700).min(src.len())];
+            assert!(
+                body.contains("guard("),
+                "{func} does not wrap its work in guard()"
+            );
+        }
+    }
 
     /* ---------- entry-name safety ---------- */
 
