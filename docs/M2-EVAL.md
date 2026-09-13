@@ -1,7 +1,7 @@
 # M2 — Document Intelligence: evidence
 
 Branch: `feat/m2-documents-rag`, cut from `main` at `3784c8f`.
-Status: **compiles clean, 215 tests green, clippy `-D warnings` clean.**
+Status: **compiles clean in the real Tauri crate, 220 tests green, clippy `-D warnings` clean.**
 All formats implemented, including PDF, DOCX and XLSX, and verified against
 real files produced by Word/Excel/PDF writers. Not yet run inside the Tauri
 app — see "What is still unverified".
@@ -305,6 +305,38 @@ The user drops a file, sees no error, and later wonders why searches never
 match it. `ingest_path` now treats an empty chunk list as an error and says
 why. This also covers image-only scanned PDFs, which is the common real-world
 case rather than the adversarial one.
+
+---
+
+## Verified in the real crate
+
+M2 was originally developed in a scratch crate (`~/.m2test`) because Tauri
+could not be compiled in this sandbox. That was a mistake worth recording: a
+scratch crate is not the shipping crate, and two defects lived in the gap.
+
+`scripts/setup-sysroot.sh` now unpacks webkit/gtk `.deb` files into a local
+sysroot without root, so the real crate builds here. Against it:
+
+```
+cargo check                 clean
+cargo clippy --all-targets  clean under -D warnings
+cargo test                  220 passed
+```
+
+### What only the real crate caught
+
+1. **`lopdf` did not compile at all.** The real `Cargo.toml` still requested
+   `features = ["pom_parser"]`, which fails inside lopdf 0.34 itself. The
+   scratch crate had been switched to `nom_parser` during development and the
+   fix was never carried back. **M2 as committed would not have built.**
+2. **Three MSRV violations.** `as_chunks` (1.88) and `is_multiple_of` (1.87)
+   against a declared `rust-version = "1.77"`. Both had been introduced by
+   following clippy's own suggestions in the scratch crate, which declared no
+   MSRV and so never flagged them. Reverted to `chunks_exact` and `% 4`.
+
+The lesson is not "write fewer scratch crates" — they were the only way to
+make progress — it is that anything they verify has to be re-verified in the
+crate that ships.
 
 ---
 

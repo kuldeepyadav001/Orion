@@ -81,10 +81,18 @@ impl Sha256 {
             return;
         }
 
-        let (blocks, rest) = data.as_chunks::<64>();
-        for block in blocks {
-            self.compress(block);
+        // `chunks_exact`, not `as_chunks`: the latter is clippy's suggestion
+        // but was only stabilised in 1.88, and this crate declares
+        // rust-version = 1.77. Caught by clippy's own incompatible_msrv lint
+        // in the real crate — the scratch test crate had no MSRV set, so it
+        // silently accepted the newer API.
+        let mut chunks = data.chunks_exact(64);
+        for block in chunks.by_ref() {
+            let mut b = [0u8; 64];
+            b.copy_from_slice(block);
+            self.compress(&b);
         }
+        let rest = chunks.remainder();
 
         self.buffer[..rest.len()].copy_from_slice(rest);
         self.buffered = rest.len();

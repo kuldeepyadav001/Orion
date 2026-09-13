@@ -223,14 +223,17 @@ pub fn to_blob(v: &[f32]) -> Vec<u8> {
 /// Unpack a BLOB back into a vector. Returns an error rather than panicking
 /// on a truncated or corrupt row.
 pub fn from_blob(b: &[u8]) -> Result<Vec<f32>> {
-    if !b.len().is_multiple_of(4) {
+    // `% 4`, not `is_multiple_of`: the latter needs Rust 1.87, above this
+    // crate's declared MSRV of 1.77.
+    if b.len() % 4 != 0 {
         return Err(OrionError::Db(format!(
             "vector blob length {} is not a multiple of 4",
             b.len()
         )));
     }
-    let (quads, _) = b.as_chunks::<4>();
-    Ok(quads.iter().map(|c| f32::from_le_bytes(*c)).collect())
+    Ok(b.chunks_exact(4)
+        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect())
 }
 
 #[cfg(test)]
