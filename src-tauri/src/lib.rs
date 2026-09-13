@@ -10,6 +10,9 @@
 pub mod db;
 pub mod engine;
 pub mod error;
+pub mod hashing;
+pub mod ingest;
+pub mod rag;
 
 use std::sync::Arc;
 
