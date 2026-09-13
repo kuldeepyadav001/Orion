@@ -66,12 +66,11 @@ pub fn extract(format: Format, bytes: &[u8], _name: &str) -> Result<Vec<Block>> 
         Format::Csv => Ok(csv_blocks(&decode_utf8(bytes)?)),
         Format::Text => Ok(text_blocks(&decode_utf8(bytes)?)),
         Format::Code => Ok(code_blocks(&decode_utf8(bytes)?)),
-        // Binary formats need dedicated parsers; wired up behind features so
-        // the core stays buildable and testable without them.
-        Format::Pdf | Format::Docx | Format::Xlsx => Err(OrionError::Config(format!(
-            "{} extraction is not wired up yet",
-            format.label()
-        ))),
+        // Binary containers. These have their own hardening (byte budgets,
+        // nesting limits, panic containment) in `binary`.
+        Format::Pdf => crate::ingest::binary::pdf_blocks(bytes),
+        Format::Docx => crate::ingest::binary::docx_blocks(bytes),
+        Format::Xlsx => crate::ingest::binary::xlsx_blocks(bytes),
     }
 }
 
@@ -683,8 +682,40 @@ mod tests {
     }
 
     #[test]
-    fn unimplemented_binary_formats_error_cleanly() {
+    fn malformed_binary_formats_error_cleanly() {
+        // These are now implemented, so the assertion is about graceful
+        // failure on truncated input, not about being unwired.
         assert!(extract(Format::Pdf, b"%PDF-1.4", "a.pdf").is_err());
         assert!(extract(Format::Docx, b"PK", "a.docx").is_err());
+        assert!(extract(Format::Xlsx, b"PK", "a.xlsx").is_err());
+    }
+
+    #[test]
+    fn every_format_is_dispatched_to_a_real_extractor() {
+        // Guards against a format silently falling through to a stub. Each
+        // must either produce blocks or fail for a content reason — never
+        // report that it is unimplemented.
+        for (fmt, bytes) in [
+            (Format::Markdown, b"# Title\n\nBody text." as &[u8]),
+            (Format::Html, b"<h1>Title</h1><p>Body text.</p>"),
+            (Format::Csv, b"a,b\n1,2\n"),
+            (Format::Text, b"Plain body text."),
+            (Format::Code, b"fn main() {}\n"),
+            (Format::Pdf, b"%PDF-1.4 truncated"),
+            (Format::Docx, b"PK\x03\x04 truncated"),
+            (Format::Xlsx, b"PK\x03\x04 truncated"),
+        ] {
+            match extract(fmt, bytes, "probe") {
+                Ok(_) => {}
+                Err(e) => {
+                    let msg = format!("{e}");
+                    assert!(
+                        !msg.contains("not wired up"),
+                        "{:?} is still a stub: {msg}",
+                        fmt
+                    );
+                }
+            }
+        }
     }
 }

@@ -33,6 +33,15 @@ rand = "0.8"
 sysinfo = "0.32"
 dirs = "5"
 
+# Document extraction. Feature-minimised on purpose: the full default sets
+# pull in bzip2, zstd, AES and time, none of which Orion needs, and every
+# crate in an offline security-sensitive app is audit surface.
+# zip+quick-xml+lopdf = 50 transitive crates; using pdf-extract instead of
+# lopdf would have been 105.
+zip = { version = "2", default-features = false, features = ["deflate"] }
+quick-xml = "0.37"
+lopdf = { version = "0.34", default-features = false, features = ["pom_parser"] }
+
 [features]
 # Tauri's default custom-protocol feature is enabled by the CLI on build.
 custom-protocol = ["tauri/custom-protocol"]

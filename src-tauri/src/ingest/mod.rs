@@ -14,6 +14,7 @@
 //! attachments, downloads and shared drives; a parser that panics takes the
 //! app down, and text that reaches the model can carry prompt injection.
 
+pub mod binary;
 pub mod chunker;
 pub mod extract;
 
@@ -71,6 +72,17 @@ pub fn ingest_path(path: &Path, config: &ChunkConfig) -> Result<IngestedDocument
     let bytes = std::fs::read(path)?;
     let blocks = extract(format, &bytes, &name)?;
     let chunks = chunk_blocks(&blocks, config);
+
+    // A document that parsed but yielded nothing indexable must be an error,
+    // not a silent success. Returning Ok with zero chunks means the user drops
+    // a file, sees no error, and later wonders why searches never match it.
+    // Image-only scans and structurally-valid-but-empty files both land here.
+    if chunks.is_empty() {
+        return Err(OrionError::Config(format!(
+            "{name} was read successfully but contains no indexable text \
+             (it may be empty, or an image-only scan)"
+        )));
+    }
 
     Ok(IngestedDocument {
         id: document_id(path),
