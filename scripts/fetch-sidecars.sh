@@ -27,7 +27,12 @@ case "$(uname -s)" in
       ASSET="llama-${VERSION}-bin-macos-x64.zip"
     fi
     EXT="" ;;
-  MINGW*|MSYS*|CYGWIN*) ASSET="llama-${VERSION}-bin-win-cpu-x64.zip"; EXT=".exe" ;;
+  MINGW*|MSYS*|CYGWIN*)
+    # NOT "win-cpu-x64": that asset name does not exist for this release.
+    # llama.cpp ships per-instruction-set Windows builds; avx2 is the safe
+    # default for any x86-64 CPU made in the last decade. Use win-noavx-x64
+    # on very old hardware.
+    ASSET="llama-${VERSION}-bin-win-avx2-x64.zip"; EXT=".exe" ;;
   *) echo "unsupported OS: $(uname -s)" >&2; exit 1 ;;
 esac
 
