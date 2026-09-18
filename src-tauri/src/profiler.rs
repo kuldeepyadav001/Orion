@@ -577,6 +577,11 @@ fn detect_gpu_windows() -> Option<(Option<String>, Option<f64>, bool)> {
         return None;
     }
 
+    // Log the raw bytes at debug level. Adapter-name mangling has already
+    // cost two round trips of guesswork; when it happens again the evidence
+    // should be in the user's log rather than inferred.
+    tracing::debug!(raw = ?out.stdout, "Win32_VideoController raw output");
+
     let line = String::from_utf8_lossy(&out.stdout);
     let line = line.trim();
     let (name, ram) = line.split_once('|')?;
@@ -630,13 +635,58 @@ fn detect_gpu_linux() -> Option<(Option<String>, Option<f64>, bool)> {
 // Only the Windows probe calls this, but the tests exercise it everywhere.
 #[cfg_attr(not(any(target_os = "windows", test)), allow(dead_code))]
 fn tidy_gpu_name(raw: &str) -> String {
-    let mut out = raw.to_string();
-    for marker in [
-        "(TM)", "(R)", "(tm)", "(r)", "\u{2122}", "\u{00ae}", "\u{fffd}",
-    ] {
-        out = out.replace(marker, " ");
+    // Vendor adapter names arrive with trademark marks in whatever form the
+    // WMI/console encoding produced. Observed in the wild on one machine:
+    // "AMD Radeon(TM) 610M" came back as "AMD RadeonT 610M" even after the
+    // console output encoding was forced to UTF-8.
+    //
+    // Rather than chase every mangled spelling, drop the whole bracketed
+    // group and any stray trademark glyph, then clean up what is left. A
+    // bracketed token in a GPU name is never information the user needs.
+    let mut out = String::with_capacity(raw.len());
+    let mut depth = 0usize;
+    for c in raw.chars() {
+        match c {
+            '(' | '[' => depth += 1,
+            ')' | ']' => depth = depth.saturating_sub(1),
+            // U+2122 trademark, U+00AE registered, U+FFFD replacement,
+            // U+00A9 copyright.
+            '\u{2122}' | '\u{00ae}' | '\u{fffd}' | '\u{00a9}' => {}
+            _ if depth == 0 => out.push(c),
+            _ => {}
+        }
     }
-    out.split_whitespace().collect::<Vec<_>>().join(" ")
+
+    // Strip a bare "TM"/"R" token left glued to the previous word by a
+    // mangled glyph, e.g. "RadeonTM" or "RadeonT" from "Radeon(TM)".
+    let cleaned: Vec<String> = out
+        .split_whitespace()
+        .map(|tok| {
+            let trimmed = tok
+                .strip_suffix("TM")
+                .or_else(|| tok.strip_suffix("tm"))
+                .unwrap_or(tok);
+            // Only strip a trailing capital T when what precedes it is a
+            // real word, so "610M" and "RTX" survive untouched.
+            let trimmed = if trimmed.len() > 3
+                && trimmed.ends_with('T')
+                && trimmed[..trimmed.len() - 1]
+                    .chars()
+                    .all(|c| c.is_ascii_alphabetic())
+                && trimmed[..trimmed.len() - 1]
+                    .chars()
+                    .any(|c| c.is_ascii_lowercase())
+            {
+                &trimmed[..trimmed.len() - 1]
+            } else {
+                trimmed
+            };
+            trimmed.to_string()
+        })
+        .filter(|tok| !tok.is_empty() && !matches!(tok.as_str(), "TM" | "tm" | "R" | "r"))
+        .collect();
+
+    cleaned.join(" ")
 }
 
 fn is_integrated_gpu(name: &str) -> bool {
@@ -910,6 +960,20 @@ mod tests {
     #[test]
     fn trademark_glyphs_are_stripped_from_display_names() {
         assert_eq!(tidy_gpu_name("AMD Radeon(TM) 610M"), "AMD Radeon 610M");
+        // The form actually observed on a real machine, after the console
+        // encoding had already been forced to UTF-8.
+        assert_eq!(tidy_gpu_name("AMD RadeonT 610M"), "AMD Radeon 610M");
+        assert_eq!(tidy_gpu_name("AMD RadeonTM 610M"), "AMD Radeon 610M");
+        // Model numbers and all-caps product names must survive.
+        assert_eq!(
+            tidy_gpu_name("NVIDIA GeForce RTX 4070"),
+            "NVIDIA GeForce RTX 4070"
+        );
+        assert_eq!(
+            tidy_gpu_name("AMD Radeon RX 7900 XT"),
+            "AMD Radeon RX 7900 XT"
+        );
+        assert_eq!(tidy_gpu_name("Intel Arc A770"), "Intel Arc A770");
         assert_eq!(tidy_gpu_name("Intel(R) UHD Graphics"), "Intel UHD Graphics");
         assert_eq!(tidy_gpu_name("  spaced   out  "), "spaced out");
         assert_eq!(
