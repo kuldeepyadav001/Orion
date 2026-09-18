@@ -10,6 +10,8 @@
 pub mod db;
 pub mod engine;
 pub mod error;
+pub mod models;
+pub mod profiler;
 
 use std::sync::Arc;
 
@@ -21,6 +23,8 @@ use tokio::sync::Mutex;
 use db::Db;
 use engine::{ChatMessage, Engine, EngineConfig, EngineState, EngineStatus};
 use error::{OrionError, Result};
+use models::{ModelManager, ModelStatus};
+use profiler::{HardwareProfile, Tier, TierRecommendation};
 
 /// How many past turns to replay into the model. Kept small deliberately:
 /// on an 8 GB machine the KV cache for a long history is a real memory cost.
@@ -34,6 +38,10 @@ pub struct AppState {
     pub engine: Arc<Engine>,
     pub db: Arc<Mutex<Db>>,
     pub session_id: Mutex<String>,
+    pub profile: HardwareProfile,
+    pub models: ModelManager,
+    /// Tier actually in use, after any user override.
+    pub active_tier: Mutex<Tier>,
 }
 
 /* ------------------------------------------------------------------ */
@@ -117,16 +125,57 @@ async fn cancel_generation(state: State<'_, AppState>) -> Result<()> {
     Ok(())
 }
 
+/// The measured (or simulated) hardware profile.
+#[tauri::command]
+async fn hardware_profile(state: State<'_, AppState>) -> Result<HardwareProfile> {
+    Ok(state.profile.clone())
+}
+
+/// Tier recommendation with the reasoning behind it.
+#[tauri::command]
+async fn tier_recommendation(state: State<'_, AppState>) -> Result<TierRecommendation> {
+    Ok(state.profile.recommend())
+}
+
+/// Catalogue with per-model installation state.
+#[tauri::command]
+async fn list_models(state: State<'_, AppState>) -> Result<Vec<ModelStatus>> {
+    Ok(state.models.all_statuses())
+}
+
+/// Tier currently in use.
+#[tauri::command]
+async fn active_tier(state: State<'_, AppState>) -> Result<Tier> {
+    Ok(*state.active_tier.lock().await)
+}
+
+/// Override the recommended tier. Takes effect on the next engine start.
+#[tauri::command]
+async fn set_active_tier(tier: String, state: State<'_, AppState>) -> Result<Tier> {
+    let tier =
+        Tier::parse(&tier).ok_or_else(|| OrionError::Config(format!("unknown tier: {tier}")))?;
+    *state.active_tier.lock().await = tier;
+    tracing::info!(tier = tier.as_str(), "active tier overridden by user");
+    Ok(tier)
+}
+
 /* ------------------------------------------------------------------ */
 /* sidecar                                                             */
 /* ------------------------------------------------------------------ */
 
-/// Locate a GGUF model. M1 replaces this with the hardware-aware model
-/// manager; for now we look in the app data dir and honour an env override.
-fn find_model() -> Result<std::path::PathBuf> {
+/// Resolve which GGUF to load, in priority order:
+///   1. `ORION_MODEL_PATH` — explicit override, always wins
+///   2. the catalogue model for the active tier, if installed
+///   3. the best installed catalogue model of any tier
+///   4. any user-supplied .gguf in the models directory
+///
+/// Falling back rather than refusing to start matters: a user who already has
+/// weights should not be blocked because our preferred file is absent.
+fn resolve_model(models: &ModelManager, tier: Tier) -> Result<std::path::PathBuf> {
     if let Ok(p) = std::env::var("ORION_MODEL_PATH") {
         let p = std::path::PathBuf::from(p);
         if p.is_file() {
+            tracing::info!(path = %p.display(), "using ORION_MODEL_PATH");
             return Ok(p);
         }
         return Err(OrionError::Config(format!(
@@ -135,17 +184,15 @@ fn find_model() -> Result<std::path::PathBuf> {
         )));
     }
 
-    let dir = db::data_dir()?.join("models");
-    if dir.is_dir() {
-        let mut entries: Vec<_> = std::fs::read_dir(&dir)?
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("gguf"))
-            .collect();
-        entries.sort();
-        if let Some(first) = entries.into_iter().next() {
-            return Ok(first);
-        }
+    if let Some(spec) = models.resolve_for_tier(tier) {
+        let path = models.local_path(spec);
+        tracing::info!(model = %spec.id, tier = spec.tier.as_str(), "resolved catalogue model");
+        return Ok(path);
+    }
+
+    if let Some(found) = models.foreign_models().into_iter().next() {
+        tracing::info!(path = %found.display(), "using a user-supplied model");
+        return Ok(found);
     }
 
     Err(OrionError::NoModel)
@@ -153,8 +200,13 @@ fn find_model() -> Result<std::path::PathBuf> {
 
 /// Spawn `llama-server` bound to loopback on an ephemeral port with a random
 /// bearer token, then wait for it to report healthy.
-async fn start_engine(app: tauri::AppHandle, engine: Arc<Engine>) {
-    let model_path = match find_model() {
+async fn start_engine(
+    app: tauri::AppHandle,
+    engine: Arc<Engine>,
+    models: Arc<ModelManager>,
+    tier: Tier,
+) {
+    let model_path = match resolve_model(&models, tier) {
         Ok(p) => p,
         Err(e) => {
             engine
@@ -286,6 +338,30 @@ pub fn run() {
         .setup(|app| {
             let data_dir = db::data_dir()?;
             let database = Db::open(&data_dir.join("orion.db"))?;
+
+            // Profile the machine before anything else — the tier decides
+            // which model we try to load.
+            let profile = HardwareProfile::detect_or_forced();
+            let recommendation = profile.recommend();
+            tracing::info!(
+                total_ram = profile.total_ram_gib,
+                available_ram = profile.available_ram_gib,
+                cores = profile.cpu_cores,
+                simulated = profile.simulated,
+                tier = recommendation.tier.as_str(),
+                "hardware profiled"
+            );
+            for reason in &recommendation.reasons {
+                tracing::info!(target: "profiler", "{reason}");
+            }
+            for warning in &recommendation.warnings {
+                tracing::warn!(target: "profiler", "{warning}");
+            }
+
+            let models_dir = data_dir.join("models");
+            std::fs::create_dir_all(&models_dir).ok();
+            let manager = Arc::new(ModelManager::new(models_dir).with_registry_file());
+            let tier = recommendation.tier;
             // M0 uses a single rolling session; M1 adds the history sidebar.
             let session_id = database.create_session("New chat")?;
 
@@ -295,11 +371,16 @@ pub fn run() {
                 engine: engine.clone(),
                 db: Arc::new(Mutex::new(database)),
                 session_id: Mutex::new(session_id),
+                profile,
+                models: ModelManager::new(db::data_dir().unwrap_or_default().join("models"))
+                    .with_registry_file(),
+                active_tier: Mutex::new(tier),
             });
 
             let handle = app.handle().clone();
+            let mgr = manager.clone();
             tauri::async_runtime::spawn(async move {
-                start_engine(handle, engine).await;
+                start_engine(handle, engine, mgr, tier).await;
             });
 
             Ok(())
@@ -307,7 +388,12 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             engine_status,
             send_message,
-            cancel_generation
+            cancel_generation,
+            hardware_profile,
+            tier_recommendation,
+            list_models,
+            active_tier,
+            set_active_tier
         ])
         .run(tauri::generate_context!())
         .expect("error while running Orion");
