@@ -309,15 +309,20 @@ impl<'a> RagStore<'a> {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT rowid FROM chunks_fts
+                "SELECT rowid, bm25(chunks_fts) FROM chunks_fts
                  WHERE chunks_fts MATCH ?1
                  ORDER BY bm25(chunks_fts) ASC
                  LIMIT ?2",
             )
             .map_err(|e| OrionError::Db(format!("cannot prepare fts query: {e}")))?;
 
-        let rows: Vec<i64> = stmt
-            .query_map(params![fts_query, limit as i64], |r| r.get(0))
+        // FTS5's bm25() returns a NEGATIVE score, more negative being better.
+        // Negate it so larger means more relevant, matching cosine and making
+        // the two comparable to a threshold.
+        let rows: Vec<(i64, f64)> = stmt
+            .query_map(params![fts_query, limit as i64], |r| {
+                Ok((r.get(0)?, r.get::<_, f64>(1).unwrap_or(0.0)))
+            })
             .map_err(|e| OrionError::Db(format!("fts query failed: {e}")))?
             .filter_map(|r| r.ok())
             .collect();
@@ -325,7 +330,11 @@ impl<'a> RagStore<'a> {
         Ok(rows
             .into_iter()
             .enumerate()
-            .map(|(rank, chunk_id)| Ranked { chunk_id, rank })
+            .map(|(rank, (chunk_id, bm25))| Ranked {
+                chunk_id,
+                rank,
+                score: (-bm25) as f32,
+            })
             .collect())
     }
 
@@ -359,6 +368,13 @@ impl<'a> RagStore<'a> {
         let bm25 = self.bm25_candidates(query, CANDIDATES_PER_RETRIEVER)?;
         let vectors = self.vector_candidates(query_vec, CANDIDATES_PER_RETRIEVER)?;
 
+        // Keep each retriever's own top score before fusion discards it.
+        // These are the only absolute signals available: RRF output is a
+        // function of rank, so it cannot distinguish "best match in a strong
+        // field" from "least bad match in a library of one".
+        let top_bm25 = bm25.first().map(|r| r.score).unwrap_or(0.0);
+        let top_cosine = vectors.first().map(|r| r.score).unwrap_or(0.0);
+
         let fused = reciprocal_rank_fusion(
             &[
                 ("bm25", bm25, WEIGHT_BM25),
@@ -371,6 +387,8 @@ impl<'a> RagStore<'a> {
         for (chunk_id, score, sources) in fused {
             if let Some(mut hit) = self.load_hit(chunk_id)? {
                 hit.score = score;
+                hit.top_bm25 = top_bm25;
+                hit.top_cosine = top_cosine;
                 hit.sources = sources.iter().map(|s| s.to_string()).collect();
                 hits.push(hit);
             }
@@ -409,6 +427,8 @@ impl<'a> RagStore<'a> {
                     .map(|p| p as u32),
                 breadcrumb: row.get(5).unwrap_or_default(),
                 score: 0.0,
+                top_bm25: 0.0,
+                top_cosine: 0.0,
                 sources: Vec::new(),
             }))
         } else {
@@ -549,6 +569,99 @@ mod tests {
         }
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_unrelated_question_scores_far_below_a_real_match() {
+        // The bug this guards: RRF ranks by position, so with one document
+        // indexed EVERY question returned that document as hit #1 and the
+        // chat path treated any hit as grounds for answering from files.
+        // Asking "what is 2 + 2" got answered from a resume.
+        //
+        // Rank cannot distinguish these cases. The absolute scores can, and
+        // this pins that they actually differ.
+        let conn = setup();
+        let store = RagStore::new(&conn);
+
+        let d = doc(
+            "cv",
+            "resume.pdf",
+            vec![
+                chunk(
+                    0,
+                    "Kuldeep Yadav, full stack developer, React and Rust",
+                    "Profile",
+                ),
+                chunk(
+                    1,
+                    "Built an offline AI assistant with local inference",
+                    "Projects",
+                ),
+            ],
+        );
+        store
+            .upsert_document(&d, &[vec_for(0.9), vec_for(0.85)])
+            .unwrap();
+
+        // On topic: shares real terms with the document.
+        let on_topic = store
+            .search(
+                "what programming languages does the developer know",
+                &vec_for(0.9),
+                5,
+            )
+            .unwrap();
+
+        // Off topic: shares nothing meaningful.
+        let off_topic = store
+            .search("what is the boiling point of mercury", &vec_for(0.05), 5)
+            .unwrap();
+
+        if !on_topic.is_empty() && !off_topic.is_empty() {
+            assert!(
+                on_topic[0].top_cosine > off_topic[0].top_cosine,
+                "an on-topic question must score higher than an unrelated one \
+                 (on {:.3} vs off {:.3}); if these are equal there is no signal \
+                 to threshold on",
+                on_topic[0].top_cosine,
+                off_topic[0].top_cosine
+            );
+        }
+    }
+
+    #[test]
+    fn absolute_scores_survive_fusion() {
+        // RRF discards magnitude by design. These fields exist so the caller
+        // can still ask "was anything actually relevant?" — if they arrive as
+        // zero the relevance gate silently blocks everything.
+        let conn = setup();
+        let store = RagStore::new(&conn);
+
+        let d = doc(
+            "doc",
+            "notes.md",
+            vec![chunk(
+                0,
+                "the quarterly revenue target is fifty thousand",
+                "Finance",
+            )],
+        );
+        store.upsert_document(&d, &[vec_for(0.7)]).unwrap();
+
+        let hits = store
+            .search("quarterly revenue target", &vec_for(0.7), 5)
+            .unwrap();
+        assert!(!hits.is_empty(), "exact terms should match");
+        assert!(
+            hits[0].top_bm25 > 0.0,
+            "bm25 score was discarded; got {}",
+            hits[0].top_bm25
+        );
+        assert!(
+            hits[0].top_cosine > 0.0,
+            "cosine score was discarded; got {}",
+            hits[0].top_cosine
+        );
     }
 
     #[test]

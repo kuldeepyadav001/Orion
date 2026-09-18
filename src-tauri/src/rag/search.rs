@@ -27,6 +27,11 @@ pub struct Hit {
     pub breadcrumb: String,
     /// Fused relevance. Only meaningful relative to other hits.
     pub score: f32,
+    /// Best BM25 score in this result set, negated so larger is better.
+    /// An absolute signal, unlike `score`.
+    pub top_bm25: f32,
+    /// Best cosine similarity in this result set, 0.0 when no embedder.
+    pub top_cosine: f32,
     /// Which retriever(s) found this, for debugging and the eval harness.
     pub sources: Vec<String>,
 }
@@ -36,6 +41,16 @@ pub struct Hit {
 pub struct Ranked {
     pub chunk_id: i64,
     pub rank: usize,
+    /// The retriever's own score before fusion.
+    ///
+    /// RRF deliberately discards magnitude — it fuses on rank alone, which is
+    /// what makes it robust across retrievers with incomparable scales. But
+    /// that means a fused score says nothing about whether anything was
+    /// *actually relevant*: the top chunk scores ~1/61 whether it is a perfect
+    /// match or the only document in the library. Keeping the raw score lets
+    /// the caller answer "is this good enough to show the model at all?",
+    /// which rank alone cannot.
+    pub score: f32,
 }
 
 /// RRF damping constant. 60 is the value from the original paper and is
@@ -226,7 +241,11 @@ impl Bm25 {
             .into_iter()
             .take(limit)
             .enumerate()
-            .map(|(rank, (chunk_id, _))| Ranked { chunk_id, rank })
+            .map(|(rank, (chunk_id, score))| Ranked {
+                chunk_id,
+                rank,
+                score,
+            })
             .collect()
     }
 }
@@ -255,7 +274,11 @@ pub fn vector_rank(query: &[f32], corpus: &[(i64, Vec<f32>)], limit: usize) -> V
         .into_iter()
         .take(limit)
         .enumerate()
-        .map(|(rank, (chunk_id, _))| Ranked { chunk_id, rank })
+        .map(|(rank, (chunk_id, score))| Ranked {
+            chunk_id,
+            rank,
+            score,
+        })
         .collect()
 }
 
@@ -269,6 +292,7 @@ mod tests {
             .map(|(rank, id)| Ranked {
                 chunk_id: *id,
                 rank,
+                score: 1.0,
             })
             .collect()
     }

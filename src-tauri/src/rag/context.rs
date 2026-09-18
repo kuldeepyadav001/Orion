@@ -292,6 +292,8 @@ mod tests {
             page,
             breadcrumb: bc.into(),
             score: 1.0,
+            top_bm25: 10.0,
+            top_cosine: 0.9,
             sources: vec!["bm25".to_string()],
         }
     }

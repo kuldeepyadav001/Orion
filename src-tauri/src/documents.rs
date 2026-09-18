@@ -59,6 +59,30 @@ const SEARCH_LIMIT: usize = 8;
 /// How many of those actually reach the prompt.
 const CONTEXT_TOP_K: usize = 4;
 
+/// Minimum cosine similarity for a passage to count as relevant.
+///
+/// bge-small is a normalised embedding model, so cosine is bounded to
+/// [-1, 1]. On its own scale, genuinely on-topic passages typically land
+/// above ~0.6 and unrelated text sits near 0.2-0.4. 0.45 is deliberately
+/// permissive: missing a real match is worse than one extra citation the
+/// user can see and ignore.
+const MIN_COSINE: f32 = 0.45;
+
+// Tuned deliberately permissive, and checked at compile time so a future
+// tweak cannot quietly make the gate strict. A missed citation is recoverable
+// by rephrasing and an unwanted one is visible and ignorable, but a product
+// that hides the user's own documents from them feels broken.
+const _: () = assert!(MIN_COSINE > 0.0 && MIN_COSINE <= 0.55);
+
+/// Minimum BM25 score (already negated, larger is better) for a keyword hit
+/// to count on its own.
+///
+/// FTS5's bm25() has no fixed scale — it depends on corpus size and term
+/// frequency — so this is a floor against near-zero matches rather than a
+/// calibrated value. A question sharing one common word with a document
+/// should not drag that document into the prompt.
+const MIN_BM25: f32 = 0.5;
+
 // Asking for more context chunks than were retrieved would silently truncate,
 // making the prompt smaller than intended. Checked at compile time.
 const _: () = assert!(CONTEXT_TOP_K <= SEARCH_LIMIT);
@@ -401,12 +425,71 @@ pub async fn retrieve(
         return Ok(None);
     }
 
+    // Hits alone do not mean relevance.
+    //
+    // Reciprocal rank fusion scores by *position*, not similarity, which is
+    // what makes it robust across retrievers with incomparable scales. The
+    // cost is that it always returns something: with one document indexed,
+    // "what is 2 + 2" still ranks that document first, and the old code
+    // treated any non-empty result as grounds for switching to the grounded
+    // prompt. Every unrelated question got answered from the user's files.
+    //
+    // So gate on the retrievers' own absolute scores, which fusion discards.
+    let best = &hits[0];
+    let semantically_relevant = best.top_cosine >= MIN_COSINE;
+    let keyword_relevant = best.top_bm25 >= MIN_BM25;
+
+    if !semantically_relevant && !keyword_relevant {
+        tracing::debug!(
+            cosine = best.top_cosine,
+            bm25 = best.top_bm25,
+            "library searched but nothing was relevant; answering without sources"
+        );
+        return Ok(None);
+    }
+
     Ok(Some(build_context(&hits, CONTEXT_TOP_K)))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The gate from `retrieve`, extracted so it can be tested without a
+    /// database, an embedder or a Tauri app.
+    fn is_relevant(top_cosine: f32, top_bm25: f32) -> bool {
+        top_cosine >= MIN_COSINE || top_bm25 >= MIN_BM25
+    }
+
+    #[test]
+    fn an_unrelated_question_does_not_reach_the_documents() {
+        // The reported bug: asking something with no connection to the
+        // library still produced an answer sourced from it. Weak scores on
+        // both retrievers must mean "no context".
+        assert!(!is_relevant(0.18, 0.0), "weak cosine, no keyword match");
+        assert!(!is_relevant(0.31, 0.2), "both below their floors");
+        assert!(!is_relevant(0.0, 0.0), "nothing matched at all");
+    }
+
+    #[test]
+    fn a_genuine_match_still_gets_through() {
+        // Over-correcting would be just as bad: a product that refuses to
+        // read the files it indexed is worse than one that over-reads them.
+        assert!(is_relevant(0.72, 8.0), "strong on both");
+        assert!(is_relevant(0.61, 0.0), "semantic only, e.g. a paraphrase");
+        assert!(is_relevant(0.2, 4.5), "keyword only, e.g. an exact ID");
+    }
+
+    #[test]
+    fn keyword_search_still_works_without_an_embedder() {
+        // With no embedding model every cosine is 0.0. If the gate required
+        // semantic relevance, losing the optional embedder would silently
+        // disable document search entirely rather than degrading it.
+        assert!(
+            is_relevant(0.0, 6.0),
+            "a strong keyword match must count on its own"
+        );
+    }
 
     #[test]
     fn embed_dim_matches_the_model() {
