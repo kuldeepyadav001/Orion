@@ -349,6 +349,14 @@ impl HardwareProfile {
             (None, _) => reasons.push("No GPU detected; inference will run on the CPU.".into()),
         }
 
+        // `vram` is already zeroed for integrated GPUs above, so this only
+        // ever sees dedicated memory. Belt and braces: a misclassified iGPU
+        // must not be able to lift the tier, because its "VRAM" is system RAM
+        // that has already been subtracted from the total.
+        debug_assert!(
+            !self.gpu_integrated || vram == 0.0,
+            "integrated VRAM leaked into the tier calculation"
+        );
         let by_vram = if vram >= 22.0 {
             Some(Tier::T4)
         } else if vram >= 10.0 {
@@ -556,7 +564,10 @@ fn detect_gpu_windows() -> Option<(Option<String>, Option<f64>, bool)> {
             "-NoProfile",
             "-NonInteractive",
             "-Command",
-            "Get-CimInstance Win32_VideoController |              Select-Object -First 1 -Property Name,AdapterRAM |              ForEach-Object { \"$($_.Name)|$($_.AdapterRAM)\" }",
+            "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; \
+             Get-CimInstance Win32_VideoController | \
+             Select-Object -First 1 -Property Name,AdapterRAM | \
+             ForEach-Object { \"$($_.Name)|$($_.AdapterRAM)\" }",
         ])
         .creation_flags(CREATE_NO_WINDOW)
         .output()
@@ -569,10 +580,11 @@ fn detect_gpu_windows() -> Option<(Option<String>, Option<f64>, bool)> {
     let line = String::from_utf8_lossy(&out.stdout);
     let line = line.trim();
     let (name, ram) = line.split_once('|')?;
-    let name = name.trim();
+    let name = tidy_gpu_name(name);
     if name.is_empty() {
         return None;
     }
+    let name = name.as_str();
 
     // AdapterRAM is a 32-bit field and wraps above 4 GiB, so it is only a
     // hint. It is never used for budgeting, only for display.
@@ -611,22 +623,91 @@ fn detect_gpu_linux() -> Option<(Option<String>, Option<f64>, bool)> {
 /// Name matching is crude but the cost of being wrong is small: an integrated
 /// part misread as discrete would have its VRAM counted as extra memory, so
 /// the list errs toward calling things integrated.
+/// Clean up a vendor-reported adapter name for display.
+///
+/// Strips trademark markers, including the mojibake forms that appear when a
+/// code-page byte is decoded as UTF-8, and collapses whitespace.
+// Only the Windows probe calls this, but the tests exercise it everywhere.
+#[cfg_attr(not(any(target_os = "windows", test)), allow(dead_code))]
+fn tidy_gpu_name(raw: &str) -> String {
+    let mut out = raw.to_string();
+    for marker in [
+        "(TM)", "(R)", "(tm)", "(r)", "\u{2122}", "\u{00ae}", "\u{fffd}",
+    ] {
+        out = out.replace(marker, " ");
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 fn is_integrated_gpu(name: &str) -> bool {
-    let n = name.to_ascii_lowercase();
+    // Normalise first. Vendor strings arrive with trademark glyphs in various
+    // encodings ("Radeon(TM)", "Radeon(R)", or mojibake such as "RadeonT"
+    // when a code-page byte is decoded as UTF-8), and with inconsistent
+    // spacing. Strip anything that is not a letter or digit down to single
+    // spaces so matching works on the words that matter.
+    let n: String = name
+        .to_ascii_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { ' ' })
+        .collect::<String>()
+        .split_whitespace()
+        // Drop trademark tokens left behind by the punctuation strip, so
+        // "Radeon(TM) Graphics" normalises to "radeon graphics" rather than
+        // "radeon tm graphics" and still matches the marker list.
+        .filter(|tok| !matches!(*tok, "tm" | "r" | "c"))
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    // Explicitly discrete families win, because some share brand words with
+    // integrated parts ("Radeon RX 7900" vs "Radeon 610M").
+    const DISCRETE_MARKERS: &[&str] = &[
+        "geforce",
+        "quadro",
+        "tesla",
+        "radeon rx",
+        "radeon pro",
+        "firepro",
+        "arc a",
+        "arc b",
+        "rtx",
+        "gtx",
+    ];
+    if DISCRETE_MARKERS.iter().any(|m| n.contains(m)) {
+        return false;
+    }
+
     const INTEGRATED_MARKERS: &[&str] = &[
         "radeon graphics",
-        "radeon(tm) graphics",
         "vega",
         "uhd graphics",
         "hd graphics",
         "iris",
-        "intel(r) graphics",
         "apple",
         "adreno",
         "mali",
         "integrated",
+        "microsoft basic display",
     ];
-    INTEGRATED_MARKERS.iter().any(|m| n.contains(m))
+    if INTEGRATED_MARKERS.iter().any(|m| n.contains(m)) {
+        return true;
+    }
+
+    // AMD's integrated parts are named <number><letter>, e.g. 610M, 680M,
+    // 780M, 890M. A bare "radeon" followed by such a token is integrated.
+    if n.contains("radeon") {
+        let integrated_suffix = n.split_whitespace().any(|tok| {
+            let digits = tok.trim_end_matches(|c: char| c.is_ascii_alphabetic());
+            let suffix = &tok[digits.len()..];
+            digits.len() == 3
+                && digits.chars().all(|c| c.is_ascii_digit())
+                && matches!(suffix, "m" | "mx")
+        });
+        if integrated_suffix {
+            return true;
+        }
+    }
+
+    false
 }
 
 /// Free space on the volume holding Orion's data directory.
@@ -803,6 +884,15 @@ mod tests {
             "Intel(R) Iris(R) Xe Graphics",
             "Apple M2",
             "Qualcomm Adreno 740",
+            // Reported from a real machine. The old matcher looked for
+            // "radeon graphics" and missed this entirely, classifying an
+            // integrated part as discrete.
+            "AMD Radeon(TM) 610M",
+            // The mangled form that actually arrived, before the output
+            // encoding was forced to UTF-8.
+            "AMD RadeonT 610M",
+            "AMD Radeon(TM) 780M Graphics",
+            "AMD Radeon 890M",
         ] {
             assert!(is_integrated_gpu(name), "{name} should be integrated");
         }
@@ -810,9 +900,40 @@ mod tests {
             "NVIDIA GeForce RTX 4070",
             "AMD Radeon RX 7900 XTX",
             "NVIDIA RTX A4000",
+            "AMD Radeon Pro W7900",
+            "Intel(R) Arc(TM) A770 Graphics",
         ] {
             assert!(!is_integrated_gpu(name), "{name} should be discrete");
         }
+    }
+
+    #[test]
+    fn trademark_glyphs_are_stripped_from_display_names() {
+        assert_eq!(tidy_gpu_name("AMD Radeon(TM) 610M"), "AMD Radeon 610M");
+        assert_eq!(tidy_gpu_name("Intel(R) UHD Graphics"), "Intel UHD Graphics");
+        assert_eq!(tidy_gpu_name("  spaced   out  "), "spaced out");
+        assert_eq!(
+            tidy_gpu_name("NVIDIA GeForce RTX\u{2122} 4070"),
+            "NVIDIA GeForce RTX 4070"
+        );
+    }
+
+    #[test]
+    fn a_large_integrated_gpu_cannot_lift_the_tier() {
+        // The dangerous case the 610M got away with by luck: modern iGPUs
+        // such as the 780M and 890M report 8+ GiB of "dedicated" memory,
+        // which is shared system RAM. At the 6 GiB threshold that would have
+        // lifted an 8 GiB laptop to T2 with no extra memory to run it.
+        let mut p = profile(8.0, 3.0, 8, Some(8.0));
+        p.gpu_integrated = true;
+        p.gpu_vendor = Some("AMD Radeon 780M Graphics".into());
+
+        let r = p.recommend();
+        assert_eq!(
+            r.tier,
+            Tier::T1,
+            "8 GiB of shared iGPU memory must not buy a bigger model"
+        );
     }
 
     #[test]
