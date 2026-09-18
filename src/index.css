@@ -136,11 +136,58 @@ button:disabled {
   width: 60px;
 }
 
+/* Collapsed rail.
+ *
+ * The previous rule hid `.btn-new span:last-child`, but "New chat" was a bare
+ * text node rather than a span, so only the "+" disappeared and the label
+ * stayed — wrapping and overflowing a 60px column. The label is now its own
+ * element and the button becomes a centred square.
+ */
 .sidebar.collapsed .brand-text,
-.sidebar.collapsed .btn-new span:last-child,
+.sidebar.collapsed .btn-new-text,
 .sidebar.collapsed .side-section,
-.sidebar.collapsed .side-foot {
+.sidebar.collapsed .side-link,
+.sidebar.collapsed .engine-chip .truncate {
   display: none;
+}
+
+.sidebar.collapsed .side-head {
+  justify-content: center;
+  padding: 16px 0 14px;
+}
+
+.sidebar.collapsed .brand {
+  display: none;
+}
+
+.sidebar.collapsed .icon-btn {
+  margin: 0;
+}
+
+.sidebar.collapsed .btn-new {
+  margin: 0 auto 14px;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  justify-content: center;
+}
+
+.sidebar.collapsed .btn-new-icon {
+  font-size: 17px;
+  line-height: 1;
+}
+
+/* Keep the status dot in the rail: whether the engine is up is the one thing
+   worth knowing at a glance, and hiding it entirely was worse than the
+   cramped label it replaced. */
+.sidebar.collapsed .side-foot {
+  padding: 12px 0;
+  align-items: center;
+}
+
+.sidebar.collapsed .engine-chip {
+  padding: 7px;
+  justify-content: center;
 }
 
 .side-head {
@@ -199,6 +246,12 @@ button:disabled {
 
 .btn-new:hover {
   background: var(--surface-3);
+}
+
+.btn-new-icon {
+  font-size: 15px;
+  line-height: 1;
+  color: var(--accent);
 }
 
 .side-section {
@@ -272,15 +325,30 @@ button:disabled {
 
 .dot.ok {
   background: var(--ok);
-  box-shadow: 0 0 7px rgba(61, 220, 132, 0.6);
+  box-shadow: 0 0 8px rgba(61, 220, 132, 0.75);
 }
 
+/* Amber and pulsing while starting or loading, so "working on it" reads
+   differently from "finished" at a glance. */
 .dot.warn {
   background: var(--warn);
+  box-shadow: 0 0 8px rgba(255, 176, 32, 0.6);
+  animation: dot-breathe 1.6s ease-in-out infinite;
 }
 
 .dot.err {
   background: var(--err);
+  box-shadow: 0 0 8px rgba(255, 92, 92, 0.7);
+}
+
+@keyframes dot-breathe {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 1;
+  }
 }
 
 /* ---------- document list ---------- */
@@ -491,18 +559,26 @@ button:disabled {
   margin: 0 auto 26px;
 }
 
-.orb-core {
+.orb-logo {
   position: absolute;
-  inset: 26px;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  animation: breathe 5s ease-in-out infinite;
+}
+
+/* A soft field behind the mark so it reads on the dark background without
+   needing a blur filter. */
+.orb::after {
+  content: "";
+  position: absolute;
+  inset: 14px;
   border-radius: 50%;
   background: radial-gradient(
-    circle at 35% 30%,
-    #b8a5ff,
-    var(--accent) 45%,
-    #3c2a8c 100%
+    circle,
+    rgba(124, 92, 255, 0.22),
+    transparent 68%
   );
-  box-shadow: 0 0 40px var(--accent-glow), 0 0 80px rgba(124, 92, 255, 0.18);
-  animation: breathe 5s ease-in-out infinite;
 }
 
 .orb-ring {

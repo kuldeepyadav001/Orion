@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import SystemPanel from "./SystemPanel";
 import DocumentList from "./DocumentList";
+import Logo from "./Logo";
 
 /**
  * Orion M0 shell.
@@ -203,8 +204,11 @@ export default function App() {
     error: "Engine error",
   }[engine.state] ?? engine.state;
 
+  // These must match the classes in index.css (.dot.ok / .dot.err / .dot.warn).
+  // They previously emitted ready/error/loading, which matched nothing, so the
+  // indicator was permanently grey however the engine was doing.
   const dotClass =
-    engine.state === "ready" ? "ready" : engine.state === "error" ? "error" : "loading";
+    engine.state === "ready" ? "ok" : engine.state === "error" ? "err" : "warn";
 
   // Clears the visible thread. History stays in SQLite; this is a fresh view,
   // not a delete.
@@ -224,7 +228,7 @@ export default function App() {
       <aside className={`sidebar ${sidebarOpen ? "" : "collapsed"}`}>
         <div className="side-head">
           <div className="brand">
-            <span className="brand-mark" />
+            <Logo size={22} />
             <span className="brand-text">Orion</span>
           </div>
           <button
@@ -237,8 +241,13 @@ export default function App() {
           </button>
         </div>
 
-        <button className="btn-new" onClick={newChat}>
-          <span>+</span> New chat
+        <button
+          className="btn-new"
+          onClick={newChat}
+          title={sidebarOpen ? undefined : "New chat"}
+        >
+          <span className="btn-new-icon">+</span>
+          <span className="btn-new-text">New chat</span>
         </button>
 
         <div className="side-section">
@@ -265,9 +274,11 @@ export default function App() {
           {messages.length === 0 ? (
             <div className="hero">
               <div className="orb" aria-hidden="true">
-                <div className="orb-core" />
                 <div className="orb-ring" />
                 <div className="orb-ring slow" />
+                <div className="orb-logo">
+                  <Logo size={54} />
+                </div>
               </div>
               <h1>How can I help?</h1>
               <p className="hero-sub">
