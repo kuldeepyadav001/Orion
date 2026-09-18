@@ -3,7 +3,7 @@ import Markdown from "react-markdown";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import SystemPanel from "./SystemPanel";
-import Documents from "./Documents";
+import DocumentList from "./DocumentList";
 
 /**
  * Orion M0 shell.
@@ -19,7 +19,7 @@ export default function App() {
   const [streaming, setStreaming] = useState(false);
   const [engine, setEngine] = useState({ state: "starting", detail: "" });
   const [showSystem, setShowSystem] = useState(false);
-  const [showDocs, setShowDocs] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
   const [citations, setCitations] = useState([]);
   // null = no answer yet this turn; false = answered without documents.
   // Distinguishing these matters: "no sources shown" previously looked
@@ -70,7 +70,7 @@ export default function App() {
       libAlive = false;
       clearInterval(id);
     };
-  }, [showDocs]);
+  }, []);
 
   useEffect(() => {
     let alive = true;
@@ -206,124 +206,204 @@ export default function App() {
   const dotClass =
     engine.state === "ready" ? "ready" : engine.state === "error" ? "error" : "loading";
 
-  return (
-    <div className="app">
-      <header className="topbar">
-        <div className="brand">
-          ORI<span>O</span>N
-        </div>
-        <div className="spacer" />
-        <button className="ghost small" onClick={() => setShowDocs(true)}>
-          Documents
-          {library.documents > 0 && (
-            <span className="pill">{library.documents}</span>
-          )}
-        </button>
-        <button className="ghost small" onClick={() => setShowSystem(true)}>
-          System
-        </button>
-        <div className="status" title={engine.detail || label}>
-          <span className={`dot ${dotClass}`} />
-          {label}
-        </div>
-      </header>
+  // Clears the visible thread. History stays in SQLite; this is a fresh view,
+  // not a delete.
+  const newChat = () => {
+    setMessages([]);
+    setCitations([]);
+    setGrounded(null);
+    setInput("");
+  };
 
-      <main className="chat" ref={chatRef}>
-        {messages.length === 0 ? (
-          <div className="empty">
-            <h1>Orion</h1>
-            <div className="hint">
-              Everything runs on this machine. Nothing leaves it.
-            </div>
-            <div className="hint">
-              Press <kbd>Enter</kbd> to send · <kbd>Shift</kbd>+<kbd>Enter</kbd> for a new
-              line
-            </div>
+  const docCount = library.documents ?? 0;
+
+  return (
+    <div className="shell">
+      {/* Sidebar: persistent, so the library is always visible rather than
+          hidden behind a modal the user has to remember exists. */}
+      <aside className={`sidebar ${sidebarOpen ? "" : "collapsed"}`}>
+        <div className="side-head">
+          <div className="brand">
+            <span className="brand-mark" />
+            <span className="brand-text">Orion</span>
           </div>
-        ) : (
-          <div className="chat-inner">
-            {messages.map((m, i) => (
-              <div key={i} className={`msg ${m.role}`}>
-                <div className="role">{m.role === "user" ? "You" : "O"}</div>
-                <div className="body">
-                  {m.role === "assistant" ? (
-                    m.content ? (
+          <button
+            className="icon-btn"
+            onClick={() => setSidebarOpen((v) => !v)}
+            title={sidebarOpen ? "Collapse" : "Expand"}
+            aria-label="Toggle sidebar"
+          >
+            {sidebarOpen ? "‹" : "›"}
+          </button>
+        </div>
+
+        <button className="btn-new" onClick={newChat}>
+          <span>+</span> New chat
+        </button>
+
+        <div className="side-section">
+          <div className="side-label">
+            Library
+            {docCount > 0 && <span className="count">{docCount}</span>}
+          </div>
+          <DocumentList onCountChange={(n) => setLibrary((l) => ({ ...l, documents: n }))} />
+        </div>
+
+        <div className="side-foot">
+          <button className="side-link" onClick={() => setShowSystem(true)}>
+            System
+          </button>
+          <div className="engine-chip" title={engine.detail || label}>
+            <span className={`dot ${dotClass}`} />
+            <span className="truncate">{label}</span>
+          </div>
+        </div>
+      </aside>
+
+      <div className="main">
+        <main className="chat" ref={chatRef}>
+          {messages.length === 0 ? (
+            <div className="hero">
+              <div className="orb" aria-hidden="true">
+                <div className="orb-core" />
+                <div className="orb-ring" />
+                <div className="orb-ring slow" />
+              </div>
+              <h1>How can I help?</h1>
+              <p className="hero-sub">
+                Everything runs on this machine. Nothing leaves it.
+              </p>
+
+              <div className="suggestions">
+                <button
+                  className="suggestion"
+                  onClick={() => setInput("Summarise the document I added")}
+                  disabled={docCount === 0}
+                >
+                  <span className="sg-icon">▤</span>
+                  <span className="sg-title">Summarise a document</span>
+                  <span className="sg-sub">
+                    {docCount > 0
+                      ? `${docCount} in your library`
+                      : "Add a file to enable"}
+                  </span>
+                </button>
+                <button
+                  className="suggestion"
+                  onClick={() => setInput("What can you do?")}
+                >
+                  <span className="sg-icon">✦</span>
+                  <span className="sg-title">What can you do?</span>
+                  <span className="sg-sub">Capabilities and limits</span>
+                </button>
+                <button
+                  className="suggestion"
+                  onClick={() => setInput("Draft a short professional email")}
+                >
+                  <span className="sg-icon">✎</span>
+                  <span className="sg-title">Draft something</span>
+                  <span className="sg-sub">Email, notes, an outline</span>
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="thread">
+              {messages.map((m, i) => (
+                <div key={i} className={`msg ${m.role}`}>
+                  <div className="msg-role">
+                    {m.role === "user" ? "You" : "Orion"}
+                  </div>
+                  <div className="bubble">
+                    {m.role === "assistant" ? (
                       <Markdown>{m.content}</Markdown>
                     ) : (
-                      <span style={{ color: "var(--text-dim)" }}>…</span>
-                    )
-                  ) : (
-                    m.content
-                  )}
+                      m.content
+                    )}
+                  </div>
                 </div>
-              </div>
-            ))}
+              ))}
 
-            {grounded === false && library.documents > 0 && (
-              <div className="ungrounded">
-                Answered without your documents — nothing in the library
-                matched this question.
-              </div>
-            )}
-
-            {citations.length > 0 && (
-              <div className="citations">
-                <div className="citations-head">
-                  Answered from {new Set(citations.map((c) => c.document_name)).size}{" "}
-                  document
-                  {new Set(citations.map((c) => c.document_name)).size === 1
-                    ? ""
-                    : "s"}
+              {streaming && (
+                <div className="thinking">
+                  <span className="dot-pulse" />
+                  <span className="dot-pulse" />
+                  <span className="dot-pulse" />
                 </div>
-                <ol>
-                  {citations.map((c) => (
-                    <li key={c.marker}>
-                      <span className="cite-doc">{c.document_name}</span>
-                      {c.page ? `, p. ${c.page}` : ""}
-                      {c.breadcrumb ? ` — ${c.breadcrumb}` : ""}
-                    </li>
-                  ))}
-                </ol>
-              </div>
+              )}
+
+              {grounded === false && docCount > 0 && (
+                <div className="ungrounded">
+                  Answered without your documents — nothing in the library
+                  matched this question.
+                </div>
+              )}
+
+              {citations.length > 0 && (
+                <div className="citations">
+                  <div className="citations-head">
+                    Answered from{" "}
+                    {new Set(citations.map((c) => c.document_name)).size}{" "}
+                    document
+                    {new Set(citations.map((c) => c.document_name)).size === 1
+                      ? ""
+                      : "s"}
+                  </div>
+                  <ol>
+                    {citations.map((c) => (
+                      <li key={c.marker}>
+                        <span className="cite-doc">{c.document_name}</span>
+                        {c.page ? `, p. ${c.page}` : ""}
+                        {c.breadcrumb ? ` — ${c.breadcrumb}` : ""}
+                      </li>
+                    ))}
+                  </ol>
+                </div>
+              )}
+            </div>
+          )}
+        </main>
+
+        <footer className="composer">
+          <div className="composer-inner">
+            <textarea
+              ref={taRef}
+              rows={1}
+              value={input}
+              onChange={onInput}
+              onKeyDown={onKeyDown}
+              disabled={engine.state !== "ready"}
+              placeholder={
+                engine.state === "ready"
+                  ? "Ask anything…"
+                  : engine.state === "error"
+                    ? "Engine unavailable — see System"
+                    : "Waiting for the engine…"
+              }
+            />
+            {streaming ? (
+              <button className="btn-stop" onClick={stop} title="Stop">
+                ■
+              </button>
+            ) : (
+              <button
+                className="btn-send"
+                onClick={send}
+                disabled={!input.trim() || engine.state !== "ready"}
+                title="Send"
+              >
+                ↑
+              </button>
             )}
           </div>
-        )}
-      </main>
-
-      <footer className="composer">
-        <div className="composer-inner">
-          <textarea
-            ref={taRef}
-            rows={1}
-            value={input}
-            onChange={onInput}
-            onKeyDown={onKeyDown}
-            disabled={engine.state !== "ready"}
-            placeholder={
-              engine.state === "ready"
-                ? "Ask Orion anything…"
-                : engine.state === "error"
-                  ? "Engine unavailable — see status"
-                  : "Waiting for the engine…"
-            }
-          />
-          {streaming ? (
-            <button className="stop" onClick={stop}>
-              Stop
-            </button>
-          ) : (
-            <button onClick={send} disabled={!input.trim() || engine.state !== "ready"}>
-              Send
-            </button>
-          )}
-        </div>
-        <div className="footnote">
-          Orion runs entirely offline · pre-alpha M0
-        </div>
-      </footer>
+          <div className="footnote">
+            {docCount > 0
+              ? `${docCount} document${docCount === 1 ? "" : "s"} indexed · answers are cited`
+              : "Runs entirely offline"}
+          </div>
+        </footer>
+      </div>
 
       {showSystem && <SystemPanel onClose={() => setShowSystem(false)} />}
-      <Documents open={showDocs} onClose={() => setShowDocs(false)} />
     </div>
   );
 }

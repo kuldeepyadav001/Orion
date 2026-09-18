@@ -308,6 +308,15 @@ pub struct RetrievalPreview {
     pub semantic: bool,
 }
 
+/// Every document currently in the library.
+#[tauri::command]
+async fn list_documents(state: State<'_, AppState>) -> Result<Vec<rag::store::StoredDocument>> {
+    let db = state.db.lock().await;
+    let store = rag::store::RagStore::new(db.conn());
+    store.migrate()?;
+    store.list_documents()
+}
+
 #[tauri::command]
 async fn forget_document(document_id: String, state: State<'_, AppState>) -> Result<()> {
     let db = state.db.lock().await;
@@ -587,7 +596,8 @@ pub fn run() {
             add_documents,
             library_status,
             forget_document,
-            preview_retrieval
+            preview_retrieval,
+            list_documents
         ])
         .build(tauri::generate_context!())
         .expect("error while building Orion")

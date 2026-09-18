@@ -33,6 +33,18 @@ pub const WEIGHT_BM25: f32 = 0.8;
 /// so the two can evolve independently.
 const RAG_SCHEMA_VERSION: i32 = 1;
 
+/// A document as stored in the library.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct StoredDocument {
+    pub id: String,
+    pub name: String,
+    pub format: String,
+    pub chunks: usize,
+    /// RFC 3339 timestamp of when it was indexed.
+    pub indexed_at: String,
+    pub pages: Option<u32>,
+}
+
 pub struct RagStore<'a> {
     conn: &'a Connection,
 }
@@ -224,6 +236,55 @@ impl<'a> RagStore<'a> {
         Ok(())
     }
 
+    /// Every indexed document, newest first.
+    ///
+    /// The UI had `document_count()` and no way to enumerate them, so a user
+    /// could see "1 document" and never learn which file it was or remove it.
+    /// Documents persist in SQLite across restarts, which makes that gap
+    /// worse: something added weeks ago is invisible and unremovable.
+    pub fn list_documents(&self) -> Result<Vec<StoredDocument>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT id, name, format, chunk_count, indexed_at
+                 FROM documents
+                 ORDER BY indexed_at DESC, name ASC",
+            )
+            .map_err(|e| OrionError::Db(e.to_string()))?;
+
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(StoredDocument {
+                    id: r.get(0)?,
+                    name: r.get(1)?,
+                    format: r.get(2)?,
+                    chunks: r.get::<_, i64>(3)? as usize,
+                    indexed_at: r.get(4)?,
+                    pages: None,
+                })
+            })
+            .map_err(|e| OrionError::Db(e.to_string()))?;
+
+        let mut out = Vec::new();
+        for row in rows {
+            let mut d = row.map_err(|e| OrionError::Db(e.to_string()))?;
+            // Page count is derived rather than stored, so a document whose
+            // pages were unknown at ingestion is not permanently wrong.
+            d.pages = self
+                .conn
+                .query_row(
+                    "SELECT MAX(page) FROM chunks WHERE document_id = ?1",
+                    [&d.id],
+                    |r| r.get::<_, Option<i64>>(0),
+                )
+                .ok()
+                .flatten()
+                .map(|p| p as u32);
+            out.push(d);
+        }
+        Ok(out)
+    }
+
     pub fn document_count(&self) -> Result<usize> {
         self.conn
             .query_row("SELECT COUNT(*) FROM documents", [], |r| r.get::<_, i64>(0))
@@ -402,6 +463,92 @@ mod tests {
         v[0] = seed;
         v[1] = 1.0 - seed;
         crate::rag::embed::normalize(v)
+    }
+
+    #[test]
+    fn listing_returns_what_was_stored() {
+        let conn = setup();
+        let store = RagStore::new(&conn);
+
+        assert!(store.list_documents().unwrap().is_empty());
+
+        let d = doc(
+            "doc-1",
+            "report.pdf",
+            vec![
+                chunk(0, "first passage", "Intro"),
+                chunk(1, "second passage", "Body"),
+            ],
+        );
+        store
+            .upsert_document(&d, &[vec_for(0.1), vec_for(0.2)])
+            .unwrap();
+
+        let listed = store.list_documents().unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].name, "report.pdf");
+        assert_eq!(listed[0].chunks, 2);
+        assert!(
+            !listed[0].indexed_at.is_empty(),
+            "must record when it was added"
+        );
+    }
+
+    #[test]
+    fn deleting_removes_it_from_the_listing_and_the_index() {
+        let conn = setup();
+        let store = RagStore::new(&conn);
+
+        let d = doc(
+            "doc-secret",
+            "secret.pdf",
+            vec![chunk(0, "confidential salary information", "Pay")],
+        );
+        store.upsert_document(&d, &[vec_for(0.3)]).unwrap();
+        assert_eq!(store.list_documents().unwrap().len(), 1);
+
+        store.delete_document("doc-secret").unwrap();
+
+        assert!(store.list_documents().unwrap().is_empty());
+        assert_eq!(store.chunk_count().unwrap(), 0, "chunks must cascade");
+        // A delete button has to mean the content is really gone, not merely
+        // hidden from a list.
+        let hits = store.search("confidential", &vec_for(0.3), 5).unwrap();
+        assert!(hits.is_empty(), "deleted content must not be retrievable");
+    }
+
+    #[test]
+    fn documents_survive_reopening_the_database() {
+        // Files are indexed once and expected to persist. If they vanished
+        // with the process the library would silently reset on every launch,
+        // and a delete button would be pointless.
+        let dir = std::env::temp_dir().join(format!("orion-persist-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.db");
+
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);",
+            )
+            .unwrap();
+            let store = RagStore::new(&conn);
+            store.migrate().unwrap();
+            let d = doc("doc-p", "persist.md", vec![chunk(0, "durable text", "")]);
+            store.upsert_document(&d, &[vec_for(0.4)]).unwrap();
+        }
+
+        {
+            let conn = Connection::open(&path).unwrap();
+            let store = RagStore::new(&conn);
+            store.migrate().unwrap();
+            let listed = store.list_documents().unwrap();
+            assert_eq!(listed.len(), 1, "document did not survive reopening");
+            assert_eq!(listed[0].name, "persist.md");
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
