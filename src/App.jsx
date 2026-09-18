@@ -229,6 +229,19 @@ export default function App() {
     setInput("");
   };
 
+  // Stable identity. An inline arrow here is recreated on every render, and
+  // DropZone's listener effect depends on it: that caused one dropped file to
+  // be indexed roughly 150 times. DropZone now also holds it behind a ref, so
+  // this is belt and braces rather than the sole defence.
+  const indexDroppedFiles = useCallback(async (paths) => {
+    try {
+      await invoke("add_documents", { paths });
+      setLibrary(await invoke("library_status"));
+    } catch (e) {
+      console.error("could not index dropped files:", e);
+    }
+  }, []);
+
   const docCount = library.documents ?? 0;
 
   return (
@@ -236,17 +249,7 @@ export default function App() {
       {/* Drag-and-drop overlay. M3 built the intake path; now that M2 has
           landed, accepted files go straight into the library instead of
           being reported and discarded. */}
-      <DropZone
-        onAccepted={async (paths) => {
-          try {
-            await invoke("add_documents", { paths });
-            const st = await invoke("library_status");
-            setLibrary(st);
-          } catch (e) {
-            console.error("could not index dropped files:", e);
-          }
-        }}
-      />
+      <DropZone onAccepted={indexDroppedFiles} />
 
       {/* Sidebar: persistent, so the library is always visible rather than
           hidden behind a modal the user has to remember exists. */}

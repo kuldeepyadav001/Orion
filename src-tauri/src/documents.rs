@@ -104,6 +104,17 @@ pub struct EmbedService {
     state: Mutex<EmbedState>,
     detail: Mutex<String>,
     embedder: Mutex<Option<Arc<Embedder>>>,
+    /// Serialises ingestion.
+    ///
+    /// A UI bug re-registered the drag-drop listener on every render, so one
+    /// dropped PDF arrived as ~150 concurrent ingest calls. Each opened its
+    /// own HTTP connection to the embedding sidecar, which fell over, and the
+    /// process aborted shortly after.
+    ///
+    /// The UI bug is fixed, but the backend should not depend on callers
+    /// behaving. llama-server handles one request at a time anyway, so
+    /// queueing here costs nothing and turns a stampede into a slow queue.
+    ingest_lock: tokio::sync::Mutex<()>,
 }
 
 impl Default for EmbedService {
@@ -118,6 +129,7 @@ impl EmbedService {
             state: Mutex::new(EmbedState::Idle),
             detail: Mutex::new(String::new()),
             embedder: Mutex::new(None),
+            ingest_lock: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -358,6 +370,9 @@ pub async fn ingest_file(
     db: &Arc<Mutex<Db>>,
     embed: &Arc<EmbedService>,
 ) -> Result<IngestSummary> {
+    // One document at a time. See EmbedService::ingest_lock.
+    let _guard = embed.ingest_lock.lock().await;
+
     // Parsing is CPU-bound and synchronous. Run it off the async runtime so a
     // large PDF cannot stall the UI's event loop.
     let owned = path.to_path_buf();

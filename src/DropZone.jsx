@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
@@ -19,6 +19,24 @@ export default function DropZone({ onAccepted }) {
   const [dragging, setDragging] = useState(false);
   const [result, setResult] = useState(null);
 
+  // Hold the callback in a ref so its identity never changes.
+  //
+  // This is not tidiness, it is the fix for a runaway. `onAccepted` is an
+  // inline arrow in the parent, so it is a new function on every render. It
+  // was a dependency of handlePaths, which is a dependency of the effect that
+  // registers the Tauri listeners. Dropping one file therefore did:
+  //
+  //   drop -> index -> setLibrary -> re-render -> new identity ->
+  //   effect re-runs -> ANOTHER listener registered
+  //
+  // Each cycle added a listener and every later event fired all of them, so a
+  // single dropped PDF was indexed about 150 times, the embedding sidecar was
+  // hammered until it died, and the process eventually aborted.
+  const onAcceptedRef = useRef(onAccepted);
+  useEffect(() => {
+    onAcceptedRef.current = onAccepted;
+  }, [onAccepted]);
+
   const handlePaths = useCallback(
     async (paths) => {
       if (!paths || paths.length === 0) return;
@@ -26,7 +44,7 @@ export default function DropZone({ onAccepted }) {
         const assessment = await invoke("assess_dropped_files", { paths });
         setResult(assessment);
         if (assessment.accepted.length > 0) {
-          onAccepted?.(assessment.accepted);
+          onAcceptedRef.current?.(assessment.accepted);
         }
       } catch (e) {
         setResult({
@@ -37,31 +55,51 @@ export default function DropZone({ onAccepted }) {
         });
       }
     },
-    [onAccepted],
+    // Empty: every dependency is either stable or behind a ref. The listener
+    // effect below depends on this callback, so anything unstable here
+    // re-subscribes the whole drag-drop pipeline.
+    [],
   );
 
   /* Tauri's drag-drop events carry real filesystem paths; the DOM drop event
      does not, which is why we listen here rather than on window. */
   useEffect(() => {
-    const unlisten = [];
+    // `listen` is async. The previous version pushed unlisten functions into
+    // an array as the promises resolved, so cleanup frequently ran while that
+    // array was still empty and removed nothing — compounding the duplicate
+    // registration above. Await them all, and honour a cancellation flag in
+    // case the effect is torn down mid-flight.
+    let cancelled = false;
+    let unlisteners = [];
 
-    listen("tauri://drag-enter", () => setDragging(true)).then((u) =>
-      unlisten.push(u),
-    );
-    listen("tauri://drag-leave", () => setDragging(false)).then((u) =>
-      unlisten.push(u),
-    );
-    listen("tauri://drag-drop", (event) => {
-      setDragging(false);
-      handlePaths(event.payload?.paths ?? []);
-    }).then((u) => unlisten.push(u));
+    const subscribe = async () => {
+      const handles = await Promise.all([
+        listen("tauri://drag-enter", () => setDragging(true)),
+        listen("tauri://drag-leave", () => setDragging(false)),
+        listen("tauri://drag-drop", (event) => {
+          setDragging(false);
+          handlePaths(event.payload?.paths ?? []);
+        }),
+        // Files opened from the tray menu, the command line, or a second
+        // launch.
+        listen("files://opened", (event) => {
+          handlePaths(event.payload ?? []);
+        }),
+      ]);
 
-    // Files opened from the tray menu, the command line, or a second launch.
-    listen("files://opened", (event) => {
-      handlePaths(event.payload ?? []);
-    }).then((u) => unlisten.push(u));
+      if (cancelled) {
+        handles.forEach((u) => u());
+        return;
+      }
+      unlisteners = handles;
+    };
 
-    return () => unlisten.forEach((u) => u());
+    subscribe();
+
+    return () => {
+      cancelled = true;
+      unlisteners.forEach((u) => u());
+    };
   }, [handlePaths]);
 
   /* Auto-dismiss a clean result; keep failures on screen until acknowledged,
