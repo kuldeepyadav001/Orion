@@ -47,6 +47,15 @@ quick-xml = "0.37"
 # (get_object/indirect_object arity mismatch inside the crate itself).
 lopdf = { version = "0.34", default-features = false, features = ["nom_parser"] }
 
+[target.'cfg(windows)'.dependencies]
+# Job Objects, so sidecars are killed by the OS when this process dies for
+# any reason — including an abort, where none of our own cleanup code runs.
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
+
 [features]
 default = ["tauri-glue"]
 # Tauri's default custom-protocol feature is enabled by the CLI on build.

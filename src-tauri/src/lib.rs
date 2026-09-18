@@ -52,6 +52,11 @@ pub struct AppState {
     pub embed: Arc<documents::EmbedService>,
     /// Every spawned child process, so they can be killed on exit.
     pub sidecars: Arc<sidecars::SidecarRegistry>,
+    /// Model catalogue, kept so the engine can be started on first use.
+    pub manager: Arc<ModelManager>,
+    /// Ensures the lazy engine start happens exactly once, even if several
+    /// messages are sent before it finishes loading.
+    pub engine_started: Arc<tokio::sync::OnceCell<()>>,
 }
 
 /* ------------------------------------------------------------------ */
@@ -64,6 +69,35 @@ async fn engine_status(state: State<'_, AppState>) -> Result<EngineStatus> {
 }
 
 /// Send a user message and stream the reply back as `chat://token` events.
+/// Start the engine if it is not already running.
+///
+/// Safe to call on every message: `OnceCell` guarantees the spawn happens
+/// once even if the user sends several messages while the model is still
+/// loading.
+async fn ensure_engine(app: &tauri::AppHandle, state: &State<'_, AppState>) {
+    let started = state.engine_started.clone();
+    if started.initialized() {
+        return;
+    }
+
+    let engine = state.engine.clone();
+    let manager = state.manager.clone();
+    let sidecars = state.sidecars.clone();
+    let tier = *state.active_tier.lock().await;
+    let handle = app.clone();
+
+    // set() returning Err means another message won the race and the engine
+    // is already starting.
+    if started.set(()).is_err() {
+        return;
+    }
+
+    tracing::info!("first message: starting the engine now");
+    tauri::async_runtime::spawn(async move {
+        start_engine(sidecars, handle, engine, manager, tier).await;
+    });
+}
+
 #[tauri::command]
 async fn send_message(
     message: String,
@@ -74,6 +108,10 @@ async fn send_message(
     if message.is_empty() {
         return Err(OrionError::Config("message is empty".into()));
     }
+
+    // Start the engine on demand. The first message pays the load cost; the
+    // window and tray were up immediately.
+    ensure_engine(&app, &state).await;
 
     let session_id = state.session_id.lock().await.clone();
 
@@ -655,6 +693,8 @@ pub fn run() {
                 active_tier: Mutex::new(tier),
                 embed: embed.clone(),
                 sidecars: sidecars.clone(),
+                manager: manager.clone(),
+                engine_started: Arc::new(tokio::sync::OnceCell::new()),
             });
 
             timed(&mut trace, presence::Phase::SystemIntegration, || {
@@ -691,12 +731,41 @@ pub fn run() {
 
             // Everything below here is deliberately AFTER the window is up.
             // See presence::startup::DeferredWork for why.
-            let handle = app.handle().clone();
-            let mgr = manager.clone();
-            let engine_sidecars = sidecars.clone();
-            tauri::async_runtime::spawn(async move {
-                start_engine(engine_sidecars, handle, engine, mgr, tier).await;
-            });
+            // Lazy engine start.
+            //
+            // ORION_EAGER_START=1 restores the old behaviour for anyone who
+            // would rather pay the memory cost up front.
+            //
+            // The model is ~2.4 GB resident. Loading it at launch means that
+            // memory is held whether or not the user ever types anything,
+            // which is indefensible for something designed to sit in the tray
+            // all day — and on a 6 GiB machine it is most of the free memory.
+            //
+            // presence::startup::DeferredWork has always listed ModelLoad and
+            // EngineSpawn as work that must not happen during startup; the
+            // code simply did it anyway. This makes the code match the
+            // design: the window and tray come up immediately, and the model
+            // loads on the first message.
+            let eager = std::env::var("ORION_EAGER_START")
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false);
+
+            if eager {
+                if let Some(state) = app.try_state::<AppState>() {
+                    let _ = state.engine_started.set(());
+                }
+                let handle = app.handle().clone();
+                let mgr = manager.clone();
+                let engine_sidecars = sidecars.clone();
+                tauri::async_runtime::spawn(async move {
+                    start_engine(engine_sidecars, handle, engine, mgr, tier).await;
+                });
+            } else {
+                tracing::info!(
+                    "engine start deferred; the model loads on first use \
+                     (set ORION_EAGER_START=1 to load at launch)"
+                );
+            }
 
             // The embedding sidecar warms up independently of the chat model.
             // It is small (~130 MB) and optional: if it never becomes ready,

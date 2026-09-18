@@ -129,7 +129,15 @@ pub fn build_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
                 let _ = emit_all(app, "tray://settings");
             }
             id if id == TrayItem::Quit.id() => {
+                // Kill the sidecars here rather than relying solely on
+                // RunEvent::Exit. Quit is the one path a user explicitly
+                // chooses to end the app, so it should be the one that
+                // definitely cleans up — belt and braces alongside the exit
+                // handler and the Windows job object.
                 tracing::info!("quit requested from tray");
+                if let Some(state) = app.try_state::<crate::AppState>() {
+                    state.sidecars.shutdown();
+                }
                 app.exit(0);
             }
             other => tracing::warn!(id = other, "unknown tray menu id"),

@@ -31,6 +31,98 @@ use std::sync::Mutex;
 
 use tauri_plugin_shell::process::CommandChild;
 
+/// Tie child processes to this process at the OS level, on Windows.
+///
+/// `shutdown()` only runs on a graceful exit. When Orion aborts — and it has,
+/// repeatedly, from refcount violations in the Tauri layer — no Rust code
+/// runs at all and every sidecar is orphaned. A user counted eight stray
+/// `llama-server.exe` processes from four crashed runs, roughly 10 GB of
+/// leaked memory that survived until they killed them by hand.
+///
+/// A Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` fixes this properly:
+/// Windows terminates every process in the job when the last handle closes,
+/// which happens when this process dies for *any* reason, including a hard
+/// abort or being killed from Task Manager. Cleanup that depends on our own
+/// code running is cleanup that fails exactly when it is most needed.
+#[cfg(windows)]
+mod job {
+    use std::sync::OnceLock;
+
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
+    };
+
+    struct Job(HANDLE);
+    // The handle is owned for the life of the process and only ever read.
+    unsafe impl Send for Job {}
+    unsafe impl Sync for Job {}
+
+    static JOB: OnceLock<Option<Job>> = OnceLock::new();
+
+    fn job_handle() -> Option<HANDLE> {
+        JOB.get_or_init(|| unsafe {
+            let handle = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            if handle.is_null() {
+                tracing::warn!("could not create job object; sidecars may leak on a crash");
+                return None;
+            }
+
+            let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+
+            let ok = SetInformationJobObject(
+                handle,
+                JobObjectExtendedLimitInformation,
+                &info as *const _ as *const core::ffi::c_void,
+                size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            );
+            if ok == 0 {
+                tracing::warn!("could not configure job object; sidecars may leak on a crash");
+                CloseHandle(handle);
+                return None;
+            }
+
+            tracing::debug!("job object created; sidecars will die with this process");
+            Some(Job(handle))
+        })
+        .as_ref()
+        .map(|j| j.0)
+    }
+
+    /// Add a spawned child to the job.
+    pub fn adopt(pid: u32) {
+        let Some(job) = job_handle() else { return };
+        unsafe {
+            let proc = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, 0, pid);
+            if proc.is_null() {
+                tracing::warn!(pid, "could not open sidecar to add it to the job object");
+                return;
+            }
+            if AssignProcessToJobObject(job, proc) == 0 {
+                tracing::warn!(pid, "could not assign sidecar to the job object");
+            }
+            CloseHandle(proc);
+        }
+    }
+}
+
+#[cfg(not(windows))]
+mod job {
+    /// No-op elsewhere.
+    ///
+    /// On Linux and macOS the graceful path is the only one implemented so
+    /// far. The equivalents are prctl(PR_SET_PDEATHSIG) and a process group
+    /// killed on exit; worth adding before release, but Windows is where the
+    /// crashes and the leaked processes actually happened.
+    pub fn adopt(_pid: u32) {}
+}
+
 /// Owns every spawned sidecar so they can all be killed on exit.
 #[derive(Default)]
 pub struct SidecarRegistry {
@@ -48,6 +140,10 @@ impl SidecarRegistry {
     /// Take ownership of a spawned child.
     pub fn register(&self, name: impl Into<String>, child: CommandChild) {
         let name = name.into();
+        // Hand it to the OS first. If this process dies without running any
+        // more of our code, Windows still cleans up.
+        job::adopt(child.pid());
+
         match self.children.lock() {
             Ok(mut guard) => {
                 tracing::debug!(sidecar = %name, pid = child.pid(), "sidecar registered");

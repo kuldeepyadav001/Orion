@@ -61,18 +61,33 @@ const CONTEXT_TOP_K: usize = 4;
 
 /// Minimum cosine similarity for a passage to count as relevant.
 ///
-/// bge-small is a normalised embedding model, so cosine is bounded to
-/// [-1, 1]. On its own scale, genuinely on-topic passages typically land
-/// above ~0.6 and unrelated text sits near 0.2-0.4. 0.45 is deliberately
-/// permissive: missing a real match is worse than one extra citation the
-/// user can see and ignore.
-const MIN_COSINE: f32 = 0.45;
+/// **0.45 was wrong and could never reject anything.** BAAI's own model card
+/// for bge-small-en-v1.5 states it plainly: the model is fine-tuned by
+/// contrastive learning with a temperature of 0.01, so "the similarity
+/// distribution is about in the interval [0.6, 1]. So a similarity score
+/// greater than 0.5 does not indicate that the two sentences are similar."
+///
+/// A floor of 0.45 therefore sat *below the bottom of the model's entire
+/// output range*. Typing "hello" scored around 0.65 against an unrelated
+/// resume, sailed past the gate, and the answer came back grounded in
+/// documents. The number was guessed from the [-1, 1] mathematical range
+/// instead of read from the model's documentation.
+///
+/// 0.72 sits inside the real distribution: comfortably above the ~0.6-0.7
+/// baseline that unrelated text produces, below the ~0.8+ that genuine
+/// matches reach. It is still a heuristic on one model, so it is deliberately
+/// a named constant rather than scattered through the code.
+const MIN_COSINE: f32 = 0.72;
 
 // Tuned deliberately permissive, and checked at compile time so a future
 // tweak cannot quietly make the gate strict. A missed citation is recoverable
 // by rephrasing and an unwanted one is visible and ignorable, but a product
 // that hides the user's own documents from them feels broken.
-const _: () = assert!(MIN_COSINE > 0.0 && MIN_COSINE <= 0.55);
+// bge-small's output distribution is roughly [0.6, 1], so any floor at or
+// below 0.6 rejects nothing at all. Checked at compile time because that
+// mistake shipped once already and is invisible at runtime: the gate simply
+// never fires.
+const _: () = assert!(MIN_COSINE > 0.6 && MIN_COSINE < 0.95);
 
 /// Minimum BM25 score (already negated, larger is better) for a keyword hit
 /// to count on its own.
@@ -503,28 +518,32 @@ mod tests {
 
     #[test]
     fn an_unrelated_question_does_not_reach_the_documents() {
-        // The reported bug: asking something with no connection to the
-        // library still produced an answer sourced from it. Weak scores on
-        // both retrievers must mean "no context".
-        assert!(!is_relevant(0.18, 0.0), "weak cosine, no keyword match");
-        assert!(!is_relevant(0.31, 0.2), "both below their floors");
+        // Scores here are on bge-small's REAL scale, not the textbook
+        // [-1, 1] one. Its distribution is roughly [0.6, 1], so 0.65 is what
+        // "completely unrelated" actually looks like — not 0.1.
+        //
+        // This is the "hello" bug: typing a greeting scored ~0.65 against a
+        // resume and the old 0.45 floor let it through.
+        assert!(!is_relevant(0.65, 0.0), "unrelated text still scores ~0.65");
+        assert!(!is_relevant(0.70, 0.0), "near the top of the baseline band");
+        assert!(!is_relevant(0.62, 0.3), "both below their floors");
         assert!(!is_relevant(0.0, 0.0), "nothing matched at all");
     }
 
     #[test]
     fn a_genuine_match_still_gets_through() {
-        // Over-correcting would be just as bad: a product that refuses to
+        // Over-correcting is as bad as the bug: a product that refuses to
         // read the files it indexed is worse than one that over-reads them.
-        assert!(is_relevant(0.72, 8.0), "strong on both");
-        assert!(is_relevant(0.61, 0.0), "semantic only, e.g. a paraphrase");
-        assert!(is_relevant(0.2, 4.5), "keyword only, e.g. an exact ID");
+        assert!(is_relevant(0.82, 6.0), "strong on both");
+        assert!(is_relevant(0.75, 0.0), "semantic only, e.g. a paraphrase");
+        assert!(is_relevant(0.5, 4.5), "keyword only, e.g. an exact ID");
     }
 
     #[test]
     fn keyword_search_still_works_without_an_embedder() {
         // With no embedding model every cosine is 0.0. If the gate required
         // semantic relevance, losing the optional embedder would silently
-        // disable document search entirely rather than degrading it.
+        // disable document search rather than degrading it.
         assert!(
             is_relevant(0.0, 6.0),
             "a strong keyword match must count on its own"

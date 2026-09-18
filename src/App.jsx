@@ -155,7 +155,10 @@ export default function App() {
 
   const send = useCallback(async () => {
     const text = input.trim();
-    if (!text || streaming || engine.state !== "ready") return;
+    // Deliberately NOT gated on engine.state. The engine now starts on the
+    // first message, so it is idle until someone types — refusing input until
+    // "ready" would mean it never becomes ready.
+    if (!text || streaming || engine.state === "error") return;
 
     setInput("");
     pending.current = "";
@@ -410,13 +413,13 @@ export default function App() {
               value={input}
               onChange={onInput}
               onKeyDown={onKeyDown}
-              disabled={engine.state !== "ready"}
+              disabled={engine.state === "error"}
               placeholder={
-                engine.state === "ready"
-                  ? "Ask anything…"
-                  : engine.state === "error"
-                    ? "Engine unavailable — see System"
-                    : "Waiting for the engine…"
+                engine.state === "error"
+                  ? "Engine unavailable — see System"
+                  : engine.state === "loading"
+                    ? "Loading the model…"
+                    : "Ask anything…"
               }
             />
             {streaming ? (
@@ -427,7 +430,7 @@ export default function App() {
               <button
                 className="btn-send"
                 onClick={send}
-                disabled={!input.trim() || engine.state !== "ready"}
+                disabled={!input.trim() || engine.state === "error"}
                 title="Send"
               >
                 ↑
