@@ -54,6 +54,11 @@ windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_System_JobObjects",
     "Win32_System_Threading",
+    # CreateJobObjectW takes a *const SECURITY_ATTRIBUTES, which lives behind
+    # Win32_Security. Without it the whole JobObjects module is compiled out
+    # and the import fails with "no CreateJobObjectW in Win32::System::JobObjects",
+    # which reads like a wrong path rather than a missing feature.
+    "Win32_Security",
 ] }
 
 [features]
