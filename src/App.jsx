@@ -21,6 +21,12 @@ export default function App() {
   const [showSystem, setShowSystem] = useState(false);
   const [showDocs, setShowDocs] = useState(false);
   const [citations, setCitations] = useState([]);
+  // null = no answer yet this turn; false = answered without documents.
+  // Distinguishing these matters: "no sources shown" previously looked
+  // identical whether the library was consulted and missed, or never
+  // consulted at all. The latter was a real bug that shipped unnoticed.
+  const [grounded, setGrounded] = useState(null);
+  const [library, setLibrary] = useState({ documents: 0, chunks: 0 });
 
   const chatRef = useRef(null);
   const taRef = useRef(null);
@@ -34,13 +40,37 @@ export default function App() {
   // shown alongside the reply rather than after it finishes.
   useEffect(() => {
     let un;
-    listen("chat://citations", (e) => setCitations(e.payload ?? [])).then(
+    listen("chat://citations", (e) => {
+      const cites = e.payload ?? [];
+      setCitations(cites);
+      setGrounded(cites.length > 0);
+    }).then(
       (u) => {
         un = u;
       },
     );
     return () => un?.();
   }, []);
+
+  // Keep the header badge current so the user can see at a glance that the
+  // library exists and is being consulted.
+  useEffect(() => {
+    let libAlive = true;
+    const tick = async () => {
+      try {
+        const st = await invoke("library_status");
+        if (libAlive) setLibrary(st);
+      } catch {
+        /* library not ready yet */
+      }
+    };
+    tick();
+    const id = setInterval(tick, 5000);
+    return () => {
+      libAlive = false;
+      clearInterval(id);
+    };
+  }, [showDocs]);
 
   useEffect(() => {
     let alive = true;
@@ -124,6 +154,7 @@ export default function App() {
       { role: "assistant", content: "" },
     ]);
     setCitations([]);
+    setGrounded(null);
     setStreaming(true);
 
     try {
@@ -184,6 +215,9 @@ export default function App() {
         <div className="spacer" />
         <button className="ghost small" onClick={() => setShowDocs(true)}>
           Documents
+          {library.documents > 0 && (
+            <span className="pill">{library.documents}</span>
+          )}
         </button>
         <button className="ghost small" onClick={() => setShowSystem(true)}>
           System
@@ -225,9 +259,22 @@ export default function App() {
               </div>
             ))}
 
+            {grounded === false && library.documents > 0 && (
+              <div className="ungrounded">
+                Answered without your documents — nothing in the library
+                matched this question.
+              </div>
+            )}
+
             {citations.length > 0 && (
               <div className="citations">
-                <div className="citations-head">Sources</div>
+                <div className="citations-head">
+                  Answered from {new Set(citations.map((c) => c.document_name)).size}{" "}
+                  document
+                  {new Set(citations.map((c) => c.document_name)).size === 1
+                    ? ""
+                    : "s"}
+                </div>
                 <ol>
                   {citations.map((c) => (
                     <li key={c.marker}>

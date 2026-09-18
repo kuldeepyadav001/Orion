@@ -88,11 +88,53 @@ async fn send_message(
         db.recent_messages(&session_id, HISTORY_LIMIT)?
     };
 
-    let mut msgs = vec![ChatMessage::system(SYSTEM_PROMPT)];
+    // Consult the document library before generating. With relevant hits this
+    // becomes a grounded answer with citations; without them it is an
+    // ordinary chat and the library is never mentioned.
+    //
+    // Retrieval failure must not block a reply: a broken index should cost
+    // citations, not the ability to talk to the assistant.
+    let grounded = match documents::retrieve(&message, &state.db, &state.embed).await {
+        Ok(ctx) => ctx.filter(|c| !c.empty),
+        Err(e) => {
+            tracing::warn!(error = %e, "document retrieval failed; answering without sources");
+            None
+        }
+    };
+
+    let system_prompt = if grounded.is_some() {
+        rag::context::GROUNDED_SYSTEM_PROMPT
+    } else {
+        SYSTEM_PROMPT
+    };
+
+    let mut msgs = vec![ChatMessage::system(system_prompt)];
     msgs.extend(history.into_iter().map(|m| ChatMessage {
         role: m.role,
         content: m.content,
     }));
+
+    if let Some(ctx) = &grounded {
+        // Sources go in their own user turn immediately before the question,
+        // not merged into the system prompt. Keeping untrusted file content
+        // out of the system role is a layer of the injection defence: the
+        // model is told structurally that this is data, not instruction.
+        msgs.push(ChatMessage {
+            role: "user".into(),
+            content: ctx.sources_block.clone(),
+        });
+
+        tracing::info!(
+            citations = ctx.citations.len(),
+            "answering with document context"
+        );
+        let _ = app.emit("chat://citations", ctx.citations.clone());
+    } else {
+        // Tell the UI explicitly that this answer used no documents, so it can
+        // say so rather than leaving the user guessing whether the library was
+        // consulted at all.
+        let _ = app.emit("chat://citations", Vec::<rag::context::Citation>::new());
+    }
 
     let engine = state.engine.clone();
     let db = state.db.clone();
@@ -215,6 +257,55 @@ async fn library_status(state: State<'_, AppState>) -> Result<LibraryStatus> {
         embed_state: state.embed.state().await,
         embed_detail: state.embed.detail().await,
     })
+}
+
+/// What the library would return for a question, without generating an answer.
+///
+/// This exists because "is the model actually reading my documents?" was
+/// otherwise unanswerable from the UI: a wrong answer looks identical whether
+/// retrieval found nothing, found the wrong passage, or was never wired in.
+/// The last of those was a real bug, and it survived a merge precisely
+/// because nothing surfaced it.
+#[tauri::command]
+async fn preview_retrieval(
+    question: String,
+    state: State<'_, AppState>,
+) -> Result<RetrievalPreview> {
+    let ctx = documents::retrieve(&question, &state.db, &state.embed).await?;
+    let (documents_searched, chunks_searched) = {
+        let db = state.db.lock().await;
+        let store = rag::store::RagStore::new(db.conn());
+        store.migrate()?;
+        (store.document_count()?, store.chunk_count()?)
+    };
+
+    Ok(match ctx {
+        Some(c) => RetrievalPreview {
+            matched: !c.empty,
+            citations: c.citations,
+            documents_searched,
+            chunks_searched,
+            semantic: state.embed.state().await == documents::EmbedState::Ready,
+        },
+        None => RetrievalPreview {
+            matched: false,
+            citations: Vec::new(),
+            documents_searched,
+            chunks_searched,
+            semantic: state.embed.state().await == documents::EmbedState::Ready,
+        },
+    })
+}
+
+#[derive(serde::Serialize)]
+pub struct RetrievalPreview {
+    /// True when the library returned usable passages.
+    pub matched: bool,
+    pub citations: Vec<rag::context::Citation>,
+    pub documents_searched: usize,
+    pub chunks_searched: usize,
+    /// False when running on keyword search alone.
+    pub semantic: bool,
 }
 
 #[tauri::command]
@@ -495,7 +586,8 @@ pub fn run() {
             set_active_tier,
             add_documents,
             library_status,
-            forget_document
+            forget_document,
+            preview_retrieval
         ])
         .build(tauri::generate_context!())
         .expect("error while building Orion")
