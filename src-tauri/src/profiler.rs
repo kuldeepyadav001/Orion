@@ -61,13 +61,22 @@ impl Tier {
     }
 
     /// Approximate resident memory of this tier's chat model, in GiB.
+    ///
+    /// T1 is **measured**, not estimated: Qwen2.5-3B-Instruct Q4_K_M at a
+    /// 4096-token context needs 2002 MiB of weights + 144 MiB KV cache +
+    /// 301 MiB compute buffer = ~2.4 GiB resident. The earlier 3.4 figure was
+    /// a guess and it was 40% too high, which was enough on its own to push a
+    /// perfectly capable 6 GiB laptop down to "no local model possible".
+    ///
+    /// The others are still scaled estimates and should be replaced with real
+    /// measurements as each tier gets run on hardware.
     pub fn model_ram_gib(&self) -> f64 {
         match self {
             Tier::T0 => 0.0,
-            Tier::T1 => 3.4,
-            Tier::T2 => 5.5,
-            Tier::T3 => 9.0,
-            Tier::T4 => 19.0,
+            Tier::T1 => 2.4,
+            Tier::T2 => 4.8,
+            Tier::T3 => 8.5,
+            Tier::T4 => 18.0,
         }
     }
 
@@ -264,7 +273,28 @@ impl HardwareProfile {
     }
 
     /// RAM we are willing to give a model right now.
+    ///
+    /// This deliberately does **not** treat "available" memory as a hard
+    /// ceiling, which an earlier version did and got badly wrong.
+    ///
+    /// On Windows, and to a lesser degree on Linux and macOS, most of RAM is
+    /// usually occupied by file cache and standby pages. The OS reclaims that
+    /// the instant a process asks for memory. A real 6 GiB laptop reported
+    /// 0.9 GiB "available", which the old rule turned into 0.0 GiB usable and
+    /// a recommendation of "no local model possible" — while the very same
+    /// machine was already running a 2.4 GiB model at 10 tokens/second.
+    ///
+    /// So the budget is taken from **total** RAM minus headroom, and the
+    /// currently-free figure is used only as a soft signal (see `recommend`)
+    /// to warn the user rather than to refuse.
     pub fn usable_ram_gib(&self) -> f64 {
+        (self.total_ram_gib - OS_HEADROOM_GIB).max(0.0)
+    }
+
+    /// What is genuinely free right this second, after headroom.
+    ///
+    /// Used for advice, never for gating: see `usable_ram_gib`.
+    pub fn free_now_gib(&self) -> f64 {
         (self.available_ram_gib - OS_HEADROOM_GIB).max(0.0)
     }
 
@@ -275,9 +305,9 @@ impl HardwareProfile {
 
         let usable = self.usable_ram_gib();
         reasons.push(format!(
-            "{:.1} GiB RAM available of {:.1} GiB total; budgeting {:.1} GiB after a {:.0} GiB \
+            "{:.1} GiB RAM installed; budgeting {:.1} GiB for a model after a {:.0} GiB \
              headroom for the system.",
-            self.available_ram_gib, self.total_ram_gib, usable, OS_HEADROOM_GIB
+            self.total_ram_gib, usable, OS_HEADROOM_GIB
         ));
 
         // A discrete GPU with real VRAM lets us punch above the RAM tier,
@@ -331,10 +361,15 @@ impl HardwareProfile {
         } else if usable >= Tier::T1.model_ram_gib() {
             Tier::T1
         } else {
-            // Not enough memory for even the smallest local model.
+            // Genuinely too small for even the smallest local model. With a
+            // 2 GiB headroom and T1 at 2.4 GiB, this needs less than ~4.4 GiB
+            // of *installed* RAM, which is a real constraint rather than a
+            // transient one.
             warnings.push(format!(
-                "Only {usable:.1} GiB is free — too little for a local model. Close some \
-                 applications, or connect Orion to a remote engine."
+                "This machine has {:.1} GiB of RAM. Orion needs about {:.1} GiB for its \
+                 smallest model, so local inference is not possible here.",
+                self.total_ram_gib,
+                Tier::T1.model_ram_gib() + OS_HEADROOM_GIB
             ));
             return TierRecommendation {
                 tier: Tier::T0,
@@ -344,6 +379,19 @@ impl HardwareProfile {
                 alternatives: vec![Tier::T1],
             };
         };
+
+        // Free memory is advisory. The model will still load — the OS evicts
+        // cache to make room — but it may swap and feel slow, so say so
+        // instead of refusing to run.
+        let free_now = self.free_now_gib();
+        if free_now < Tier::T1.model_ram_gib() {
+            warnings.push(format!(
+                "Only {:.1} GiB is free right now. The model will still load, because the \
+                 system reclaims cached memory, but closing other applications will make it \
+                 noticeably faster.",
+                self.available_ram_gib
+            ));
+        }
 
         let by_ram = by_class.min(by_free);
         if by_free < by_class {
@@ -551,18 +599,97 @@ mod tests {
     /* ---------- the rules that keep it honest ---------- */
 
     #[test]
-    fn budgets_available_ram_not_total() {
-        // A 32 GB machine currently using nearly all of it must not be
-        // handed a T3 model just because the sticker says 32 GB.
+    fn busy_machine_still_gets_a_local_model() {
+        // This used to assert the opposite, and the opposite was wrong.
+        //
+        // A 32 GiB workstation with 6 GiB free is not a T1 machine. The OS is
+        // using the rest for file cache and will hand it back the moment a
+        // model asks. Budgeting against the momentary free figure produced
+        // absurdly small recommendations on perfectly capable hardware.
         let r = profile(32.0, 6.0, 16, None).recommend();
-        assert_eq!(r.tier, Tier::T1, "must budget against available RAM");
+        assert!(
+            r.tier >= Tier::T3,
+            "a 32 GiB machine is a T3+ machine whatever is cached right now, got {:?}",
+            r.tier
+        );
+    }
+
+    #[test]
+    fn the_real_6gib_laptop_is_not_told_to_give_up() {
+        // Regression test for an actual machine: AMD Ryzen 5 7520U, 8 cores,
+        // 5.74 GiB total, 0.95 GiB reported available, no discrete GPU.
+        //
+        // The profiler recommended T0 ("too little for a local model") while
+        // that very machine was running Qwen2.5-3B at 10.4 tok/s in 2.4 GiB.
+        let r = profile(5.739_498, 0.946_495, 8, None).recommend();
+
+        assert_eq!(
+            r.tier,
+            Tier::T1,
+            "6 GiB laptop must get T1; it demonstrably runs a 3B model"
+        );
+        assert!(
+            !r.warnings
+                .iter()
+                .any(|w| w.contains("too little for a local model")),
+            "must not claim local inference is impossible: {:?}",
+            r.warnings
+        );
+        // It should still mention that memory is tight.
+        assert!(
+            r.warnings.iter().any(|w| w.contains("free right now")),
+            "should still advise about low free memory: {:?}",
+            r.warnings
+        );
+    }
+
+    #[test]
+    fn low_free_memory_warns_but_does_not_downgrade() {
+        let busy = profile(16.0, 1.0, 8, None).recommend();
+        let idle = profile(16.0, 14.0, 8, None).recommend();
+        assert_eq!(
+            busy.tier, idle.tier,
+            "free memory must not change the tier, only the advice"
+        );
+        assert!(busy.warnings.len() > idle.warnings.len());
+    }
+
+    #[test]
+    fn genuinely_tiny_machines_still_get_t0() {
+        // The T0 path must stay reachable, just for real constraints.
+        // T1 (2.4) + headroom (2.0) = 4.4 GiB, so 4 GiB cannot run a model.
+        let r = profile(4.0, 3.5, 4, None).recommend();
+        assert_eq!(r.tier, Tier::T0);
+        assert!(r.warnings.iter().any(|w| w.contains("not possible")));
+    }
+
+    #[test]
+    fn t1_matches_the_memory_actually_measured() {
+        // 2002 MiB weights + 144 MiB KV + 301 MiB compute = ~2.39 GiB,
+        // measured running Qwen2.5-3B-Instruct Q4_K_M at ctx 4096.
+        let measured = (2002.0 + 144.0 + 301.0) / 1024.0;
+        assert!(
+            Tier::T1.model_ram_gib() >= measured,
+            "T1 budget {:.2} is below the measured {:.2} GiB",
+            Tier::T1.model_ram_gib(),
+            measured
+        );
+        assert!(
+            Tier::T1.model_ram_gib() < measured + 0.5,
+            "T1 budget {:.2} is padded well beyond the measured {:.2} GiB",
+            Tier::T1.model_ram_gib(),
+            measured
+        );
     }
 
     #[test]
     fn leaves_headroom_for_the_os() {
-        // 5.4 GiB free minus 2 GiB headroom = 3.4 GiB, exactly T1.
+        // Headroom now comes off *total*, not off whatever is free.
+        // 8 GiB installed minus 2 GiB headroom = 6 GiB for a model.
         let p = profile(8.0, 5.4, 8, None);
-        assert!((p.usable_ram_gib() - 3.4).abs() < 0.01);
+        assert!((p.usable_ram_gib() - 6.0).abs() < 0.01);
+        // 8 GiB is still a T1-class machine; the class cap holds it there
+        // even though 6 GiB of budget would technically fit T2.
         assert_eq!(p.recommend().tier, Tier::T1);
     }
 
@@ -637,21 +764,44 @@ mod tests {
     }
 
     #[test]
-    fn explicit_available_overrides_the_default() {
-        // A 32 GiB workstation that is currently busy: 6 GiB free minus the
-        // 2 GiB OS headroom leaves 4 GiB, so only T1 fits right now.
+    fn explicit_available_is_parsed_but_does_not_set_the_tier() {
+        // `avail` is still read from the spec and still drives the advisory
+        // warning, but it no longer caps the tier. A 32 GiB workstation is a
+        // big machine even when the OS is caching most of its memory.
         let p = HardwareProfile::from_spec("ram=32,avail=6").unwrap();
         assert_eq!(p.available_ram_gib, 6.0);
-        assert_eq!(p.recommend().tier, Tier::T1);
+        assert!(
+            p.recommend().tier >= Tier::T3,
+            "32 GiB installed is a T3+ machine, got {:?}",
+            p.recommend().tier
+        );
     }
 
     #[test]
-    fn recommends_remote_when_free_memory_cannot_hold_the_smallest_model() {
-        // 5 GiB free - 2 GiB headroom = 3.0 GiB, below T1's 3.4 GiB.
+    fn a_busy_workstation_is_warned_not_demoted() {
+        // This previously recommended T0 ("connect to a remote engine") for a
+        // 32 GiB workstation, purely because 5 GiB happened to be free. That
+        // is the bug this whole change exists to fix.
         let p = HardwareProfile::from_spec("ram=32,avail=5").unwrap();
         let r = p.recommend();
-        assert_eq!(r.tier, Tier::T0);
-        assert!(!r.warnings.is_empty());
+        assert_ne!(r.tier, Tier::T0, "must not send a 32 GiB box to remote");
+        assert!(
+            r.tier >= Tier::T3,
+            "32 GiB installed is a T3+ machine, got {:?}",
+            r.tier
+        );
+
+        // Genuinely tight free memory does warn — 1 GiB free is under the
+        // 2.4 GiB a T1 model wants, so the advisory fires.
+        let tight = HardwareProfile::from_spec("ram=32,avail=1")
+            .unwrap()
+            .recommend();
+        assert_ne!(tight.tier, Tier::T0, "still a big machine");
+        assert!(
+            tight.warnings.iter().any(|w| w.contains("free right now")),
+            "should warn about tight free memory: {:?}",
+            tight.warnings
+        );
     }
 
     #[test]
