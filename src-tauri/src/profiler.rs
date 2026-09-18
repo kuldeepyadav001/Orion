@@ -111,6 +111,15 @@ pub struct HardwareProfile {
     pub cpu_brand: String,
     pub gpu_vendor: Option<String>,
     pub gpu_vram_gib: Option<f64>,
+    /// True when the GPU shares system RAM rather than having its own memory.
+    ///
+    /// This matters more than it looks. An integrated GPU's "2 GB dedicated"
+    /// pool is carved *out of* system RAM, not added to it: an 8 GB laptop
+    /// with a 2 GB iGPU reservation reports ~5.7 GB to the OS. Treating that
+    /// VRAM as extra capacity would double-count memory the machine does not
+    /// have, and would push the tier above what the box can actually run.
+    #[serde(default)]
+    pub gpu_integrated: bool,
     pub free_disk_gib: f64,
     pub os: String,
     pub arch: String,
@@ -155,7 +164,7 @@ impl HardwareProfile {
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "unknown".into());
 
-        let (gpu_vendor, gpu_vram_gib) = detect_gpu();
+        let (gpu_vendor, gpu_vram_gib, gpu_integrated) = detect_gpu();
 
         let free_disk_gib = detect_free_disk();
 
@@ -166,6 +175,7 @@ impl HardwareProfile {
             cpu_brand,
             gpu_vendor,
             gpu_vram_gib,
+            gpu_integrated,
             free_disk_gib,
             os: std::env::consts::OS.to_string(),
             arch: std::env::consts::ARCH.to_string(),
@@ -217,6 +227,7 @@ impl HardwareProfile {
                 cpu_brand: format!("simulated {} cpu", tier.as_str()),
                 gpu_vendor: vram.map(|_| "simulated".to_string()),
                 gpu_vram_gib: vram,
+                gpu_integrated: false,
                 free_disk_gib: 200.0,
                 os: std::env::consts::OS.to_string(),
                 arch: std::env::consts::ARCH.to_string(),
@@ -265,6 +276,7 @@ impl HardwareProfile {
             cpu_brand: "simulated cpu".into(),
             gpu_vendor: vram.map(|_| "simulated".to_string()),
             gpu_vram_gib: vram,
+            gpu_integrated: false,
             free_disk_gib: disk.unwrap_or(200.0),
             os: std::env::consts::OS.to_string(),
             arch: std::env::consts::ARCH.to_string(),
@@ -312,15 +324,29 @@ impl HardwareProfile {
 
         // A discrete GPU with real VRAM lets us punch above the RAM tier,
         // because weights live on the card rather than in system memory.
-        let vram = self.gpu_vram_gib.unwrap_or(0.0);
-        if vram > 0.0 {
-            reasons.push(format!(
-                "{} GPU detected with {:.1} GiB VRAM.",
-                self.gpu_vendor.as_deref().unwrap_or("discrete"),
-                vram
-            ));
+        // Integrated GPUs contribute ZERO to the budget. Their "dedicated"
+        // memory is carved out of system RAM, which the OS has already
+        // subtracted from the total we measured. Counting it would be
+        // double-counting memory the machine does not have.
+        let vram = if self.gpu_integrated {
+            0.0
         } else {
-            reasons.push("No discrete GPU detected; inference will run on the CPU.".into());
+            self.gpu_vram_gib.unwrap_or(0.0)
+        };
+
+        match (&self.gpu_vendor, self.gpu_integrated) {
+            (Some(name), true) => reasons.push(format!(
+                "{name} is an integrated GPU; its memory is shared with system RAM and is \
+                 already counted above. Inference runs on the CPU."
+            )),
+            (Some(name), false) if vram > 0.0 => reasons.push(format!(
+                "{name} detected with {vram:.1} GiB of dedicated VRAM."
+            )),
+            (Some(name), false) => reasons.push(format!(
+                "{name} detected, but no usable dedicated VRAM was reported; inference will \
+                 run on the CPU."
+            )),
+            (None, _) => reasons.push("No GPU detected; inference will run on the CPU.".into()),
         }
 
         let by_vram = if vram >= 22.0 {
@@ -442,13 +468,11 @@ impl HardwareProfile {
             ));
         }
 
-        if tier == Tier::T1 && vram == 0.0 {
-            warnings.push(
-                "On CPU-only hardware, voice replies will take several seconds and agent \
-                 actions run in propose-only mode."
-                    .into(),
-            );
-        }
+        // Deliberately no warning here about voice latency or agent modes.
+        // Voice is M4 and agent actions are M5; neither exists yet. Warning
+        // about unbuilt features teaches the user to ignore warnings, which
+        // is exactly when a real one gets missed. Reinstate this when the
+        // features ship, with measured numbers rather than guesses.
 
         if self.simulated {
             warnings.push(
@@ -481,8 +505,11 @@ fn bad(key: &str, value: &str) -> OrionError {
 ///
 /// Deliberately conservative: guessing a GPU that is not usable is worse than
 /// missing one, because it leads to a recommendation the machine cannot honour.
-fn detect_gpu() -> (Option<String>, Option<f64>) {
-    // NVIDIA: nvidia-smi is authoritative when present.
+/// Detected GPU: vendor label, dedicated VRAM in GiB, and whether it shares
+/// system memory.
+fn detect_gpu() -> (Option<String>, Option<f64>, bool) {
+    // NVIDIA: nvidia-smi is authoritative when present. Discrete, so its VRAM
+    // is genuinely additional memory.
     if let Ok(out) = std::process::Command::new("nvidia-smi")
         .args(["--query-gpu=memory.total", "--format=csv,noheader,nounits"])
         .output()
@@ -490,18 +517,116 @@ fn detect_gpu() -> (Option<String>, Option<f64>) {
         if out.status.success() {
             if let Some(line) = String::from_utf8_lossy(&out.stdout).lines().next() {
                 if let Ok(mib) = line.trim().parse::<f64>() {
-                    return (Some("NVIDIA".into()), Some(mib / 1024.0));
+                    return (Some("NVIDIA".into()), Some(mib / 1024.0), false);
                 }
             }
         }
     }
 
-    // Apple Silicon uses unified memory; VRAM is not a separate pool.
+    // Apple Silicon: unified memory, so there is no separate VRAM pool to add.
     if cfg!(target_os = "macos") && cfg!(target_arch = "aarch64") {
-        return (Some("Apple Silicon".into()), None);
+        return (Some("Apple Silicon".into()), None, true);
     }
 
-    (None, None)
+    #[cfg(target_os = "windows")]
+    if let Some(gpu) = detect_gpu_windows() {
+        return gpu;
+    }
+
+    #[cfg(target_os = "linux")]
+    if let Some(gpu) = detect_gpu_linux() {
+        return gpu;
+    }
+
+    (None, None, false)
+}
+
+/// Windows GPU via WMIC/CIM. Reports the adapter name and its memory, and
+/// classifies integrated parts by name.
+///
+/// Reporting "None detected" on a machine that plainly has a Radeon is simply
+/// wrong, even when the tier outcome is unaffected.
+#[cfg(target_os = "windows")]
+fn detect_gpu_windows() -> Option<(Option<String>, Option<f64>, bool)> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+    let out = std::process::Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "Get-CimInstance Win32_VideoController |              Select-Object -First 1 -Property Name,AdapterRAM |              ForEach-Object { \"$($_.Name)|$($_.AdapterRAM)\" }",
+        ])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .ok()?;
+
+    if !out.status.success() {
+        return None;
+    }
+
+    let line = String::from_utf8_lossy(&out.stdout);
+    let line = line.trim();
+    let (name, ram) = line.split_once('|')?;
+    let name = name.trim();
+    if name.is_empty() {
+        return None;
+    }
+
+    // AdapterRAM is a 32-bit field and wraps above 4 GiB, so it is only a
+    // hint. It is never used for budgeting, only for display.
+    let vram = ram
+        .trim()
+        .parse::<f64>()
+        .ok()
+        .map(|b| b / GIB as f64)
+        .filter(|v| *v > 0.1);
+
+    let integrated = is_integrated_gpu(name);
+    Some((Some(name.to_string()), vram, integrated))
+}
+
+/// Linux GPU via the DRM sysfs tree, falling back to lspci.
+#[cfg(target_os = "linux")]
+fn detect_gpu_linux() -> Option<(Option<String>, Option<f64>, bool)> {
+    let out = std::process::Command::new("lspci").output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let line = text
+        .lines()
+        .find(|l| l.contains("VGA compatible controller") || l.contains("3D controller"))?;
+    let name = line.split_once(": ").map(|(_, n)| n.trim())?;
+    if name.is_empty() {
+        return None;
+    }
+    let integrated = is_integrated_gpu(name);
+    Some((Some(name.to_string()), None, integrated))
+}
+
+/// Classify an adapter name as integrated.
+///
+/// Name matching is crude but the cost of being wrong is small: an integrated
+/// part misread as discrete would have its VRAM counted as extra memory, so
+/// the list errs toward calling things integrated.
+fn is_integrated_gpu(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    const INTEGRATED_MARKERS: &[&str] = &[
+        "radeon graphics",
+        "radeon(tm) graphics",
+        "vega",
+        "uhd graphics",
+        "hd graphics",
+        "iris",
+        "intel(r) graphics",
+        "apple",
+        "adreno",
+        "mali",
+        "integrated",
+    ];
+    INTEGRATED_MARKERS.iter().any(|m| n.contains(m))
 }
 
 /// Free space on the volume holding Orion's data directory.
@@ -547,6 +672,7 @@ mod tests {
             cpu_brand: "test".into(),
             gpu_vendor: vram.map(|_| "test-gpu".into()),
             gpu_vram_gib: vram,
+            gpu_integrated: false,
             free_disk_gib: 500.0,
             os: "linux".into(),
             arch: "x86_64".into(),
@@ -612,6 +738,96 @@ mod tests {
             "a 32 GiB machine is a T3+ machine whatever is cached right now, got {:?}",
             r.tier
         );
+    }
+
+    #[test]
+    fn integrated_vram_never_inflates_the_tier() {
+        // A 6 GiB laptop whose iGPU reports 2 GiB "dedicated" memory must not
+        // be treated as an 8 GiB machine. That memory was carved out of system
+        // RAM and the OS has already subtracted it from the total.
+        let mut p = profile(5.74, 1.2, 8, Some(2.0));
+        p.gpu_integrated = true;
+        p.gpu_vendor = Some("AMD Radeon Graphics".into());
+
+        let integrated = p.recommend();
+
+        let mut d = profile(5.74, 1.2, 8, Some(2.0));
+        d.gpu_integrated = false;
+        let discrete = d.recommend();
+
+        assert_eq!(
+            integrated.tier,
+            Tier::T1,
+            "integrated VRAM must not lift the tier"
+        );
+        assert!(
+            integrated.tier <= discrete.tier,
+            "integrated must never outrank the same machine with a real card"
+        );
+    }
+
+    #[test]
+    fn an_integrated_gpu_is_named_not_denied() {
+        // Saying "None detected" on a machine that plainly has a Radeon is
+        // wrong, even when the tier outcome is unaffected.
+        let mut p = profile(5.74, 1.2, 8, Some(2.0));
+        p.gpu_integrated = true;
+        p.gpu_vendor = Some("AMD Radeon Graphics".into());
+
+        let r = p.recommend();
+        assert!(
+            r.reasons.iter().any(|x| x.contains("Radeon")),
+            "the GPU should be named: {:?}",
+            r.reasons
+        );
+        assert!(
+            r.reasons
+                .iter()
+                .any(|x| x.contains("shared with system RAM")),
+            "should explain why its memory does not count: {:?}",
+            r.reasons
+        );
+        assert!(
+            !r.reasons.iter().any(|x| x.contains("No GPU detected")),
+            "must not claim there is no GPU: {:?}",
+            r.reasons
+        );
+    }
+
+    #[test]
+    fn integrated_gpu_names_are_classified() {
+        for name in [
+            "AMD Radeon(TM) Graphics",
+            "AMD Radeon Graphics",
+            "Intel(R) UHD Graphics 620",
+            "Intel(R) Iris(R) Xe Graphics",
+            "Apple M2",
+            "Qualcomm Adreno 740",
+        ] {
+            assert!(is_integrated_gpu(name), "{name} should be integrated");
+        }
+        for name in [
+            "NVIDIA GeForce RTX 4070",
+            "AMD Radeon RX 7900 XTX",
+            "NVIDIA RTX A4000",
+        ] {
+            assert!(!is_integrated_gpu(name), "{name} should be discrete");
+        }
+    }
+
+    #[test]
+    fn no_warnings_about_features_that_do_not_exist_yet() {
+        // Voice is M4 and agent actions are M5. Warning about them now trains
+        // the user to ignore warnings.
+        let r = profile(5.74, 1.2, 8, None).recommend();
+        let text = r.warnings.join(" ").to_lowercase();
+        for word in ["voice", "agent", "propose-only"] {
+            assert!(
+                !text.contains(word),
+                "warning mentions unbuilt feature {word:?}: {:?}",
+                r.warnings
+            );
+        }
     }
 
     #[test]
