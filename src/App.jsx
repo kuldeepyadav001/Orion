@@ -3,6 +3,7 @@ import Markdown from "react-markdown";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import SystemPanel from "./SystemPanel";
+import Documents from "./Documents";
 
 /**
  * Orion M0 shell.
@@ -18,6 +19,8 @@ export default function App() {
   const [streaming, setStreaming] = useState(false);
   const [engine, setEngine] = useState({ state: "starting", detail: "" });
   const [showSystem, setShowSystem] = useState(false);
+  const [showDocs, setShowDocs] = useState(false);
+  const [citations, setCitations] = useState([]);
 
   const chatRef = useRef(null);
   const taRef = useRef(null);
@@ -26,6 +29,18 @@ export default function App() {
   const pending = useRef("");
 
   /* ---------- engine status ---------- */
+
+  // Citations arrive just before the answer streams, so the sources can be
+  // shown alongside the reply rather than after it finishes.
+  useEffect(() => {
+    let un;
+    listen("chat://citations", (e) => setCitations(e.payload ?? [])).then(
+      (u) => {
+        un = u;
+      },
+    );
+    return () => un?.();
+  }, []);
 
   useEffect(() => {
     let alive = true;
@@ -108,6 +123,7 @@ export default function App() {
       { role: "user", content: text },
       { role: "assistant", content: "" },
     ]);
+    setCitations([]);
     setStreaming(true);
 
     try {
@@ -166,6 +182,9 @@ export default function App() {
           ORI<span>O</span>N
         </div>
         <div className="spacer" />
+        <button className="ghost small" onClick={() => setShowDocs(true)}>
+          Documents
+        </button>
         <button className="ghost small" onClick={() => setShowSystem(true)}>
           System
         </button>
@@ -205,6 +224,21 @@ export default function App() {
                 </div>
               </div>
             ))}
+
+            {citations.length > 0 && (
+              <div className="citations">
+                <div className="citations-head">Sources</div>
+                <ol>
+                  {citations.map((c) => (
+                    <li key={c.marker}>
+                      <span className="cite-doc">{c.document_name}</span>
+                      {c.page ? `, p. ${c.page}` : ""}
+                      {c.breadcrumb ? ` — ${c.breadcrumb}` : ""}
+                    </li>
+                  ))}
+                </ol>
+              </div>
+            )}
           </div>
         )}
       </main>
@@ -242,6 +276,7 @@ export default function App() {
       </footer>
 
       {showSystem && <SystemPanel onClose={() => setShowSystem(false)} />}
+      <Documents open={showDocs} onClose={() => setShowDocs(false)} />
     </div>
   );
 }

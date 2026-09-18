@@ -115,6 +115,15 @@ impl Db {
         Ok(())
     }
 
+    /// Borrow the underlying connection.
+    ///
+    /// `RagStore` layers the document tables onto this same database file
+    /// rather than opening a second one: one file means one WAL and no
+    /// chance of the two halves disagreeing about whether a write committed.
+    pub fn conn(&self) -> &Connection {
+        &self.conn
+    }
+
     pub fn create_session(&self, title: &str) -> Result<String> {
         let id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();

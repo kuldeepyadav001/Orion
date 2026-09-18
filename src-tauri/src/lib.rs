@@ -8,10 +8,14 @@
 //! paths. Every capability it has is an explicit `#[tauri::command]`.
 
 pub mod db;
+pub mod documents;
 pub mod engine;
 pub mod error;
+pub mod hashing;
+pub mod ingest;
 pub mod models;
 pub mod profiler;
+pub mod rag;
 
 use std::sync::Arc;
 
@@ -42,6 +46,8 @@ pub struct AppState {
     pub models: ModelManager,
     /// Tier actually in use, after any user override.
     pub active_tier: Mutex<Tier>,
+    /// Embedding sidecar backing semantic search over the user's documents.
+    pub embed: Arc<documents::EmbedService>,
 }
 
 /* ------------------------------------------------------------------ */
@@ -147,6 +153,74 @@ async fn list_models(state: State<'_, AppState>) -> Result<Vec<ModelStatus>> {
 #[tauri::command]
 async fn active_tier(state: State<'_, AppState>) -> Result<Tier> {
     Ok(*state.active_tier.lock().await)
+}
+
+/* ------------------------------------------------------------------ */
+/* documents                                                           */
+/* ------------------------------------------------------------------ */
+
+/// Add files to the searchable library.
+///
+/// Each file is ingested independently so one unreadable document does not
+/// abort the batch.
+#[tauri::command]
+async fn add_documents(
+    paths: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<Vec<documents::IngestSummary>> {
+    let mut out = Vec::new();
+    let mut failures = Vec::new();
+
+    for p in paths {
+        let path = std::path::PathBuf::from(&p);
+        match documents::ingest_file(&path, &state.db, &state.embed).await {
+            Ok(summary) => out.push(summary),
+            Err(e) => {
+                tracing::warn!(path = %p, error = %e, "could not index document");
+                failures.push(format!("{}: {e}", path.display()));
+            }
+        }
+    }
+
+    // A partial batch still succeeds: indexing four of five files and saying
+    // so beats discarding all five because one was a scanned image.
+    if out.is_empty() && !failures.is_empty() {
+        return Err(OrionError::Config(failures.join("; ")));
+    }
+    Ok(out)
+}
+
+#[derive(serde::Serialize)]
+pub struct LibraryStatus {
+    pub documents: usize,
+    pub chunks: usize,
+    pub embed_state: documents::EmbedState,
+    pub embed_detail: String,
+}
+
+#[tauri::command]
+async fn library_status(state: State<'_, AppState>) -> Result<LibraryStatus> {
+    let (documents, chunks) = {
+        let db = state.db.lock().await;
+        let store = rag::store::RagStore::new(db.conn());
+        store.migrate()?;
+        (store.document_count()?, store.chunk_count()?)
+    };
+    Ok(LibraryStatus {
+        documents,
+        chunks,
+        embed_state: state.embed.state().await,
+        embed_detail: state.embed.detail().await,
+    })
+}
+
+#[tauri::command]
+async fn forget_document(document_id: String, state: State<'_, AppState>) -> Result<()> {
+    let db = state.db.lock().await;
+    let store = rag::store::RagStore::new(db.conn());
+    store.delete_document(&document_id)?;
+    tracing::info!(document_id, "document removed from the library");
+    Ok(())
 }
 
 /// Override the recommended tier. Takes effect on the next engine start.
@@ -335,6 +409,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let data_dir = db::data_dir()?;
             let database = Db::open(&data_dir.join("orion.db"))?;
@@ -367,6 +442,8 @@ pub fn run() {
 
             let engine = Arc::new(Engine::new());
 
+            let embed = Arc::new(documents::EmbedService::new());
+
             app.manage(AppState {
                 engine: engine.clone(),
                 db: Arc::new(Mutex::new(database)),
@@ -375,12 +452,21 @@ pub fn run() {
                 models: ModelManager::new(db::data_dir().unwrap_or_default().join("models"))
                     .with_registry_file(),
                 active_tier: Mutex::new(tier),
+                embed: embed.clone(),
             });
 
             let handle = app.handle().clone();
             let mgr = manager.clone();
             tauri::async_runtime::spawn(async move {
                 start_engine(handle, engine, mgr, tier).await;
+            });
+
+            // The embedding sidecar warms up independently of the chat model.
+            // It is small (~130 MB) and optional: if it never becomes ready,
+            // search degrades to keyword-only rather than failing.
+            let embed_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                documents::start_embedder(embed_handle, embed).await;
             });
 
             Ok(())
@@ -393,7 +479,10 @@ pub fn run() {
             tier_recommendation,
             list_models,
             active_tier,
-            set_active_tier
+            set_active_tier,
+            add_documents,
+            library_status,
+            forget_document
         ])
         .run(tauri::generate_context!())
         .expect("error while running Orion");

@@ -2,10 +2,13 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Minimum capabilities for the Orion window. Deliberately narrow: the webview is untrusted and gets no filesystem, no HTTP and no arbitrary shell access. Every privileged action goes through an explicit Rust command.",
-  "windows": ["main"],
+  "windows": [
+    "main"
+  ],
   "permissions": [
     "core:default",
     "core:event:default",
-    "core:window:allow-start-dragging"
+    "core:window:allow-start-dragging",
+    "dialog:allow-open"
   ]
 }

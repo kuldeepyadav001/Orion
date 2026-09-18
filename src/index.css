@@ -499,3 +499,87 @@ table.models tr.active td {
   font-size: 11.5px;
   margin-top: 12px;
 }
+
+/* ---------- document library (M2) ---------- */
+
+.lib-stats {
+  display: flex;
+  gap: 26px;
+  align-items: center;
+  margin: 16px 0;
+}
+
+.lib-stats > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.lib-stats strong {
+  font-size: 22px;
+  line-height: 1;
+}
+
+.lib-stats span {
+  font-size: 12px;
+  opacity: 0.6;
+}
+
+.badge.ready {
+  background: rgba(70, 190, 120, 0.16);
+  color: #6fd79b;
+}
+
+.badge.unavailable {
+  background: rgba(240, 170, 90, 0.16);
+  color: #f0aa5a;
+}
+
+.badge.starting,
+.badge.idle {
+  background: rgba(255, 255, 255, 0.08);
+  opacity: 0.75;
+}
+
+.added {
+  margin: 14px 0 0;
+  padding-left: 18px;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.small {
+  font-size: 12px;
+}
+
+.error {
+  color: #ff8a8a;
+  font-size: 13px;
+  margin-top: 10px;
+}
+
+.citations {
+  margin: 18px 0 6px;
+  padding: 12px 14px;
+  border-left: 2px solid rgba(120, 170, 255, 0.4);
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 0 8px 8px 0;
+  font-size: 12.5px;
+}
+
+.citations-head {
+  font-weight: 600;
+  opacity: 0.7;
+  margin-bottom: 6px;
+  letter-spacing: 0.02em;
+}
+
+.citations ol {
+  margin: 0;
+  padding-left: 18px;
+  line-height: 1.7;
+}
+
+.cite-doc {
+  font-weight: 600;
+}
