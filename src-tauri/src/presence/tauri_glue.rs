@@ -65,7 +65,24 @@ pub fn activate<R: Runtime>(app: &AppHandle<R>, source: Activation) {
 }
 
 /// Build the tray icon and menu.
-pub fn build_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
+/// Build the tray icon and return it.
+///
+/// **The caller must keep the returned value alive.** Tauri's own
+/// documentation on `TrayIcon` is explicit: "This type is reference-counted
+/// and the icon is removed when the last instance is dropped."
+///
+/// An earlier version returned `Ok(())`, dropping both the icon and its menu
+/// at the end of this function. On Windows that crashed the process during
+/// startup with a refcount violation inside `alloc::rc`:
+///
+///   unsafe precondition(s) violated: hint::assert_unchecked
+///   thread caused non-unwinding panic. aborting.
+///   exit code 0xc0000409 (STATUS_STACK_BUFFER_OVERRUN)
+///
+/// The menu matters as much as the icon. `TrayIconBuilder::menu` takes a
+/// reference, so dropping the `Menu` leaves the tray pointing at freed
+/// platform handles.
+pub fn build_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<TrayHandle<R>> {
     let mut items: Vec<Box<dyn tauri::menu::IsMenuItem<R>>> = Vec::new();
 
     for item in super::window::tray_menu() {
@@ -85,7 +102,7 @@ pub fn build_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let refs: Vec<&dyn tauri::menu::IsMenuItem<R>> = items.iter().map(|b| b.as_ref()).collect();
     let menu = Menu::with_items(app, &refs)?;
 
-    TrayIconBuilder::with_id("orion-tray")
+    let tray = TrayIconBuilder::with_id("orion-tray")
         .icon(
             app.default_window_icon()
                 .cloned()
@@ -128,7 +145,20 @@ pub fn build_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         })
         .build(app)?;
 
-    Ok(())
+    Ok(TrayHandle {
+        _tray: tray,
+        _menu: menu,
+    })
+}
+
+/// Keeps the tray icon and its menu alive.
+///
+/// Both are reference-counted handles to platform resources. Dropping either
+/// removes the tray, so this is stored in `AppState` for the lifetime of the
+/// app rather than discarded at the end of `build_tray`.
+pub struct TrayHandle<R: Runtime> {
+    _tray: tauri::tray::TrayIcon<R>,
+    _menu: Menu<R>,
 }
 
 fn emit_all<R: Runtime>(app: &AppHandle<R>, event: &str) -> tauri::Result<()> {

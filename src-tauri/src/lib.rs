@@ -658,9 +658,17 @@ pub fn run() {
             });
 
             timed(&mut trace, presence::Phase::SystemIntegration, || {
-                if let Err(e) = presence::tauri_glue::build_tray(app.handle()) {
+                match presence::tauri_glue::build_tray(app.handle()) {
+                    // The handle owns the tray icon and its menu, both of
+                    // which are reference-counted platform resources.
+                    // `manage` keeps them alive for the life of the app;
+                    // dropping them here removed the tray and crashed the
+                    // process on Windows with a refcount violation.
+                    Ok(tray) => {
+                        app.manage(tray);
+                    }
                     // A missing tray is survivable; the window still works.
-                    tracing::error!(error = %e, "tray icon could not be created");
+                    Err(e) => tracing::error!(error = %e, "tray icon could not be created"),
                 }
                 presence::tauri_glue::register_hotkey(app.handle(), None)
             });
