@@ -69,9 +69,59 @@ fi
 cp "$BIN" "$DEST/llama-server-${TRIPLE}${EXT}"
 chmod +x "$DEST/llama-server-${TRIPLE}${EXT}"
 
-# Shared libraries (ggml, etc.) must sit alongside the binary.
-find "$TMP/x" -type f \( -name '*.so*' -o -name '*.dll' -o -name '*.dylib' \) \
-  -exec cp {} "$DEST/" \; 2>/dev/null || true
+# Shared libraries (ggml, llama, etc.) must sit alongside the binary.
+#
+# This used to end in `|| true`, which silently swallowed a failed copy. If the
+# libraries are missing, llama-server dies instantly at spawn with exit code
+# 0xC0000135 (STATUS_DLL_NOT_FOUND, reported by Rust as -1073741515) and prints
+# nothing at all, which is a miserable thing to debug. Verify instead.
+LIBCOUNT=0
+while IFS= read -r lib; do
+  cp "$lib" "$DEST/" && LIBCOUNT=$((LIBCOUNT + 1))
+done < <(find "$TMP/x" -type f \( -name '*.so*' -o -name '*.dll' -o -name '*.dylib' \))
+
+if [ "$LIBCOUNT" -eq 0 ]; then
+  cat >&2 <<EOF
+
+ERROR: no shared libraries were found in the archive.
+
+llama-server cannot start without them: it exits immediately with
+STATUS_DLL_NOT_FOUND and no error message. The release layout may have
+changed. Inspect the archive and copy the libraries next to the binary by
+hand:
+
+    $DEST/
+
+EOF
+  exit 1
+fi
+echo "==> copied $LIBCOUNT shared librar$([ "$LIBCOUNT" -eq 1 ] && echo y || echo ies)"
+
+# Tauri's sidecar mechanism copies ONLY the executable into the target
+# directory, leaving its libraries behind in src-tauri/binaries. On Windows
+# that guarantees STATUS_DLL_NOT_FOUND on the first `tauri dev` run, because
+# Windows resolves DLLs relative to the executable.
+#
+# Found the hard way on a real machine: the app compiled, launched, and the
+# engine died in 65 ms with no output.
+for profile in debug release; do
+  TARGET_DIR="$ROOT/src-tauri/target/$profile"
+  if [ -d "$TARGET_DIR" ]; then
+    find "$TMP/x" -type f \( -name '*.so*' -o -name '*.dll' -o -name '*.dylib' \) \
+      -exec cp {} "$TARGET_DIR/" \; 2>/dev/null || true
+    echo "==> libraries mirrored into target/$profile"
+  fi
+done
 
 echo "==> installed: $DEST/llama-server-${TRIPLE}${EXT}"
 ls -la "$DEST"
+
+cat <<EOF
+
+NOTE: if you build with a target directory that did not exist when this script
+ran, re-run this script afterwards, or copy the libraries yourself:
+
+    cp "$DEST"/*.dll "$ROOT/src-tauri/target/debug/"      # Windows
+    cp "$DEST"/*.so* "$ROOT/src-tauri/target/debug/"      # Linux
+
+EOF
