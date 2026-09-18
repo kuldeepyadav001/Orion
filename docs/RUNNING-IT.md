@@ -1,82 +1,58 @@
-# Running Orion (M0) on your own machine
+# Running Orion on your own machine
 
-This is the guide for the **`main` branch**, which is M0: the foundation.
-Build this first, confirm it works, and only then will M1 be merged in.
+Read this first, because it will save you an hour of confusion:
 
-**There is no installer yet.** You build from source. That comes at M10.
+**There is no installer yet, and no single downloadable file.** That is M10.
+What exists today is source code that you build yourself, and it gives you a
+chat window talking to a local model. Most of the headline features are not in
+this build — see [What you will and will not get](#what-you-will-and-will-not-get).
+
+**Build the `feat/m3-system-presence` branch.** Not `main`, which is the older
+M0 skeleton. The branches are deliberately independent and have *not* been
+merged, so no single branch has everything. M3 has the most complete app.
 
 ---
 
-## What M0 actually is
+## What you will and will not get
+
+Building `feat/m3-system-presence` gives you:
 
 | Works | Notes |
 |---|---|
-| Chat with a local model | Streaming, token by token |
-| Fully offline | Nothing leaves your machine once the model is downloaded |
-| Chat history | SQLite, stored locally |
-| Stop button | Cancels a running generation |
+| Chat with a local model | Streaming, fully offline once the model is downloaded |
+| Chat history | Stored in SQLite on your machine |
+| Tray icon | Left click toggles the window |
+| Global hotkey | `Win+O` (`Ctrl+Shift+O` etc. as fallbacks) |
+| File drop | Files are **assessed and reported**, but not yet indexed |
+| Single instance | Launching twice focuses the existing window |
 
-**Not here yet** — no tray icon, no `Win+O` hotkey, no file drop, no document
-Q&A, no voice, no hardware detection. Those are M1–M3, on their own branches,
-and they get merged in one at a time after you confirm each step.
+**Not in this build:**
 
-So M0 is a plain chat window. That is the point: if the foundation is wrong,
-everything stacked on top is wrong too.
+- **Document Q&A.** The PDF/DOCX/XLSX pipeline is finished and tested, but it
+  lives on `feat/m2-documents-rag` and has *not* been merged into M3. Dropping
+  a PDF will tell you it was accepted and then do nothing with it. Merging M2
+  and M3 is a real integration job — they both rewrote `lib.rs` — and it is
+  not done.
+- **Hardware-aware model picking** — that is M1, also unmerged.
+- **Voice** (M4), **OS control** (M5), **installer / single file** (M10).
+
+So: this is worth running to see whether the core feels right, and to catch
+things I cannot catch without a desktop. It is not a preview of the finished
+product.
 
 ---
 
-## About Visual Studio — read this before installing anything
+## Before you start
 
-**Yes, you need it. No, you do not need 6.8 GB.**
+You need about **6 GB of free disk** (3 GB of Rust build artefacts, 2 GB
+model, 1 GB toolchains) and a working internet connection for the build. The
+app itself runs offline afterwards.
 
-The 6.8 GB figure is the *"Desktop development with C++"* workload, which
-bundles CMake, MFC, ATL, profiling tools, test adapters and more. Rust needs
-almost none of it. It needs exactly three things: the MSVC compiler, the
-linker (`link.exe`), and the Windows SDK import libraries.
-
-Rust cannot ship these itself — Microsoft does not permit redistribution —
-which is why you have to install them separately.
-
-### The smaller install (recommended, ~3–4 GB)
-
-In the **Visual Studio Installer**, do *not* tick the big workload tile.
-Instead:
-
-1. Click the **"Individual components"** tab
-2. Tick only:
-   - **MSVC v143 – VS 2022 C++ x64/x86 build tools (Latest)**
-   - **Windows 11 SDK** (or Windows 10 SDK if you are on Windows 10)
-3. Install
-
-That is the officially documented minimum from the rustup book.
-
-**One honest warning:** there are reports that `rustup-init.exe` sometimes
-still claims build tools are missing after the minimal install, and only stops
-complaining once the full workload is added. If you hit that, the practical
-answer is to tick the full workload — annoying, but it is 30 minutes rather
-than a lost evening. You can remove components afterwards.
-
-### Why not avoid it entirely?
-
-Two real alternatives exist, and both have a catch:
-
-- **GNU toolchain (MinGW)** — ~600 MB instead of several GB. But Orion uses
-  `rusqlite` with the `bundled` feature, which compiles SQLite from C source,
-  and Tauri on Windows is far better tested against MSVC. If the GNU build
-  breaks, we would be debugging the toolchain instead of Orion.
-- **WSL** — small, but you would get a *Linux* Orion running inside WSL, not a
-  Windows app. That tells us nothing about how it behaves on Windows.
-
-**Recommendation: take the MSVC route.** You have already downloaded the
-installer; use the Individual components tab and it will be noticeably
-smaller than 6.8 GB.
-
-### What you already have
-
-VS Code is a text editor and is **not** the same thing as Visual Studio Build
-Tools — it does not provide a compiler, so it does not replace this step. Node
-you already have, which covers the frontend. So the only genuinely new
-installs are the build tools and Rust.
+**Nothing here has ever been run on a real desktop.** It compiles, it passes
+220 tests, clippy is clean — but no window has ever opened, the tray icon has
+never rendered, and `Win+O` has never been pressed, because the machine I
+build on has no display. You are the first person to actually run it. Expect
+problems, and see [When it breaks](#when-it-breaks).
 
 ---
 
@@ -84,15 +60,21 @@ installs are the build tools and Rust.
 
 ### Windows
 
-1. **Build tools** — see the section above. Install them **first**; rustup
-   checks for them.
-2. **Rust** — https://rustup.rs → run `rustup-init.exe`, accept defaults.
-3. **Git** — https://git-scm.com/download/win
-   During install, keep **"Git Bash"** enabled. The setup scripts are bash, and
-   Git Bash is the easiest way to run them on Windows.
-4. Node — you already have it.
+Install in this order. The Visual Studio build tools are the step people skip,
+and nothing works without them.
 
-Close and reopen your terminal afterwards so `PATH` updates.
+1. **Visual Studio Build Tools** — https://visualstudio.microsoft.com/visual-cpp-build-tools/
+   Run the installer and tick **"Desktop development with C++"**. This is a
+   several-GB download. Rust cannot link anything on Windows without it.
+2. **Rust** — https://rustup.rs → download and run `rustup-init.exe`, accept
+   the defaults.
+3. **Node.js LTS** — https://nodejs.org → the LTS installer.
+4. **Git** — https://git-scm.com/download/win
+
+WebView2 is already present on Windows 10 and 11, so there is nothing to do
+for it.
+
+Then close and reopen your terminal so the `PATH` changes take effect.
 
 ### macOS
 
@@ -109,19 +91,25 @@ sudo apt update
 sudo apt install -y libwebkit2gtk-4.1-dev libgtk-3-dev \
   libayatana-appindicator3-dev librsvg2-dev patchelf \
   build-essential curl wget file libssl-dev git
+
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source "$HOME/.cargo/env"
+
+# Node via nodesource, if your distro's is old
+curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -
+sudo apt install -y nodejs
 ```
 
-### Verify
+`libayatana-appindicator3-dev` is what draws the tray icon on Linux. Without
+it the app still runs but the tray is missing.
+
+### Check it worked
 
 ```bash
-rustc --version    # 1.77 or newer
-cargo --version
-node --version     # v18 or newer
+rustc --version    # expect 1.77 or newer
+node --version     # expect v18 or newer
+git --version
 ```
-
-If `rustc` is not found, reopen your terminal.
 
 ---
 
@@ -130,17 +118,19 @@ If `rustc` is not found, reopen your terminal.
 ```bash
 git clone https://github.com/kuldeepyadav001/Orion.git
 cd Orion
+git checkout feat/m3-system-presence
 ```
 
-You are on `main` by default, which is what you want. Confirm:
+Confirm you are on the right branch:
 
 ```bash
-git branch --show-current    # main
+git branch --show-current      # must print feat/m3-system-presence
+git log --oneline -1           # b91457f or later
 ```
 
 ---
 
-## Step 3 — Frontend packages
+## Step 3 — Install the frontend packages
 
 ```bash
 npm install
@@ -150,53 +140,43 @@ npm install
 
 ## Step 4 — Download llama-server
 
-This is the inference engine; it is not committed to the repo.
+This is the inference engine. It is not committed to the repo.
 
-**macOS / Linux / Windows Git Bash:**
+**macOS / Linux:**
 
 ```bash
 chmod +x scripts/*.sh
 ./scripts/fetch-sidecars.sh
 ```
 
-**Windows, manually** (if you skipped Git Bash):
+**Windows (PowerShell):**
 
-1. Get `llama-b4585-bin-win-avx2-x64.zip` from
-   https://github.com/ggml-org/llama.cpp/releases/tag/b4585
-   (use `win-noavx-x64` if your CPU predates ~2013)
-2. Unzip it
-3. Copy `llama-server.exe` **and every `.dll` next to it** into
-   `src-tauri\binaries\`
-4. Rename the exe to `llama-server-x86_64-pc-windows-msvc.exe`
-5. **Also copy every `.dll` into `src-tauri\target\debug\`** once that
-   folder exists (it appears after your first build). This step is not
-   optional — see below.
+The script is bash, so either use Git Bash:
 
-### Why the DLLs go in two places
-
-Tauri's sidecar mechanism copies **only the executable** into the target
-directory at launch. The libraries stay behind in `binaries\`, and Windows
-resolves DLLs relative to the executable — so the sidecar dies instantly,
-before printing anything, with exit code `-1073741515` (`0xC0000135`,
-STATUS_DLL_NOT_FOUND).
-
-`fetch-sidecars.sh` mirrors them automatically if `target/debug` already
-exists. If you ran it before your first build, run it again afterwards, or:
-
-```powershell
-Copy-Item "src-tauri\binaries\*.dll" "src-tauri\target\debug\" -Force
+```bash
+./scripts/fetch-sidecars.sh
 ```
 
-The triple suffix is mandatory — Tauri resolves sidecars by target triple. Run
-`rustc -vV` and read the `host:` line to get yours exactly.
+or do it by hand:
 
-Check:
+1. Download `llama-b4585-bin-win-avx2-x64.zip` from
+   https://github.com/ggml-org/llama.cpp/releases/tag/b4585
+   (use `win-noavx-x64` instead if your CPU is pre-2013)
+2. Unzip it
+3. Copy `llama-server.exe` **and every `.dll` beside it** into
+   `src-tauri\binaries\`
+4. Rename the exe to `llama-server-x86_64-pc-windows-msvc.exe`
+
+The long name is not optional — Tauri resolves sidecars by target triple. Get
+your exact triple with `rustc -vV` and read the `host:` line.
+
+Verify:
 
 ```bash
 ls src-tauri/binaries/
 ```
 
-Expect `llama-server-<triple>` plus several shared libraries.
+You should see `llama-server-<your-triple>` plus several shared libraries.
 
 ---
 
@@ -206,165 +186,127 @@ Expect `llama-server-<triple>` plus several shared libraries.
 ./scripts/fetch-model.sh
 ```
 
-~2 GB, Qwen2.5 3B Instruct Q4_K_M. Destination:
+About 2 GB — Qwen2.5 3B Instruct, Q4_K_M. It goes to:
 
-| OS | Path |
+| OS | Location |
 |---|---|
-| Windows | `%APPDATA%\orion\models\` |
-| macOS | `~/Library/Application Support/orion/models/` |
 | Linux | `~/.local/share/orion/models/` |
+| macOS | `~/Library/Application Support/orion/models/` |
+| Windows | `%APPDATA%\orion\models\` |
 
-Manual download if needed:
+On Windows without Git Bash, download it manually from
 https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/blob/main/qwen2.5-3b-instruct-q4_k_m.gguf
+and put it in that folder.
 
 ---
 
-## Step 6 — Run
+## Step 6 — Run it
 
 ```bash
 npm run tauri dev
 ```
 
-**First build: 10–25 minutes.** It compiles several hundred Rust crates and
-will sit at `Compiling tauri v2...` looking frozen. It is not. Later runs take
-seconds.
+**The first build takes 10–25 minutes.** It is compiling several hundred Rust
+crates. Subsequent runs take seconds. It will look frozen at
+`Compiling tauri v2...` — it is not.
 
-### What to check
+A window should open. The model takes a few more seconds to load after the
+window appears; that is deliberate, so the window is not held hostage to a
+2 GB memory map.
 
-1. A window opens.
-2. Send a message — the reply should stream in, not appear all at once.
-3. Send a long one and press **Stop** mid-reply.
-4. Close the app, reopen it — is your history still there?
-5. **Turn off your Wi-Fi and send another message.** It must still work. That
-   is the entire premise of the product.
+### Things to try
+
+1. Send a message — it should stream back a token at a time.
+2. Close the window with the X. **It should hide to the tray, not quit.**
+3. Press `Win+O` (Linux/Windows) or `Cmd+O` (macOS) from another app.
+4. Click the tray icon.
+5. Right-click the tray icon → the menu, and **Quit Orion** to actually exit.
+6. Drag a PDF onto the window — expect "Adding 1 file" and then nothing
+   further. That is the known M2/M3 split, not a bug.
+7. Drag a `.png` on — it should be refused by name and type.
+
+---
+
+## Step 7 — Build a real installer (optional)
+
+```bash
+npm run tauri build
+```
+
+Output lands in `src-tauri/target/release/bundle/`:
+
+- Windows → `.msi` and `.exe` in `msi/` and `nsis/`
+- macOS → `.dmg` and `.app`
+- Linux → `.deb` and `.AppImage`
+
+This is **not** the single-file offline installer from the plan. It does not
+bundle the model, and it has never been tested. It is the stock Tauri bundler.
 
 ---
 
 ## When it breaks
 
-Send me the **exact error text**, not a paraphrase. The first line of a Rust
-error is usually enough.
+Please send me the **exact** error text rather than a description — the first
+line of a Rust error is usually enough to identify it.
 
-### `linker 'link.exe' not found`
+### `error: linker 'cc' not found` / `link.exe not found`
 
-Build tools missing or installed after Rust. Install them, then:
+Build tools missing. Windows: install the VS C++ workload from Step 1. Linux:
+`sudo apt install build-essential`.
 
-```bash
-rustup default stable-x86_64-pc-windows-msvc
-```
+### `failed to run custom build command for 'orion'` → `resource path binaries/llama-server-... doesn't exist`
 
-### `resource path binaries/llama-server-... doesn't exist`
-
-Step 4 skipped, or the filename lacks the target triple. Check `rustc -vV`.
+Step 4 was skipped, or the filename lacks the target triple. Run `rustc -vV`,
+take the `host:` value, and make sure the file is named exactly
+`llama-server-<that triple>` (plus `.exe` on Windows).
 
 ### `Package webkit2gtk-4.1 was not found`
 
-Linux only — re-run the `apt install` from Step 1. Fedora:
-`sudo dnf install webkit2gtk4.1-devel gtk3-devel`.
+Linux only, missing dev packages. Re-run the `apt install` line in Step 1. On
+Fedora: `sudo dnf install webkit2gtk4.1-devel gtk3-devel libappindicator-gtk3-devel`.
 
-### Engine dies instantly — `-1073741515` or `0xC0000135`
+### The window opens but says the engine failed to start
 
-`STATUS_DLL_NOT_FOUND`. The sidecar's libraries are not next to the copy of
-the executable that Tauri actually launches. Symptom in the log:
-
-```
-WARN llama-server exited p=TerminatedPayload { code: Some(-1073741515) }
-```
-
-Fix:
-
-```powershell
-Copy-Item "src-tauri\binaries\*.dll" "src-tauri\target\debug\" -Force
-```
-
-Confirm the binary itself is sound first:
-
-```powershell
-cd src-tauri\binaries
-.\llama-server-x86_64-pc-windows-msvc.exe --version
-```
-
-That should print `version: 4585 (...)`. If it does, the binary is fine and
-this is purely the DLL-location problem.
-
-### Build fails — "An Application Control policy has blocked this file" (os error 4551)
-
-Windows **Smart App Control** blocking unsigned executables. Cargo compiles
-each crate's build script into a fresh unsigned `.exe` and runs it, which SAC
-treats as a threat pattern.
-
-Adding the repo folder and `~/.cargo` to **Windows Defender exclusions** has
-been reported to work in practice. If it does not, SAC has no per-file
-exception list and the only remaining option is turning it off entirely
-(Windows Security → App & browser control → Smart App Control → Off).
-
-**Turning SAC off is irreversible without reinstalling Windows.** Defender,
-SmartScreen and everything else keep running; SAC is one extra layer that
-only exists on clean Windows 11 22H2+ installs.
-
-### Window opens, but the engine never becomes ready
-
-Test the sidecar directly:
+`llama-server` is present but not running. Test it directly:
 
 ```bash
 ./src-tauri/binaries/llama-server-<triple> --version
 ```
 
-Should print `version: 4585 (...)`. If it complains about missing shared
-libraries, the `.dll`/`.so` files were not copied next to it.
+On Linux, if it complains about shared libraries, the `.so` files did not get
+copied next to the binary — re-run `fetch-sidecars.sh`.
 
-Then confirm the model file is in the folder from Step 5 and is ~2 GB, not a
-few KB (a failed download leaves a stub).
+### No tray icon on Linux
 
-### Very slow first reply
+Install `libayatana-appindicator3-dev` and rebuild. Some desktops (notably
+GNOME without an extension) hide tray icons entirely; the hotkey still works.
 
-Normal. The first message loads ~2 GB into memory.
+### `Win+O` does nothing
 
-**Measured on real hardware** (8-core CPU, 7 inference threads, CPU-only,
-Qwen2.5-3B-Instruct Q4_K_M, 4096 context):
+Something else owns that chord. The app falls back to `Ctrl+Shift+O`, then
+`Ctrl+Alt+O`, then `Ctrl+Shift+Space`. Check the terminal output — it logs
+which one it registered. On Linux, Wayland restricts global hotkeys and they
+may not work at all outside X11; that is a platform limit, not a bug I can fix
+from here.
 
-| Metric | Value |
-|---|---|
-| Model load, cold | 8.4 s |
-| Prompt eval | 25.1 tok/s |
-| Generation | 10.4 tok/s |
-| Model buffer | 2002 MiB |
-| KV cache | 144 MiB |
-| Compute buffer | 301 MiB |
-| **Total resident** | **~2.4 GB** |
+### It builds but the first run is enormously slow
 
-~10 tok/s is roughly conversational reading speed. If you are far below this,
-check that no other memory-heavy application is running.
+Expected. First launch memory-maps a 2 GB model. Later launches are faster
+because the OS caches it.
 
 ---
 
-## What I want to know
+## What I most want to know
 
-1. **Does the window open at all**, and roughly how long from launch?
-2. **Does text stream** token by token, or arrive in one block?
-3. **Tokens per second**, roughly — and your RAM and CPU.
-4. **Does it work with Wi-Fi off?**
-5. Anything that crashes, hangs, or looks wrong.
+In rough priority order:
 
-Once M0 is confirmed good, tell me and I will merge M1 (hardware detection and
-tiered model selection) into `main` for the next round.
+1. **Does the window actually open**, and how long does it take from launch to
+   visible? The design budget is under one second, and that number has never
+   been measured on real hardware — it is arithmetic, not a benchmark.
+2. **Does the tray icon render**, and does left-click toggle correctly?
+3. **Does `Win+O` work from inside another application** — a browser, a game,
+   a full-screen editor?
+4. **Does closing to tray feel right or surprising?**
+5. Anything that crashes, hangs, or looks broken.
 
----
-
-## Honest status
-
-**M0 has now been run on real hardware and works.** Chat streams, the model
-loads, replies generate at ~10 tok/s on an 8-core CPU-only laptop.
-
-Three real defects were found by that first run, all now fixed:
-
-1. `fetch-sidecars.sh` requested a Windows llama.cpp asset name that does not
-   exist (`win-cpu-x64`), so the download failed.
-2. The DLL copy step ended in `|| true` and swallowed its own failure.
-3. Tauri relocates the sidecar executable but not its libraries, so the engine
-   died in 65 ms with `STATUS_DLL_NOT_FOUND` and no message. The same gap would
-   have shipped a broken installer — `tauri.conf.json` now declares the
-   libraries as bundle `resources`.
-
-Still unverified: the bundled installer has never been built or run, and
-nothing has been tested on macOS.
+Timings and screenshots are more useful than "it worked".

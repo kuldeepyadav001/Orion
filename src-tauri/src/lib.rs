@@ -14,6 +14,7 @@ pub mod error;
 pub mod hashing;
 pub mod ingest;
 pub mod models;
+pub mod presence;
 pub mod profiler;
 pub mod rag;
 pub mod sidecars;
@@ -508,6 +509,67 @@ async fn start_engine(
 /* ------------------------------------------------------------------ */
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+
+/// Assess files the webview reports as dropped, without ingesting them yet.
+/// The renderer never gets to decide what is readable; that is policy.
+#[tauri::command]
+async fn assess_dropped_files(paths: Vec<String>) -> Result<DropSummary> {
+    let paths: Vec<std::path::PathBuf> = paths.into_iter().map(Into::into).collect();
+    let a = presence::assess(&paths, &presence::RealFs);
+    Ok(DropSummary {
+        summary: a.summary(),
+        accepted: a
+            .accepted
+            .iter()
+            .map(|p| p.to_string_lossy().to_string())
+            .collect(),
+        rejected: a
+            .rejected
+            .iter()
+            .map(|(p, why)| {
+                (
+                    p.file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_default(),
+                    why.clone(),
+                )
+            })
+            .collect(),
+        truncated: a.truncated,
+    })
+}
+
+#[derive(serde::Serialize)]
+pub struct DropSummary {
+    pub summary: String,
+    pub accepted: Vec<String>,
+    /// (file name, reason) — the path is deliberately not sent to the
+    /// renderer, which has no need for the user's directory layout.
+    pub rejected: Vec<(String, String)>,
+    pub truncated: bool,
+}
+
+/// The hotkey label to show in the UI, formatted for this platform.
+#[tauri::command]
+fn hotkey_label() -> String {
+    presence::Hotkey::default_global().display_for(presence::Platform::current())
+}
+
+/// Files handed to us on the command line, filtered through the drop policy.
+fn files_from_args(args: &[String]) -> Vec<std::path::PathBuf> {
+    let paths: Vec<std::path::PathBuf> = args
+        .iter()
+        .skip(1) // argv[0] is the executable
+        .filter(|a| !a.starts_with('-'))
+        .map(std::path::PathBuf::from)
+        .collect();
+
+    if paths.is_empty() {
+        return Vec::new();
+    }
+    presence::assess(&paths, &presence::RealFs).accepted
+}
+
 pub fn run() {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -516,38 +578,67 @@ pub fn run() {
         )
         .init();
 
+    let boot = std::time::Instant::now();
+    let mut trace = presence::StartupTrace::new();
+
     tauri::Builder::default()
+        // Single instance must be registered first, so a second launch is
+        // short-circuited before it does any setup work of its own.
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            tracing::info!("second instance launched");
+            presence::tauri_glue::activate(app, presence::Activation::SecondInstance);
+
+            let files = files_from_args(&args);
+            if !files.is_empty() {
+                use tauri::Emitter;
+                presence::tauri_glue::activate(app, presence::Activation::FileDrop);
+                let _ = app.emit("files://opened", files);
+            }
+        }))
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
-        .setup(|app| {
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .setup(move |app| {
+            use presence::tauri_glue::timed;
+
+            trace.record(presence::Phase::RuntimeInit, boot.elapsed());
+
             let data_dir = db::data_dir()?;
-            let database = Db::open(&data_dir.join("orion.db"))?;
+            let database = timed(&mut trace, presence::Phase::Database, || -> Result<Db> {
+                Db::open(&data_dir.join("orion.db"))
+            })?;
 
-            // Profile the machine before anything else — the tier decides
-            // which model we try to load.
-            let profile = HardwareProfile::detect_or_forced();
-            let recommendation = profile.recommend();
-            tracing::info!(
-                total_ram = profile.total_ram_gib,
-                available_ram = profile.available_ram_gib,
-                cores = profile.cpu_cores,
-                simulated = profile.simulated,
-                tier = recommendation.tier.as_str(),
-                "hardware profiled"
-            );
-            for reason in &recommendation.reasons {
-                tracing::info!(target: "profiler", "{reason}");
-            }
-            for warning in &recommendation.warnings {
-                tracing::warn!(target: "profiler", "{warning}");
-            }
+            // Profiling and model resolution are the "config" phase: cheap,
+            // and they decide which model the engine will later try to load.
+            // The model itself is NOT loaded here — see presence::startup for
+            // why that would lose the one-second budget outright.
+            let (profile, recommendation, manager, tier, session_id) =
+                timed(&mut trace, presence::Phase::Config, || -> Result<_> {
+                    let profile = HardwareProfile::detect_or_forced();
+                    let recommendation = profile.recommend();
+                    tracing::info!(
+                        total_ram = profile.total_ram_gib,
+                        available_ram = profile.available_ram_gib,
+                        cores = profile.cpu_cores,
+                        simulated = profile.simulated,
+                        tier = recommendation.tier.as_str(),
+                        "hardware profiled"
+                    );
+                    for reason in &recommendation.reasons {
+                        tracing::info!(target: "profiler", "{reason}");
+                    }
+                    for warning in &recommendation.warnings {
+                        tracing::warn!(target: "profiler", "{warning}");
+                    }
 
-            let models_dir = data_dir.join("models");
-            std::fs::create_dir_all(&models_dir).ok();
-            let manager = Arc::new(ModelManager::new(models_dir).with_registry_file());
-            let tier = recommendation.tier;
-            // M0 uses a single rolling session; M1 adds the history sidebar.
-            let session_id = database.create_session("New chat")?;
+                    let models_dir = data_dir.join("models");
+                    std::fs::create_dir_all(&models_dir).ok();
+                    let manager = Arc::new(ModelManager::new(models_dir).with_registry_file());
+                    let tier = recommendation.tier;
+                    let session_id = database.create_session("New chat")?;
+                    Ok((profile, recommendation, manager, tier, session_id))
+                })?;
+            let _ = &recommendation;
 
             let engine = Arc::new(Engine::new());
 
@@ -566,6 +657,37 @@ pub fn run() {
                 sidecars: sidecars.clone(),
             });
 
+            timed(&mut trace, presence::Phase::SystemIntegration, || {
+                if let Err(e) = presence::tauri_glue::build_tray(app.handle()) {
+                    // A missing tray is survivable; the window still works.
+                    tracing::error!(error = %e, "tray icon could not be created");
+                }
+                presence::tauri_glue::register_hotkey(app.handle(), None)
+            });
+
+            timed(&mut trace, presence::Phase::WindowShow, || {
+                if let Some(w) = app.get_webview_window(presence::tauri_glue::MAIN_WINDOW) {
+                    let _ = w.show();
+                }
+            });
+
+            // Files passed on the command line, e.g. "Open with Orion".
+            let files = files_from_args(&std::env::args().collect::<Vec<_>>());
+            if !files.is_empty() {
+                use tauri::Emitter;
+                let _ = app.emit("files://opened", files);
+            }
+
+            tracing::info!("\n{}", trace.render());
+            if !trace.within_gate() {
+                tracing::warn!(
+                    "cold start exceeded the {:?} gate",
+                    presence::startup::COLD_START_BUDGET
+                );
+            }
+
+            // Everything below here is deliberately AFTER the window is up.
+            // See presence::startup::DeferredWork for why.
             let handle = app.handle().clone();
             let mgr = manager.clone();
             let engine_sidecars = sidecars.clone();
@@ -584,6 +706,14 @@ pub fn run() {
 
             Ok(())
         })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                // Orion lives in the tray; closing hides it so the global
+                // hotkey keeps working. Quit is in the tray menu.
+                api.prevent_close();
+                let _ = window.hide();
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             engine_status,
             send_message,
@@ -597,7 +727,9 @@ pub fn run() {
             library_status,
             forget_document,
             preview_retrieval,
-            list_documents
+            list_documents,
+            assess_dropped_files,
+            hotkey_label
         ])
         .build(tauri::generate_context!())
         .expect("error while building Orion")

@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import SystemPanel from "./SystemPanel";
 import DocumentList from "./DocumentList";
+import DropZone from "./DropZone.jsx";
 import Logo from "./Logo";
 
 /**
@@ -28,6 +29,15 @@ export default function App() {
   // consulted at all. The latter was a real bug that shipped unnoticed.
   const [grounded, setGrounded] = useState(null);
   const [library, setLibrary] = useState({ documents: 0, chunks: 0 });
+  const [hotkey, setHotkey] = useState("");
+
+  // The label is computed in Rust so it matches the chord actually
+  // registered, and uses the right glyphs for this platform.
+  useEffect(() => {
+    invoke("hotkey_label")
+      .then(setHotkey)
+      .catch(() => {});
+  }, []);
 
   const chatRef = useRef(null);
   const taRef = useRef(null);
@@ -223,6 +233,21 @@ export default function App() {
 
   return (
     <div className="shell">
+      {/* Drag-and-drop overlay. M3 built the intake path; now that M2 has
+          landed, accepted files go straight into the library instead of
+          being reported and discarded. */}
+      <DropZone
+        onAccepted={async (paths) => {
+          try {
+            await invoke("add_documents", { paths });
+            const st = await invoke("library_status");
+            setLibrary(st);
+          } catch (e) {
+            console.error("could not index dropped files:", e);
+          }
+        }}
+      />
+
       {/* Sidebar: persistent, so the library is always visible rather than
           hidden behind a modal the user has to remember exists. */}
       <aside className={`sidebar ${sidebarOpen ? "" : "collapsed"}`}>
@@ -410,6 +435,7 @@ export default function App() {
             {docCount > 0
               ? `${docCount} document${docCount === 1 ? "" : "s"} indexed · answers are cited`
               : "Runs entirely offline"}
+            {hotkey && <> · press <kbd>{hotkey}</kbd> from anywhere</>}
           </div>
         </footer>
       </div>
