@@ -16,6 +16,7 @@ pub mod ingest;
 pub mod models;
 pub mod profiler;
 pub mod rag;
+pub mod sidecars;
 
 use std::sync::Arc;
 
@@ -48,6 +49,8 @@ pub struct AppState {
     pub active_tier: Mutex<Tier>,
     /// Embedding sidecar backing semantic search over the user's documents.
     pub embed: Arc<documents::EmbedService>,
+    /// Every spawned child process, so they can be killed on exit.
+    pub sidecars: Arc<sidecars::SidecarRegistry>,
 }
 
 /* ------------------------------------------------------------------ */
@@ -275,6 +278,7 @@ fn resolve_model(models: &ModelManager, tier: Tier) -> Result<std::path::PathBuf
 /// Spawn `llama-server` bound to loopback on an ephemeral port with a random
 /// bearer token, then wait for it to report healthy.
 async fn start_engine(
+    registry: Arc<sidecars::SidecarRegistry>,
     app: tauri::AppHandle,
     engine: Arc<Engine>,
     models: Arc<ModelManager>,
@@ -355,7 +359,7 @@ async fn start_engine(
         ])
         .spawn();
 
-    let (mut rx, _child) = match spawned {
+    let (mut rx, child) = match spawned {
         Ok(v) => v,
         Err(e) => {
             engine
@@ -364,6 +368,11 @@ async fn start_engine(
             return;
         }
     };
+
+    // Hand the handle to the registry. Dropping it would orphan the process:
+    // CommandChild has no Drop impl, so the ~2.4 GB llama-server would
+    // outlive the app and lock its own executable against the next build.
+    registry.register("llama-server (chat)", child);
 
     // Drain sidecar output into our logs; llama-server is chatty on stderr.
     tauri::async_runtime::spawn(async move {
@@ -443,6 +452,7 @@ pub fn run() {
             let engine = Arc::new(Engine::new());
 
             let embed = Arc::new(documents::EmbedService::new());
+            let sidecars = Arc::new(sidecars::SidecarRegistry::new());
 
             app.manage(AppState {
                 engine: engine.clone(),
@@ -453,20 +463,23 @@ pub fn run() {
                     .with_registry_file(),
                 active_tier: Mutex::new(tier),
                 embed: embed.clone(),
+                sidecars: sidecars.clone(),
             });
 
             let handle = app.handle().clone();
             let mgr = manager.clone();
+            let engine_sidecars = sidecars.clone();
             tauri::async_runtime::spawn(async move {
-                start_engine(handle, engine, mgr, tier).await;
+                start_engine(engine_sidecars, handle, engine, mgr, tier).await;
             });
 
             // The embedding sidecar warms up independently of the chat model.
             // It is small (~130 MB) and optional: if it never becomes ready,
             // search degrades to keyword-only rather than failing.
             let embed_handle = app.handle().clone();
+            let embed_sidecars = sidecars.clone();
             tauri::async_runtime::spawn(async move {
-                documents::start_embedder(embed_handle, embed).await;
+                documents::start_embedder(embed_sidecars, embed_handle, embed).await;
             });
 
             Ok(())
@@ -484,6 +497,18 @@ pub fn run() {
             library_status,
             forget_document
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Orion");
+        .build(tauri::generate_context!())
+        .expect("error while building Orion")
+        .run(|app, event| {
+            // Kill the sidecars when the app exits. Without this the
+            // llama-server processes outlive Orion: CommandChild has no Drop
+            // impl, so a dropped handle simply orphans the child. That leaks
+            // ~2.4 GB per launch and locks the executable against the next
+            // build on Windows.
+            if let tauri::RunEvent::Exit = event {
+                if let Some(state) = app.try_state::<AppState>() {
+                    state.sidecars.shutdown();
+                }
+            }
+        });
 }

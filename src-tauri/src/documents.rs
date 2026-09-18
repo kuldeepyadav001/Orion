@@ -40,6 +40,7 @@ use crate::ingest::{self, chunker::ChunkConfig};
 use crate::rag::context::{build_context, GroundedContext};
 use crate::rag::embed::{EmbedConfig, EmbedKind, Embedder};
 use crate::rag::store::RagStore;
+use crate::sidecars::SidecarRegistry;
 
 /// Model file for the embedder, looked up in the same models directory as
 /// the chat model.
@@ -176,7 +177,11 @@ pub fn find_embed_model() -> Option<PathBuf> {
 ///
 /// Never fatal. A failure here leaves search working on keywords alone,
 /// which is worse but far better than refusing to open documents at all.
-pub async fn start_embedder(app: tauri::AppHandle, service: Arc<EmbedService>) {
+pub async fn start_embedder(
+    registry: Arc<SidecarRegistry>,
+    app: tauri::AppHandle,
+    service: Arc<EmbedService>,
+) {
     let Some(model_path) = find_embed_model() else {
         service
             .set(
@@ -236,7 +241,7 @@ pub async fn start_embedder(app: tauri::AppHandle, service: Arc<EmbedService>) {
         ])
         .spawn();
 
-    let (mut rx, _child) = match spawned {
+    let (mut rx, child) = match spawned {
         Ok(v) => v,
         Err(e) => {
             service
@@ -245,6 +250,10 @@ pub async fn start_embedder(app: tauri::AppHandle, service: Arc<EmbedService>) {
             return;
         }
     };
+
+    // Same reasoning as the chat sidecar: an unregistered child is never
+    // killed and outlives the app.
+    registry.register("llama-server (embeddings)", child);
 
     tauri::async_runtime::spawn(async move {
         while let Some(ev) = rx.recv().await {
