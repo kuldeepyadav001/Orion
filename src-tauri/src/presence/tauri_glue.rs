@@ -65,24 +65,26 @@ pub fn activate<R: Runtime>(app: &AppHandle<R>, source: Activation) {
 }
 
 /// Build the tray icon and menu.
-/// Build the tray icon and return it.
+/// Build the tray icon and menu.
 ///
-/// **The caller must keep the returned value alive.** Tauri's own
-/// documentation on `TrayIcon` is explicit: "This type is reference-counted
-/// and the icon is removed when the last instance is dropped."
+/// Ownership here is subtle and I got it wrong twice, so it is written down.
 ///
-/// An earlier version returned `Ok(())`, dropping both the icon and its menu
-/// at the end of this function. On Windows that crashed the process during
-/// startup with a refcount violation inside `alloc::rc`:
+/// `TrayIconBuilder::build` calls `icon.register(...)` internally, which
+/// stores the icon in the app's resource table, and `TrayIconBuilder::menu`
+/// takes the menu by `inner_context_owned()`. **Tauri owns both** from the
+/// moment `build()` returns, and releases them in `cleanup_before_exit`,
+/// which clears `manager.tray.icons` and every resource table.
 ///
-///   unsafe precondition(s) violated: hint::assert_unchecked
-///   thread caused non-unwinding panic. aborting.
-///   exit code 0xc0000409 (STATUS_STACK_BUFFER_OVERRUN)
+/// So the correct thing is to build and let the local handles drop. Keeping a
+/// copy in `AppState` is actively harmful: Tauri drops its reference during
+/// cleanup, then the managed copy drops afterwards against already-freed
+/// platform state, and the refcount assertion in `alloc::rc` aborts the
+/// process with 0xc0000409.
 ///
-/// The menu matters as much as the icon. `TrayIconBuilder::menu` takes a
-/// reference, so dropping the `Menu` leaves the tray pointing at freed
-/// platform handles.
-pub fn build_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<TrayHandle<R>> {
+/// That is exactly the crash this function caused in its previous form, and
+/// the "fix" of returning a handle to `app.manage()` reproduced it from the
+/// other direction.
+pub fn build_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let mut items: Vec<Box<dyn tauri::menu::IsMenuItem<R>>> = Vec::new();
 
     for item in super::window::tray_menu() {
@@ -102,7 +104,7 @@ pub fn build_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<TrayHandle<R>
     let refs: Vec<&dyn tauri::menu::IsMenuItem<R>> = items.iter().map(|b| b.as_ref()).collect();
     let menu = Menu::with_items(app, &refs)?;
 
-    let tray = TrayIconBuilder::with_id("orion-tray")
+    TrayIconBuilder::with_id("orion-tray")
         .icon(
             app.default_window_icon()
                 .cloned()
@@ -145,20 +147,7 @@ pub fn build_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<TrayHandle<R>
         })
         .build(app)?;
 
-    Ok(TrayHandle {
-        _tray: tray,
-        _menu: menu,
-    })
-}
-
-/// Keeps the tray icon and its menu alive.
-///
-/// Both are reference-counted handles to platform resources. Dropping either
-/// removes the tray, so this is stored in `AppState` for the lifetime of the
-/// app rather than discarded at the end of `build_tray`.
-pub struct TrayHandle<R: Runtime> {
-    _tray: tauri::tray::TrayIcon<R>,
-    _menu: Menu<R>,
+    Ok(())
 }
 
 fn emit_all<R: Runtime>(app: &AppHandle<R>, event: &str) -> tauri::Result<()> {

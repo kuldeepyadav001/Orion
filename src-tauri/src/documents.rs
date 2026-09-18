@@ -279,6 +279,7 @@ pub async fn start_embedder(
     // killed and outlives the app.
     registry.register("llama-server (embeddings)", child);
 
+    let exit_service = service.clone();
     tauri::async_runtime::spawn(async move {
         while let Some(ev) = rx.recv().await {
             match ev {
@@ -286,7 +287,18 @@ pub async fn start_embedder(
                     tracing::debug!(target: "embed", "{}", String::from_utf8_lossy(&b).trim())
                 }
                 CommandEvent::Terminated(p) => {
+                    // Clear the handle. It was left in place, so ingestion
+                    // kept POSTing to a dead port and failed outright instead
+                    // of degrading to keyword-only — which is the whole point
+                    // of the embedder being optional.
                     tracing::warn!(?p, "embedding sidecar exited");
+                    *exit_service.embedder.lock().await = None;
+                    exit_service
+                        .set(
+                            EmbedState::Unavailable,
+                            "Semantic search stopped; keyword search still works.",
+                        )
+                        .await;
                     break;
                 }
                 _ => {}
@@ -358,7 +370,20 @@ pub async fn ingest_file(
     // `Chunk::text` already carries the heading trail prefix, which the M2
     // eval showed is worth +0.22 recall. Embed that, not the bare body.
     let texts: Vec<String> = doc.chunks.iter().map(|c| c.text.clone()).collect();
-    let vectors = embed.embed_passages(&texts).await?;
+    // A failed embedding must not fail the whole document. The embedder is
+    // optional by design: losing it should cost semantic search, not the
+    // ability to index files at all. Dropping a PDF and getting nothing but
+    // "embedding request failed" is the worst possible outcome.
+    let vectors = match embed.embed_passages(&texts).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "embedding failed; indexing for keyword search only"
+            );
+            None
+        }
+    };
     let embedded = vectors.is_some();
 
     // The store requires one vector per chunk. When the embedder is

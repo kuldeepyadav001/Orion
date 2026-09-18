@@ -334,39 +334,36 @@ mod tests {
     /* ---------- tray menu ---------- */
 
     #[test]
-    fn the_tray_builder_does_not_discard_its_handle() {
-        // Structural guard for a crash that reached a user's machine.
+    fn the_tray_is_not_retained_outside_tauri() {
+        // Regression guard for a crash that reached a user's machine twice,
+        // from opposite directions.
         //
-        // Tauri's TrayIcon is reference-counted and its docs say plainly:
-        // "the icon is removed when the last instance is dropped". build_tray
-        // returned Ok(()), so both the icon and its Menu were dropped at the
-        // end of the function. On Windows that aborted the process during
-        // startup with a refcount violation inside alloc::rc, exit code
-        // 0xc0000409.
+        // TrayIconBuilder::build calls icon.register(), which stores the icon
+        // in the app's resource table, and ::menu takes the menu by
+        // inner_context_owned(). Tauri owns both, and frees them in
+        // cleanup_before_exit.
         //
-        // Nothing caught it because every test here covers the pure decision
-        // logic, and the Tauri layer cannot be instantiated without a desktop
-        // session. A source-level check is crude but it is the only kind
-        // available, and it encodes the rule that was broken.
+        // Holding a second reference — e.g. returning a handle and calling
+        // app.manage() — means Tauri drops its copy during cleanup and ours
+        // drops afterwards against freed platform state. The refcount
+        // assertion in alloc::rc then aborts with 0xc0000409, a
+        // non-unwinding panic that no error handling can catch.
+        //
+        // Source-level because the Tauri layer cannot be instantiated without
+        // a desktop session, which is precisely why neither version was
+        // caught by the 77 tests in this module.
         let glue = include_str!("tauri_glue.rs");
-
-        assert!(
-            glue.contains("pub struct TrayHandle"),
-            "build_tray must return a handle that keeps the tray and menu alive"
-        );
-        assert!(
-            !glue
-                .contains("pub fn build_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()>"),
-            "build_tray returns Ok(()), which drops the refcounted TrayIcon \
-             and removes the tray"
-        );
-
-        // And the caller must actually retain it.
         let lib = include_str!("../lib.rs");
+
         assert!(
-            lib.contains("app.manage(tray)"),
-            "the tray handle must be managed by the app, not dropped at the \
-             end of setup()"
+            !glue.contains("pub struct TrayHandle"),
+            "the tray must not be wrapped in a handle that outlives Tauri's \
+             own cleanup"
+        );
+        assert!(
+            !lib.contains("app.manage(tray)"),
+            "managing the tray keeps a reference alive past \
+             cleanup_before_exit and aborts the process"
         );
     }
 
