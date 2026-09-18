@@ -38,3 +38,17 @@ Thumbs.db
 # Logs
 *.log
 npm-debug.log*
+
+# Cargo.lock for the app crate.
+#
+# Deliberately NOT committed. It was added by accident in the M1 merge, from a
+# Linux sandbox build, and immediately collided with the lockfile on a
+# contributor's Windows machine ("untracked working tree files would be
+# overwritten by merge").
+#
+# The usual advice is to commit lockfiles for binaries, and that is right for
+# reproducibility. It is not workable here yet: this crate is built on Linux,
+# Windows and macOS by different people, and Tauri resolves some dependencies
+# per platform. Revisit once CI pins the toolchain and generates the lockfile
+# on one platform.
+src-tauri/Cargo.lock
