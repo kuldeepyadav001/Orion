@@ -34,6 +34,11 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 rand = "0.8"
 sysinfo = "0.32"
+
+# Microphone capture. Optional so the crate still builds where there is no
+# audio stack at all — CI containers and the dev sandbox have none, and a
+# hard dependency would make the whole project unbuildable there.
+cpal = { version = "0.18", optional = true }
 dirs = "5"
 
 # Document extraction. Feature-minimised on purpose: the full default sets
@@ -62,7 +67,10 @@ windows-sys = { version = "0.59", features = [
 ] }
 
 [features]
-default = ["tauri-glue"]
+default = ["tauri-glue", "voice"]
+# Microphone capture. Split out because cpal pulls in ALSA on Linux, which is
+# not present in every build environment.
+voice = ["dep:cpal"]
 # Tauri's default custom-protocol feature is enabled by the CLI on build.
 custom-protocol = ["tauri/custom-protocol"]
 # The Tauri-dependent presence layer. Disabled in scratch test crates, which

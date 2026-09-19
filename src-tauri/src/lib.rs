@@ -18,6 +18,7 @@ pub mod presence;
 pub mod profiler;
 pub mod rag;
 pub mod sidecars;
+pub mod voice;
 
 use std::sync::Arc;
 
