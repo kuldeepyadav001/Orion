@@ -211,6 +211,10 @@ export default function App() {
   };
 
   const label = {
+    // "Idle" is not an error and not work in progress. Before this existed
+    // the app reported "Starting engine…" forever after launch, because the
+    // engine is lazy and genuinely had not been asked to do anything yet.
+    idle: "Ready",
     starting: "Starting engine…",
     loading: "Loading model…",
     ready: "Ready",
@@ -221,7 +225,11 @@ export default function App() {
   // They previously emitted ready/error/loading, which matched nothing, so the
   // indicator was permanently grey however the engine was doing.
   const dotClass =
-    engine.state === "ready" ? "ok" : engine.state === "error" ? "err" : "warn";
+    engine.state === "ready" || engine.state === "idle"
+      ? "ok"
+      : engine.state === "error"
+        ? "err"
+        : "warn";
 
   // Clears the visible thread. History stays in SQLite; this is a fresh view,
   // not a delete.
@@ -419,7 +427,9 @@ export default function App() {
                   ? "Engine unavailable — see System"
                   : engine.state === "loading"
                     ? "Loading the model…"
-                    : "Ask anything…"
+                    : engine.state === "starting"
+                      ? "Starting the engine…"
+                      : "Ask anything…"
               }
             />
             {streaming ? (

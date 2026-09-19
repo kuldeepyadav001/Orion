@@ -27,7 +27,14 @@ use crate::error::{OrionError, Result};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum EngineState {
-    /// Process not yet spawned.
+    /// Nothing has been started, and nothing is wrong.
+    ///
+    /// Distinct from `Starting`, which claims work is in progress. Since the
+    /// engine became lazy the app sits here until the first message, and
+    /// reporting "Starting engine…" for that made a perfectly healthy idle
+    /// app look like it had hung — which is exactly how it was reported.
+    Idle,
+    /// Process spawning.
     Starting,
     /// Process up, model still being read into memory.
     Loading,
@@ -104,8 +111,8 @@ impl Engine {
         Self {
             config: RwLock::new(None),
             status: RwLock::new(EngineStatus {
-                state: EngineState::Starting,
-                detail: "Engine not started".into(),
+                state: EngineState::Idle,
+                detail: "Ready when you are — the model loads on your first message".into(),
             }),
             // No global timeout: generation legitimately runs for minutes on
             // CPU-only hardware. Cancellation is explicit instead.
@@ -300,4 +307,46 @@ pub fn free_port() -> Result<u16> {
         .map_err(|e| OrionError::Engine(format!("could not read local addr: {e}")))?
         .port();
     Ok(port)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_fresh_engine_is_idle_not_starting() {
+        // Regression guard for a real report: the app appeared "stuck at
+        // starting engine" forever after launch.
+        //
+        // It was not stuck. The engine became lazy — it does nothing until
+        // the first message — but the default state was still Starting with
+        // detail "Engine not started", which the UI rendered as
+        // "Starting engine…" with a pulsing amber dot. A perfectly healthy
+        // idle app was indistinguishable from a hung one.
+        let e = Engine::new();
+        let st = e.status().await;
+
+        assert_eq!(
+            st.state,
+            EngineState::Idle,
+            "an engine that has not been asked to do anything must not claim \
+             to be starting"
+        );
+        assert!(
+            !st.detail.to_lowercase().contains("not started"),
+            "the detail is shown to the user and should not read as a \
+             failure: {:?}",
+            st.detail
+        );
+    }
+
+    #[tokio::test]
+    async fn idle_is_distinct_from_every_other_state() {
+        // The UI keys colour and wording off this. If Idle ever collapses
+        // into Starting again, the bug returns silently.
+        assert_ne!(EngineState::Idle, EngineState::Starting);
+        assert_ne!(EngineState::Idle, EngineState::Loading);
+        assert_ne!(EngineState::Idle, EngineState::Ready);
+        assert_ne!(EngineState::Idle, EngineState::Error);
+    }
 }
