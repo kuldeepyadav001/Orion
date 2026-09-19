@@ -341,6 +341,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_loading_engine_is_not_ready_to_answer() {
+        // The gap that produced a 503 on every first message: ensure_engine
+        // spawned the process and returned immediately, so send_message fired
+        // a request while llama-server was still mapping the weights.
+        //
+        // Ready must mean "can answer now". Any other state means wait.
+        for state in [
+            EngineState::Idle,
+            EngineState::Starting,
+            EngineState::Loading,
+            EngineState::Error,
+        ] {
+            assert_ne!(
+                state,
+                EngineState::Ready,
+                "{state:?} must not be treated as able to answer"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn an_unconfigured_engine_refuses_rather_than_hanging() {
+        // wait_until_ready is now on the send path, so its failure mode is
+        // user-visible. With no config it must return promptly instead of
+        // polling a URL that does not exist until the timeout expires.
+        let e = Engine::new();
+        let r = e.wait_until_ready(std::time::Duration::from_secs(5)).await;
+        assert!(r.is_err(), "should not claim readiness with no engine");
+    }
+
+    #[tokio::test]
     async fn idle_is_distinct_from_every_other_state() {
         // The UI keys colour and wording off this. If Idle ever collapses
         // into Starting again, the bug returns silently.

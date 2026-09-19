@@ -74,28 +74,62 @@ async fn engine_status(state: State<'_, AppState>) -> Result<EngineStatus> {
 /// Safe to call on every message: `OnceCell` guarantees the spawn happens
 /// once even if the user sends several messages while the model is still
 /// loading.
-async fn ensure_engine(app: &tauri::AppHandle, state: &State<'_, AppState>) {
+/// How long a message will wait for a cold engine before giving up.
+///
+/// Measured on the 6 GiB target machine: ~9 s from spawn to Ready with the
+/// 2.4 GB model, longer when memory is tight and Windows has to reclaim
+/// cached pages. 180 s is generous on purpose — the alternative is telling
+/// someone their message failed when the model was seconds away.
+const ENGINE_WAIT: std::time::Duration = std::time::Duration::from_secs(180);
+
+/// Start the engine if needed, and **wait until it can actually answer**.
+///
+/// The waiting is the point. An earlier version spawned the engine and
+/// returned immediately, so the very next line sent a request to a model that
+/// was still loading and llama-server replied 503 "Loading model". Every
+/// first message after launch failed, and the second one worked — which reads
+/// as a flaky app rather than a startup cost.
+///
+/// `spawn` + `OnceCell` handles the race where several messages arrive during
+/// loading: one starts the engine, and all of them wait on the same health
+/// check.
+async fn ensure_engine(app: &tauri::AppHandle, state: &State<'_, AppState>) -> Result<()> {
     let started = state.engine_started.clone();
-    if started.initialized() {
-        return;
+
+    if !started.initialized() {
+        let engine = state.engine.clone();
+        let manager = state.manager.clone();
+        let sidecars = state.sidecars.clone();
+        let tier = *state.active_tier.lock().await;
+        let handle = app.clone();
+
+        // set() returning Err means another message won the race; that caller
+        // is spawning it, and we fall through to wait alongside them.
+        if started.set(()).is_ok() {
+            tracing::info!("first message: starting the engine now");
+            tauri::async_runtime::spawn(async move {
+                start_engine(sidecars, handle, engine, manager, tier).await;
+            });
+        }
     }
 
-    let engine = state.engine.clone();
-    let manager = state.manager.clone();
-    let sidecars = state.sidecars.clone();
-    let tier = *state.active_tier.lock().await;
-    let handle = app.clone();
-
-    // set() returning Err means another message won the race and the engine
-    // is already starting.
-    if started.set(()).is_err() {
-        return;
+    // Already answering: nothing to wait for.
+    if state.engine.status().await.state == EngineState::Ready {
+        return Ok(());
     }
 
-    tracing::info!("first message: starting the engine now");
-    tauri::async_runtime::spawn(async move {
-        start_engine(sidecars, handle, engine, manager, tier).await;
-    });
+    // Wait for the health check rather than firing into a loading model.
+    // wait_until_ready polls /health and reports Loading while llama-server
+    // maps the weights, so the status pill stays honest throughout.
+    match state.engine.wait_until_ready(ENGINE_WAIT).await {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            tracing::error!(error = %e, "engine did not become ready");
+            Err(OrionError::Engine(format!(
+                "the model did not finish loading: {e}"
+            )))
+        }
+    }
 }
 
 #[tauri::command]
@@ -111,7 +145,9 @@ async fn send_message(
 
     // Start the engine on demand. The first message pays the load cost; the
     // window and tray were up immediately.
-    ensure_engine(&app, &state).await;
+    // Blocks until the model can answer. On a cold start this is the pause
+    // the user sees instead of a 503.
+    ensure_engine(&app, &state).await?;
 
     let session_id = state.session_id.lock().await.clone();
 

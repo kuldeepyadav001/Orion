@@ -128,6 +128,11 @@ export default function App() {
         const next = [...prev];
         const last = next[next.length - 1];
         const msg = `⚠️ ${e.payload}`;
+        // The same failure can arrive twice: once here from the spawned
+        // generation task, and once as the send_message rejection. Showing it
+        // twice made one problem look like two, which is how the duplicate
+        // 503 was reported.
+        if (last?.role === "assistant" && last.content === msg) return prev;
         if (last?.role === "assistant" && !last.content) last.content = msg;
         else next.push({ role: "assistant", content: msg });
         return next;
@@ -178,7 +183,11 @@ export default function App() {
       setStreaming(false);
       setMessages((prev) => {
         const next = [...prev];
-        next[next.length - 1] = { role: "assistant", content: `⚠️ ${e}` };
+        const msg = `⚠️ ${e}`;
+        const last = next[next.length - 1];
+        // chat://error may already have reported this; do not say it twice.
+        if (last?.role === "assistant" && last.content === msg) return prev;
+        next[next.length - 1] = { role: "assistant", content: msg };
         return next;
       });
     }
@@ -378,6 +387,15 @@ export default function App() {
                   <span className="dot-pulse" />
                   <span className="dot-pulse" />
                   <span className="dot-pulse" />
+                  {/* A cold start blocks for ~9 s while the model is mapped
+                      into memory. Saying nothing during that looks like a
+                      hang, which is exactly the complaint this release is
+                      fixing elsewhere. */}
+                  {(engine.state === "loading" || engine.state === "starting") && (
+                    <span className="thinking-note">
+                      Loading the model — first message only
+                    </span>
+                  )}
                 </div>
               )}
 
