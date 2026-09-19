@@ -34,6 +34,11 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 rand = "0.8"
 sysinfo = "0.32"
+
+# Microphone capture. Optional so the crate still builds where there is no
+# audio stack at all — CI containers and the dev sandbox have none, and a
+# hard dependency would make the whole project unbuildable there.
+cpal = { version = "0.18", optional = true }
 dirs = "5"
 
 # Document extraction. Feature-minimised on purpose: the full default sets
@@ -63,11 +68,28 @@ windows-sys = { version = "0.59", features = [
 
 [features]
 default = ["tauri-glue"]
+
 # Tauri's default custom-protocol feature is enabled by the CLI on build.
 custom-protocol = ["tauri/custom-protocol"]
-# The Tauri-dependent presence layer. Disabled in scratch test crates, which
-# have no desktop session and cannot link webkit.
-tauri-glue = []
+
+# The Tauri-dependent layer: tray, hotkey, and microphone capture. Disabled in
+# scratch test crates, which have no desktop session and cannot link webkit.
+#
+# `voice` is pulled in HERE rather than through `default`, and that placement
+# is deliberate. The Tauri CLI does not use the default feature set: the dev
+# command it actually runs is
+#
+#     cargo run --no-default-features --features tauri-glue
+#
+# so anything listed only under `default` is silently absent in the real app.
+# Putting voice in `default` would have compiled the microphone code in tests
+# and in `cargo build`, while the shipped binary had it stubbed out — 
+# list_input_devices returning an empty list forever with no error anywhere.
+tauri-glue = ["voice"]
+
+# Microphone capture. Separable because cpal pulls in ALSA on Linux, which not
+# every build environment has; the crate must still compile without it.
+voice = ["dep:cpal"]
 
 # Dev profile tuned for low-RAM machines (8 GB dev laptop).
 # Fast incremental builds matter more than runtime speed during development.
