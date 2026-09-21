@@ -95,6 +95,10 @@ PACKAGES=(
   "MAIN:libx/libxtst:libxtst-dev"
   "MAIN:w/wayland:libwayland-dev"
 
+  # ALSA for cpal audio input
+  "MAIN:a/alsa-lib:libasound2-dev"
+  "MAIN:a/alsa-lib:libasound2t64"
+
   # misc transitive
   "MAIN:libe/libepoxy:libepoxy-dev"
   "MAIN:p/pixman:libpixman-1-dev"

@@ -240,27 +240,72 @@ impl MicStream {
         let err_state = Arc::clone(&state);
         let _ = &err_state;
 
-        let stream = device
-            .build_input_stream(
-                // Taken by value in cpal 0.18.
-                config.config(),
-                move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                    // Realtime thread. Keep this cheap: mix, resample, hand
-                    // over. No allocation beyond the two vectors, no I/O, no
-                    // blocking.
-                    let mono = audio::to_mono(data, channels);
-                    let resampled = audio::resample_to_16k(&mono, sample_rate);
-                    state.push(&resampled);
-                },
-                move |err| {
-                    // A device error is usually the microphone being
-                    // unplugged. Log it; the supervisor decides whether to
-                    // reopen.
-                    tracing::warn!(error = %err, "microphone stream error");
-                },
-                None,
-            )
-            .map_err(|e| OrionError::Config(format!("cannot open microphone: {e}")))?;
+        let sample_format = config.sample_format();
+        let stream = match sample_format {
+            cpal::SampleFormat::F32 => {
+                let state = Arc::clone(&state);
+                device.build_input_stream(
+                    config.config(),
+                    move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                        // Realtime thread. Keep this cheap: mix, resample, hand
+                        // over. No allocation beyond the two vectors, no I/O, no
+                        // blocking.
+                        let mono = audio::to_mono(data, channels);
+                        let resampled = audio::resample_to_16k(&mono, sample_rate);
+                        state.push(&resampled);
+                    },
+                    move |err| {
+                        // A device error is usually the microphone being
+                        // unplugged. Log it; the supervisor decides whether to
+                        // reopen.
+                        tracing::warn!(error = %err, "microphone stream error");
+                    },
+                    None,
+                )
+            }
+            cpal::SampleFormat::I16 => {
+                let state = Arc::clone(&state);
+                device.build_input_stream(
+                    config.config(),
+                    move |data: &[i16], _: &cpal::InputCallbackInfo| {
+                        let float_data: Vec<f32> =
+                            data.iter().map(|&s| s as f32 / 32768.0).collect();
+                        let mono = audio::to_mono(&float_data, channels);
+                        let resampled = audio::resample_to_16k(&mono, sample_rate);
+                        state.push(&resampled);
+                    },
+                    move |err| {
+                        tracing::warn!(error = %err, "microphone stream error");
+                    },
+                    None,
+                )
+            }
+            cpal::SampleFormat::U16 => {
+                let state = Arc::clone(&state);
+                device.build_input_stream(
+                    config.config(),
+                    move |data: &[u16], _: &cpal::InputCallbackInfo| {
+                        let float_data: Vec<f32> = data
+                            .iter()
+                            .map(|&s| (s as f32 - 32768.0) / 32768.0)
+                            .collect();
+                        let mono = audio::to_mono(&float_data, channels);
+                        let resampled = audio::resample_to_16k(&mono, sample_rate);
+                        state.push(&resampled);
+                    },
+                    move |err| {
+                        tracing::warn!(error = %err, "microphone stream error");
+                    },
+                    None,
+                )
+            }
+            other => {
+                return Err(OrionError::Config(format!(
+                    "unsupported microphone sample format: {other}"
+                )));
+            }
+        }
+        .map_err(|e| OrionError::Config(format!("cannot open microphone: {e}")))?;
 
         stream
             .play()

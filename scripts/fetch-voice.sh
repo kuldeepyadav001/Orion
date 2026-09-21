@@ -59,18 +59,23 @@ chmod +x "$DEST/whisper-cli${EXT}"
 
 # Shared libraries must sit next to the binary, or it exits immediately with
 # STATUS_DLL_NOT_FOUND and prints nothing at all.
+#
+# IMPORTANT: we must copy symlinks (e.g. libwhisper.so.1 -> libwhisper.so.1.9.2)
+# preserving their link structure (cp -a). Skipping symlinks (-type f alone)
+# causes dynamic linker failures at runtime: "cannot open shared object file".
 LIBS=0
 while IFS= read -r lib; do
-  cp "$lib" "$DEST/" && LIBS=$((LIBS + 1))
-done < <(find "$TMP/x" -type f \( -name '*.so*' -o -name '*.dll' -o -name '*.dylib' \))
-echo "==> copied $LIBS shared libraries"
+  cp -a "$lib" "$DEST/" && LIBS=$((LIBS + 1))
+done < <(find "$TMP/x" \( -type f -o -type l \) \( -name '*.so*' -o -name '*.dll' -o -name '*.dylib' \))
+echo "==> copied $LIBS shared library files/links"
 
 for profile in debug release; do
   T="$ROOT/src-tauri/target/$profile"
   if [ -d "$T" ]; then
     cp "$DEST/whisper-cli${EXT}" "$T/" 2>/dev/null || true
-    find "$TMP/x" -type f \( -name '*.so*' -o -name '*.dll' -o -name '*.dylib' \) \
-      -exec cp {} "$T/" \; 2>/dev/null || true
+    while IFS= read -r lib; do
+      cp -a "$lib" "$T/" 2>/dev/null || true
+    done < <(find "$TMP/x" \( -type f -o -type l \) \( -name '*.so*' -o -name '*.dll' -o -name '*.dylib' \))
     echo "==> mirrored into target/$profile"
   fi
 done

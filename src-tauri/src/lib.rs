@@ -399,19 +399,51 @@ async fn list_documents(state: State<'_, AppState>) -> Result<Vec<rag::store::St
 /* voice                                                               */
 /* ------------------------------------------------------------------ */
 
-/// Where whisper-cli lives. Beside the other sidecars.
+/// Where whisper-cli lives. Beside the other sidecars or overridden by env.
 fn whisper_cli_path() -> std::path::PathBuf {
+    if let Ok(p) = std::env::var("ORION_WHISPER_PATH") {
+        let p = std::path::PathBuf::from(p);
+        if p.is_file() {
+            return p;
+        }
+    }
+
     let exe = if cfg!(windows) {
         "whisper-cli.exe"
     } else {
         "whisper-cli"
     };
-    // In dev the binary sits next to the running executable; in a bundle it
-    // is alongside it too, so the same lookup works for both.
-    std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.join(exe)))
-        .unwrap_or_else(|| std::path::PathBuf::from(exe))
+
+    // 1. Beside running executable (target/debug, target/release, or packaged bundle)
+    if let Ok(p) = std::env::current_exe() {
+        if let Some(d) = p.parent() {
+            let candidate = d.join(exe);
+            if candidate.is_file() {
+                return candidate;
+            }
+        }
+    }
+
+    // 2. Relative to CARGO_MANIFEST_DIR (dev/test environment)
+    if let Ok(manifest) = std::env::var("CARGO_MANIFEST_DIR") {
+        let candidate = std::path::PathBuf::from(manifest)
+            .join("binaries")
+            .join(exe);
+        if candidate.is_file() {
+            return candidate;
+        }
+    }
+
+    // 3. Project directories
+    for prefix in &["src-tauri/binaries", "binaries", "../src-tauri/binaries"] {
+        let candidate = std::path::PathBuf::from(prefix).join(exe);
+        if candidate.is_file() {
+            return candidate;
+        }
+    }
+
+    // 4. Default / PATH fallback
+    std::path::PathBuf::from(exe)
 }
 
 fn models_dir() -> std::path::PathBuf {
@@ -548,7 +580,12 @@ async fn voice_poll(
 /// Write the utterance to a temporary WAV and run whisper-cli over it.
 async fn transcribe_samples(wav: Vec<u8>) -> Result<String> {
     let dir = std::env::temp_dir();
-    let path = dir.join(format!("orion-utterance-{}.wav", std::process::id()));
+    let unique_id = uuid::Uuid::new_v4();
+    let path = dir.join(format!(
+        "orion-utterance-{}-{}.wav",
+        std::process::id(),
+        unique_id
+    ));
     std::fs::write(&path, &wav)
         .map_err(|e| OrionError::Config(format!("could not stage audio: {e}")))?;
 
