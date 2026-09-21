@@ -200,6 +200,31 @@ and put it in that folder.
 
 ---
 
+## Step 5b — Voice (optional)
+
+Speech input needs whisper.cpp and two models, about 80 MB in total:
+
+```bash
+./scripts/fetch-voice.sh
+```
+
+Windows without Git Bash: download `whisper-bin-x64.zip` from the
+[whisper.cpp v1.9.2 release](https://github.com/ggml-org/whisper.cpp/releases/tag/v1.9.2),
+copy `whisper-cli.exe` **and every `.dll` beside it** into
+`src-tauri\binaries\` and also into `src-tauri\target\debug\`, then put
+`ggml-tiny.en.bin` and `ggml-silero-v5.1.2.bin` in `%APPDATA%\orion\models\`.
+
+Orion works without this. The microphone button will simply say what is
+missing instead of doing nothing.
+
+**Why `whisper-cli` and not `whisper-server`:** the server has no
+authentication of any kind and does not honour `--host` — started on
+127.0.0.1 it also binds the LAN interface, so it would expose an
+unauthenticated transcription service to anyone on your network. The CLI
+opens no socket. See `docs/M4-VOICE-FINDINGS.md`.
+
+---
+
 ## Step 6 — Run it
 
 ```bash
@@ -213,6 +238,22 @@ crates. Subsequent runs take seconds. It will look frozen at
 A window should open. The model takes a few more seconds to load after the
 window appears; that is deliberate, so the window is not held hostage to a
 2 GB memory map.
+
+### Testing voice
+
+1. Press the **○** button left of the input box. It should turn violet and
+   read "Listening".
+2. **Speak.** The five bars should move and the label should turn green,
+   reading "Hearing you". That is the proof the microphone is reaching Orion —
+   a label alone could be lying.
+3. Stop talking. After about a second the label reads "Transcribing…", then
+   your words appear **in the input box**.
+4. Read it, fix anything misheard, press Enter.
+
+Transcripts are not sent automatically. Speech recognition mishears, and
+auto-sending a wrong question wastes a slow generation.
+
+If the button is greyed out, hover it: the tooltip says what is missing.
 
 ### Things to try
 

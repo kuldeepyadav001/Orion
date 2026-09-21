@@ -53,6 +53,8 @@ pub struct AppState {
     pub embed: Arc<documents::EmbedService>,
     /// Every spawned child process, so they can be killed on exit.
     pub sidecars: Arc<sidecars::SidecarRegistry>,
+    /// Voice input: microphone, listener state machine, transcription.
+    pub voice: Arc<voice::VoiceService>,
     /// Model catalogue, kept so the engine can be started on first use.
     pub manager: Arc<ModelManager>,
     /// Ensures the lazy engine start happens exactly once, even if several
@@ -393,6 +395,189 @@ async fn list_documents(state: State<'_, AppState>) -> Result<Vec<rag::store::St
     store.list_documents()
 }
 
+/* ------------------------------------------------------------------ */
+/* voice                                                               */
+/* ------------------------------------------------------------------ */
+
+/// Where whisper-cli lives. Beside the other sidecars.
+fn whisper_cli_path() -> std::path::PathBuf {
+    let exe = if cfg!(windows) {
+        "whisper-cli.exe"
+    } else {
+        "whisper-cli"
+    };
+    // In dev the binary sits next to the running executable; in a bundle it
+    // is alongside it too, so the same lookup works for both.
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join(exe)))
+        .unwrap_or_else(|| std::path::PathBuf::from(exe))
+}
+
+fn models_dir() -> std::path::PathBuf {
+    db::data_dir().unwrap_or_default().join("models")
+}
+
+#[tauri::command]
+async fn voice_status(state: State<'_, AppState>) -> Result<voice::VoiceStatus> {
+    let mut st = state.voice.status().await;
+    // Recheck availability every poll: the user may run fetch-voice.sh while
+    // the app is open, and telling them to restart for that would be rude.
+    let (ok, why) = voice::VoiceService::availability(&models_dir(), &whisper_cli_path());
+    st.available = ok;
+    if !ok {
+        st.detail = why;
+    }
+    Ok(st)
+}
+
+/// Open the microphone.
+#[tauri::command]
+async fn voice_start(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<voice::VoiceStatus> {
+    let (ok, why) = voice::VoiceService::availability(&models_dir(), &whisper_cli_path());
+    let status = state.voice.start(ok, why).await?;
+    // Only after the microphone is genuinely open, so a failed start does not
+    // leave a loop spinning against a closed device.
+    spawn_voice_loop(app, &state);
+    Ok(status)
+}
+
+/// Close the microphone. Releases the device, so the OS indicator goes out.
+#[tauri::command]
+async fn voice_stop(state: State<'_, AppState>) -> Result<voice::VoiceStatus> {
+    Ok(state.voice.stop().await)
+}
+
+/// Start capturing an utterance, as the wake word would.
+#[tauri::command]
+async fn voice_trigger(state: State<'_, AppState>) -> Result<voice::VoiceStatus> {
+    Ok(state.voice.trigger().await)
+}
+
+/// Drive the listener from the live microphone level until the mic closes.
+///
+/// A backend loop rather than a UI timer. The audio callback runs on a
+/// realtime thread and must not block, so it only records the level; this
+/// task reads that level on a fixed cadence and advances the state machine.
+///
+/// Putting the cadence in the UI was the first design and it was wrong: the
+/// renderer can be throttled when the window is hidden — which is exactly
+/// when a tray-resident voice assistant most needs to be listening.
+fn spawn_voice_loop(app: tauri::AppHandle, state: &AppState) {
+    let vsvc = state.voice.clone();
+    let capture = state.voice.capture_state();
+
+    tauri::async_runtime::spawn(async move {
+        let mut ticker = tokio::time::interval(std::time::Duration::from_millis(100));
+        loop {
+            ticker.tick().await;
+
+            let status = vsvc.status().await;
+            if !status.mic_open {
+                break; // microphone closed; this loop is done
+            }
+
+            let level = capture.level();
+            let speech = capture.has_speech();
+            let (_, captured) = vsvc.poll(level, speech).await;
+
+            if let Some(samples) = captured {
+                let wav = voice::VoiceService::to_wav(&samples);
+                let handle = app.clone();
+                let done = vsvc.clone();
+                tauri::async_runtime::spawn(async move {
+                    use tauri::Emitter;
+                    match transcribe_samples(wav).await {
+                        Ok(text) if !voice::transcribe::is_empty_transcript(&text) => {
+                            let _ = handle.emit("voice://transcript", text);
+                        }
+                        Ok(_) => tracing::debug!("empty transcript; nothing sent"),
+                        Err(e) => {
+                            tracing::warn!(error = %e, "transcription failed");
+                            let _ = handle.emit("voice://error", e.to_string());
+                        }
+                    }
+                    done.finish().await;
+                });
+            }
+        }
+        tracing::debug!("voice loop ended");
+    });
+}
+
+/// Kept for manual testing and for a future push-to-talk path that supplies
+/// its own level.
+#[tauri::command]
+async fn voice_poll(
+    level: f32,
+    has_speech: bool,
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<voice::VoiceStatus> {
+    let (status, captured) = state.voice.poll(level, has_speech).await;
+
+    if let Some(samples) = captured {
+        let wav = voice::VoiceService::to_wav(&samples);
+        let vsvc = state.voice.clone();
+        let handle = app.clone();
+
+        tauri::async_runtime::spawn(async move {
+            let out = transcribe_samples(wav).await;
+            match out {
+                Ok(text) if !voice::transcribe::is_empty_transcript(&text) => {
+                    use tauri::Emitter;
+                    let _ = handle.emit("voice://transcript", text);
+                }
+                Ok(_) => tracing::debug!("transcript was empty; nothing sent"),
+                Err(e) => {
+                    use tauri::Emitter;
+                    tracing::warn!(error = %e, "transcription failed");
+                    let _ = handle.emit("voice://error", e.to_string());
+                }
+            }
+            vsvc.finish().await;
+        });
+    }
+
+    Ok(status)
+}
+
+/// Write the utterance to a temporary WAV and run whisper-cli over it.
+async fn transcribe_samples(wav: Vec<u8>) -> Result<String> {
+    let dir = std::env::temp_dir();
+    let path = dir.join(format!("orion-utterance-{}.wav", std::process::id()));
+    std::fs::write(&path, &wav)
+        .map_err(|e| OrionError::Config(format!("could not stage audio: {e}")))?;
+
+    let models = models_dir();
+    let model = voice::transcribe::find_whisper_model(&models)
+        .ok_or_else(|| OrionError::Config("no speech model installed".into()))?;
+    let vad = voice::transcribe::find_vad_model(&models);
+    let threads = std::thread::available_parallelism()
+        .map(|n| (n.get().saturating_sub(1)).clamp(1, 4))
+        .unwrap_or(2);
+
+    let result = voice::transcribe::transcribe_file(
+        &whisper_cli_path(),
+        &model,
+        &path,
+        vad.as_deref(),
+        threads,
+    )
+    .await;
+
+    // The recording is deleted whether or not transcription succeeded. Audio
+    // of the user speaking must not accumulate in the temp directory.
+    let _ = std::fs::remove_file(&path);
+
+    let t = result?;
+    tracing::info!(ms = t.elapsed_ms, "transcribed");
+    Ok(t.text)
+}
+
 #[tauri::command]
 async fn forget_document(document_id: String, state: State<'_, AppState>) -> Result<()> {
     let db = state.db.lock().await;
@@ -718,6 +903,7 @@ pub fn run() {
             let engine = Arc::new(Engine::new());
 
             let embed = Arc::new(documents::EmbedService::new());
+            let voice_svc = Arc::new(voice::VoiceService::new());
             let sidecars = Arc::new(sidecars::SidecarRegistry::new());
 
             app.manage(AppState {
@@ -730,6 +916,7 @@ pub fn run() {
                 active_tier: Mutex::new(tier),
                 embed: embed.clone(),
                 sidecars: sidecars.clone(),
+                voice: voice_svc.clone(),
                 manager: manager.clone(),
                 engine_started: Arc::new(tokio::sync::OnceCell::new()),
             });
@@ -837,6 +1024,11 @@ pub fn run() {
             forget_document,
             preview_retrieval,
             list_documents,
+            voice_status,
+            voice_start,
+            voice_stop,
+            voice_trigger,
+            voice_poll,
             assess_dropped_files,
             hotkey_label
         ])

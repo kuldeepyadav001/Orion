@@ -40,7 +40,9 @@
 pub mod audio;
 pub mod capture;
 pub mod listener;
+pub mod service;
 pub mod transcribe;
 
 pub use listener::{ListenAction, ListenState, Listener};
+pub use service::{VoiceService, VoiceStatus};
 pub use transcribe::Transcript;

@@ -59,6 +59,12 @@ pub struct CaptureState {
     pub preroll: Mutex<PreRoll>,
     /// The utterance currently being captured, if any.
     pub utterance: Mutex<Option<Vec<f32>>>,
+    /// Loudness of the most recent block, scaled to 0..1 for the UI meter.
+    ///
+    /// An atomic rather than a lock: this is written from the realtime audio
+    /// callback, where blocking on a contended mutex would glitch audio for
+    /// every application sharing the device.
+    level: std::sync::atomic::AtomicU32,
 }
 
 impl Default for CaptureState {
@@ -72,6 +78,7 @@ impl CaptureState {
         Self {
             preroll: Mutex::new(PreRoll::new(PREROLL_SAMPLES)),
             utterance: Mutex::new(None),
+            level: std::sync::atomic::AtomicU32::new(0),
         }
     }
 
@@ -79,7 +86,32 @@ impl CaptureState {
     ///
     /// While idle the audio goes only to the ring buffer and is continuously
     /// overwritten. Nothing is retained until capture actually begins.
+    /// Most recent input level, 0.0 to 1.0.
+    pub fn level(&self) -> f32 {
+        f32::from_bits(self.level.load(std::sync::atomic::Ordering::Relaxed))
+    }
+
+    /// Is the current block loud enough to be speech?
+    ///
+    /// A crude energy gate, not Silero. The real VAD runs inside whisper.cpp
+    /// during transcription; this only decides when an utterance has ended
+    /// and drives the meter. The threshold is deliberately low — cutting
+    /// someone off mid-sentence is far worse than transcribing a little
+    /// silence, and whisper discards the silence anyway.
+    pub fn has_speech(&self) -> bool {
+        self.level() > 0.012
+    }
+
     pub fn push(&self, samples: &[f32]) {
+        // Track loudness before anything else, so the meter moves whether or
+        // not an utterance is being captured.
+        let rms = audio::rms(samples);
+        // Speech RMS sits around 0.02-0.3; scale so normal speech fills the
+        // meter rather than sitting flat at the bottom.
+        let scaled = (rms * 6.0).clamp(0.0, 1.0);
+        self.level
+            .store(scaled.to_bits(), std::sync::atomic::Ordering::Relaxed);
+
         if let Ok(mut u) = self.utterance.lock() {
             if let Some(buf) = u.as_mut() {
                 // Enforce the hard cap here as well as in the listener: if

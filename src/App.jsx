@@ -6,6 +6,7 @@ import SystemPanel from "./SystemPanel";
 import DocumentList from "./DocumentList";
 import DropZone from "./DropZone.jsx";
 import Logo from "./Logo";
+import VoiceButton from "./VoiceButton";
 
 /**
  * Orion M0 shell.
@@ -262,6 +263,15 @@ export default function App() {
     }
   }, []);
 
+  // Transcripts land in the input box rather than sending immediately.
+  // Speech recognition mishears, and auto-sending a wrong question burns a
+  // slow generation on a machine that takes ~9 s to warm up. The user reads
+  // it, corrects if needed, presses Enter.
+  const onTranscript = useCallback((text) => {
+    setInput((prev) => (prev ? `${prev} ${text}` : text));
+    taRef.current?.focus();
+  }, []);
+
   const docCount = library.documents ?? 0;
 
   return (
@@ -432,6 +442,10 @@ export default function App() {
         </main>
 
         <footer className="composer">
+          <VoiceButton
+            onTranscript={onTranscript}
+            speaking={false /* TTS not wired yet; the indicator is ready for it */}
+          />
           <div className="composer-inner">
             <textarea
               ref={taRef}
