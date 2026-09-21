@@ -147,12 +147,30 @@ impl Engine {
     /// llama-server returns 503 while weights are still loading, which is the
     /// signal we use to distinguish `Loading` from `Ready`.
     pub async fn wait_until_ready(&self, max_wait: std::time::Duration) -> Result<()> {
-        let Some(cfg) = self.config().await else {
-            return Err(OrionError::Engine("engine not configured".into()));
+        let deadline = std::time::Instant::now() + max_wait;
+
+        // Wait for the configuration to appear rather than treating its
+        // absence as fatal.
+        //
+        // The caller spawns start_engine on a background task and then calls
+        // this. `spawn` returns immediately, so for the first few
+        // milliseconds no config exists yet — the log showed this failing
+        // 0.8 ms before the engine was configured. Returning an error there
+        // meant the very first message always failed while the model loaded
+        // perfectly well behind it.
+        let cfg = loop {
+            if let Some(cfg) = self.config().await {
+                break cfg;
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(OrionError::Engine(
+                    "engine was never configured; the model may be missing".into(),
+                ));
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         };
 
         let url = format!("{}/health", cfg.base_url());
-        let deadline = std::time::Instant::now() + max_wait;
 
         while std::time::Instant::now() < deadline {
             match self
@@ -362,13 +380,60 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_unconfigured_engine_refuses_rather_than_hanging() {
-        // wait_until_ready is now on the send path, so its failure mode is
-        // user-visible. With no config it must return promptly instead of
-        // polling a URL that does not exist until the timeout expires.
+    async fn an_unconfigured_engine_eventually_gives_up() {
+        // With no engine ever configured this must still terminate — but
+        // after the deadline, not instantly. Giving up instantly is exactly
+        // the bug that broke the first message.
         let e = Engine::new();
-        let r = e.wait_until_ready(std::time::Duration::from_secs(5)).await;
+        let start = std::time::Instant::now();
+        let r = e
+            .wait_until_ready(std::time::Duration::from_millis(300))
+            .await;
         assert!(r.is_err(), "should not claim readiness with no engine");
+        assert!(
+            start.elapsed() >= std::time::Duration::from_millis(250),
+            "gave up instantly instead of waiting for the config to appear"
+        );
+    }
+
+    #[tokio::test]
+    async fn waiting_tolerates_a_config_that_arrives_late() {
+        // The exact race seen on a real machine.
+        //
+        // ensure_engine spawns start_engine on a background task, then calls
+        // wait_until_ready. spawn returns immediately, so for a few
+        // milliseconds there is no config. The log showed "engine not
+        // configured" 0.8 ms BEFORE "starting llama-server": the wait lost
+        // the race and reported failure while the model loaded fine.
+        //
+        // A missing config must mean "not yet", never "fatal".
+        let e = std::sync::Arc::new(Engine::new());
+        let setter = e.clone();
+
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+            setter
+                .set_config(EngineConfig {
+                    model_path: std::path::PathBuf::from("/nonexistent.gguf"),
+                    host: "127.0.0.1".into(),
+                    // Nothing listens on port 1, so the health poll times out.
+                    // That is fine — the assertion is about WHICH error.
+                    port: 1,
+                    auth_token: "t".into(),
+                    ctx_size: 512,
+                    threads: 1,
+                })
+                .await;
+        });
+
+        let r = e
+            .wait_until_ready(std::time::Duration::from_millis(700))
+            .await;
+        let msg = format!("{}", r.unwrap_err());
+        assert!(
+            !msg.contains("never configured"),
+            "gave up before the config arrived: {msg}"
+        );
     }
 
     #[tokio::test]
