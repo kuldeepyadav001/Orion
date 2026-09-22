@@ -118,11 +118,13 @@ export default function VoiceButton({ onTranscript, speaking }) {
     /* ---------- presentation ---------- */
 
     const transcribing = status.state === "transcribing";
+    const recording = status.state === "recording";
     const hearing = status.hearing;
 
     let tone = "off";
     if (speaking) tone = "speaking";
     else if (transcribing) tone = "busy";
+    else if (recording) tone = "recording";
     else if (hearing) tone = "hearing";
     else if (status.mic_open) tone = "open";
 
@@ -130,11 +132,13 @@ export default function VoiceButton({ onTranscript, speaking }) {
         ? "Speaking"
         : transcribing
             ? "Transcribing…"
-            : hearing
-                ? "Hearing you"
-                : status.mic_open
-                    ? "Listening"
-                    : "Voice off";
+            : recording
+                ? "Hearing you…"
+                : hearing
+                    ? "Hearing you…"
+                    : status.mic_open
+                        ? "Listening"
+                        : "Voice off";
 
     // 0..1 level to bar heights. A floor of 8% keeps the bars visible when
     // idle so the control does not look dead.

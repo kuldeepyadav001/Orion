@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 /// below this cuts people off mid-thought, which is the single most
 /// infuriating failure a voice assistant has. Much above it and the thing
 /// feels slow to respond.
-pub const SILENCE_TIMEOUT_MS: u32 = 800;
+pub const SILENCE_TIMEOUT_MS: u32 = 900;
 
 /// Minimum speech required before an utterance is worth transcribing.
 ///
@@ -145,7 +145,16 @@ impl Listener {
     /// `has_speech` comes from the VAD; `duration_ms` is the block length.
     pub fn push_block(&mut self, has_speech: bool, duration_ms: u32) -> ListenAction {
         match self.state {
-            ListenState::Off | ListenState::Waiting | ListenState::Transcribing => {
+            ListenState::Off | ListenState::Transcribing => ListenAction::Continue,
+
+            ListenState::Waiting => {
+                if has_speech {
+                    self.state = ListenState::Recording;
+                    self.speech_ms = duration_ms;
+                    self.captured_ms = duration_ms;
+                    self.silence_ms = 0;
+                    return ListenAction::BeginCapture;
+                }
                 ListenAction::Continue
             }
 
@@ -322,17 +331,41 @@ mod tests {
         }
 
         // Nearly time out...
-        for _ in 0..7 {
+        for _ in 0..8 {
             l.push_block(false, BLOCK);
         }
         // ...then speak again.
         l.push_block(true, BLOCK);
 
         // A full timeout must now be required from scratch.
-        for _ in 0..7 {
+        for _ in 0..8 {
             assert_eq!(l.push_block(false, BLOCK), ListenAction::Continue);
         }
         assert_eq!(l.push_block(false, BLOCK), ListenAction::FinishCapture);
+    }
+
+    #[test]
+    fn speech_while_waiting_automatically_begins_capture() {
+        let mut l = Listener::new(30);
+        l.start_waiting();
+        assert_eq!(l.state(), ListenState::Waiting);
+
+        // When user speaks, listener immediately begins capture
+        assert_eq!(l.push_block(true, BLOCK), ListenAction::BeginCapture);
+        assert_eq!(l.state(), ListenState::Recording);
+
+        // Continue speaking
+        for _ in 0..10 {
+            assert_eq!(l.push_block(true, BLOCK), ListenAction::Continue);
+        }
+
+        // Stop speaking -> silence timeout finishes capture
+        let mut action = ListenAction::Continue;
+        for _ in 0..(SILENCE_TIMEOUT_MS / BLOCK) {
+            action = l.push_block(false, BLOCK);
+        }
+        assert_eq!(action, ListenAction::FinishCapture);
+        assert_eq!(l.state(), ListenState::Transcribing);
     }
 
     /* ---------- rejecting noise ---------- */
@@ -418,7 +451,7 @@ mod tests {
         for _ in 0..10 {
             l.push_block(true, BLOCK);
         }
-        for _ in 0..8 {
+        for _ in 0..(SILENCE_TIMEOUT_MS / BLOCK) {
             l.push_block(false, BLOCK);
         }
         assert_eq!(l.state(), ListenState::Transcribing);
@@ -435,7 +468,7 @@ mod tests {
         for _ in 0..10 {
             l.push_block(true, BLOCK);
         }
-        for _ in 0..8 {
+        for _ in 0..(SILENCE_TIMEOUT_MS / BLOCK) {
             l.push_block(false, BLOCK);
         }
         assert_eq!(l.state(), ListenState::Transcribing);
@@ -454,7 +487,7 @@ mod tests {
         for _ in 0..20 {
             l.push_block(true, BLOCK);
         }
-        for _ in 0..8 {
+        for _ in 0..(SILENCE_TIMEOUT_MS / BLOCK) {
             l.push_block(false, BLOCK);
         }
         l.finish_transcription();

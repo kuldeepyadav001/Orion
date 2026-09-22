@@ -65,6 +65,8 @@ pub struct CaptureState {
     /// callback, where blocking on a contended mutex would glitch audio for
     /// every application sharing the device.
     level: std::sync::atomic::AtomicU32,
+    raw_rms: std::sync::atomic::AtomicU32,
+    noise_floor: std::sync::atomic::AtomicU32,
 }
 
 impl Default for CaptureState {
@@ -79,6 +81,8 @@ impl CaptureState {
             preroll: Mutex::new(PreRoll::new(PREROLL_SAMPLES)),
             utterance: Mutex::new(None),
             level: std::sync::atomic::AtomicU32::new(0),
+            raw_rms: std::sync::atomic::AtomicU32::new(0),
+            noise_floor: std::sync::atomic::AtomicU32::new(0.004f32.to_bits()),
         }
     }
 
@@ -93,24 +97,39 @@ impl CaptureState {
 
     /// Is the current block loud enough to be speech?
     ///
-    /// A crude energy gate, not Silero. The real VAD runs inside whisper.cpp
-    /// during transcription; this only decides when an utterance has ended
-    /// and drives the meter. The threshold is deliberately low — cutting
-    /// someone off mid-sentence is far worse than transcribing a little
-    /// silence, and whisper discards the silence anyway.
+    /// Uses an adaptive energy gate relative to the estimated ambient noise floor.
+    /// In a quiet room, gentle speech is caught easily; in a noisy room (fan, AC),
+    /// the noise floor automatically rises so the assistant does not get stuck in
+    /// speech mode or fail to detect silence at the end of a sentence.
     pub fn has_speech(&self) -> bool {
-        self.level() > 0.012
+        let rms = f32::from_bits(self.raw_rms.load(std::sync::atomic::Ordering::Relaxed));
+        let floor = f32::from_bits(self.noise_floor.load(std::sync::atomic::Ordering::Relaxed));
+        let threshold = (floor * 2.2 + 0.004).clamp(0.008, 0.05);
+        rms > threshold
     }
 
     pub fn push(&self, samples: &[f32]) {
         // Track loudness before anything else, so the meter moves whether or
         // not an utterance is being captured.
         let rms = audio::rms(samples);
+        self.raw_rms
+            .store(rms.to_bits(), std::sync::atomic::Ordering::Relaxed);
+
         // Speech RMS sits around 0.02-0.3; scale so normal speech fills the
         // meter rather than sitting flat at the bottom.
         let scaled = (rms * 6.0).clamp(0.0, 1.0);
         self.level
             .store(scaled.to_bits(), std::sync::atomic::Ordering::Relaxed);
+
+        // Track ambient noise floor while idle using an asymmetric exponential moving average
+        let is_capturing = self.utterance.lock().map(|u| u.is_some()).unwrap_or(false);
+        if !is_capturing {
+            let floor = f32::from_bits(self.noise_floor.load(std::sync::atomic::Ordering::Relaxed));
+            let alpha = if rms < floor { 0.10 } else { 0.02 };
+            let updated = (floor * (1.0 - alpha) + rms * alpha).clamp(0.002, 0.04);
+            self.noise_floor
+                .store(updated.to_bits(), std::sync::atomic::Ordering::Relaxed);
+        }
 
         if let Ok(mut u) = self.utterance.lock() {
             if let Some(buf) = u.as_mut() {
@@ -131,13 +150,15 @@ impl CaptureState {
 
     /// Begin an utterance, seeded with the pre-roll.
     pub fn begin_utterance(&self) {
-        let seed = self
-            .preroll
-            .lock()
-            .map(|mut p| p.drain_all())
-            .unwrap_or_default();
         if let Ok(mut u) = self.utterance.lock() {
-            *u = Some(seed);
+            if u.is_none() {
+                let seed = self
+                    .preroll
+                    .lock()
+                    .map(|mut p| p.drain_all())
+                    .unwrap_or_default();
+                *u = Some(seed);
+            }
         }
     }
 

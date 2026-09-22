@@ -168,11 +168,24 @@ pub fn encode_wav_16k_mono(samples: &[f32]) -> Vec<u8> {
     // data chunk
     out.extend_from_slice(b"data");
     out.extend_from_slice(&(data_len as u32).to_le_bytes());
+
+    // Automatic peak normalization for speech clarity:
+    // Raw microphone signals often have very low amplitude (e.g. 0.05-0.15 peak).
+    // Scaling speech to ~85% full scale (-1.4 dBFS) ensures whisper receives clean,
+    // audible audio without boosting digital silence into noise.
+    let peak = samples.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+    let gain = if peak > 0.005 {
+        (0.85 / peak).clamp(1.0, 12.0)
+    } else {
+        1.0
+    };
+
     for &s in samples {
-        // Clamp before casting. A sample above 1.0 wraps to a large negative
-        // i16 otherwise, which sounds like a loud click and can confuse the
-        // transcriber into emitting noise tokens.
-        let clamped = s.clamp(-1.0, 1.0);
+        // Apply gain and clamp before casting. A sample above 1.0 wraps to a
+        // large negative i16 otherwise, which sounds like a loud click and can
+        // confuse the transcriber into emitting noise tokens.
+        let amplified = s * gain;
+        let clamped = amplified.clamp(-1.0, 1.0);
         let v = (clamped * i16::MAX as f32) as i16;
         out.extend_from_slice(&v.to_le_bytes());
     }

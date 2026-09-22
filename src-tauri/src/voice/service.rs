@@ -137,7 +137,7 @@ impl VoiceService {
                 s.state = ListenState::Waiting;
                 s.mic_open = true;
                 s.available = true;
-                s.detail = "Listening — say the wake word or press to talk".into();
+                s.detail = "Listening — speak to chat".into();
             })
             .await)
     }
@@ -193,16 +193,17 @@ impl VoiceService {
             }
             ListenAction::Abandon => {
                 self.capture.abandon_utterance();
-                "Nothing heard — still listening".to_string()
+                "Listening — speak to chat".to_string()
             }
-            ListenAction::BeginCapture => "Go ahead".to_string(),
+            ListenAction::BeginCapture => {
+                self.capture.begin_utterance();
+                "Hearing you…".to_string()
+            }
             ListenAction::Continue => match state {
                 ListenState::Recording if has_speech => "Hearing you…".to_string(),
                 ListenState::Recording => "…".to_string(),
                 ListenState::Armed => "Go ahead".to_string(),
-                ListenState::Waiting => {
-                    "Listening — say the wake word or press to talk".to_string()
-                }
+                ListenState::Waiting => "Listening — speak to chat".to_string(),
                 ListenState::Transcribing => "Transcribing…".to_string(),
                 ListenState::Off => "Microphone off".to_string(),
             },
@@ -228,7 +229,7 @@ impl VoiceService {
             s.state = ListenState::Waiting;
             s.hearing = false;
             s.speech_ms = 0;
-            s.detail = "Listening — say the wake word or press to talk".into();
+            s.detail = "Listening — speak to chat".into();
         })
         .await
     }

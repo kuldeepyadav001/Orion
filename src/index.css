@@ -1256,10 +1256,12 @@ kbd {
 
 /* Green while sound is actually arriving. This is the signal that answers
    "can it hear me?" — the one thing a user cannot otherwise tell. */
-.voice-btn.hearing {
+.voice-btn.hearing,
+.voice-btn.recording {
   border-color: var(--ok);
   color: var(--ok);
-  background: rgba(61, 220, 132, 0.12);
+  background: rgba(61, 220, 132, 0.16);
+  box-shadow: 0 0 8px rgba(61, 220, 132, 0.2);
 }
 
 .voice-btn.busy {
@@ -1287,7 +1289,8 @@ kbd {
   min-width: 82px;
 }
 
-.voice-label.hearing { color: var(--ok); }
+.voice-label.hearing,
+.voice-label.recording { color: var(--ok); }
 .voice-label.busy    { color: var(--warn); }
 .voice-label.open    { color: #b3a1ff; }
 .voice-label.speaking{ color: var(--accent-2); }
@@ -1311,7 +1314,8 @@ kbd {
 }
 
 .voice-bar.open     { background: rgba(124, 92, 255, 0.55); }
-.voice-bar.hearing  { background: var(--ok); }
+.voice-bar.hearing,
+.voice-bar.recording  { background: var(--ok); }
 .voice-bar.busy     { background: var(--warn); }
 .voice-bar.speaking { background: var(--accent-2); }
 

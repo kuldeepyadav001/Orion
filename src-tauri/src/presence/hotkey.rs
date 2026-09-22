@@ -78,17 +78,18 @@ impl fmt::Display for HotkeyError {
 }
 
 impl Hotkey {
-    /// The G5 default: `Win+O`.
+    /// The default global shortcut: `Ctrl+Shift+0`.
     ///
-    /// Chosen because Win+letter combinations are largely unclaimed on
-    /// Windows outside a small reserved set, and `O` is mnemonic for Orion.
+    /// Shift+Ctrl+0 avoids collisions with OS-level `Win+O` (which locks
+    /// screen orientation on mobile/tablet Windows laptops) while remaining
+    /// ergonomic and accessible from any application.
     pub fn default_global() -> Self {
         Hotkey {
-            ctrl: false,
-            shift: false,
+            ctrl: true,
+            shift: true,
             alt: false,
-            meta: true,
-            key: Key::Char('O'),
+            meta: false,
+            key: Key::Char('0'),
         }
     }
 
@@ -132,6 +133,7 @@ impl Hotkey {
             parts.push("Super".to_string());
         }
         parts.push(match &self.key {
+            Key::Char(c) if c.is_ascii_digit() => format!("Digit{c}"),
             Key::Char(c) => format!("Key{}", c.to_ascii_uppercase()),
             Key::Function(n) => format!("F{n}"),
             Key::Space => "Space".to_string(),
@@ -376,6 +378,7 @@ pub fn fallback_chain() -> Vec<Hotkey> {
     vec![
         Hotkey::default_global(),
         parse("Ctrl+Shift+O").expect("static fallback must be valid"),
+        parse("Win+O").expect("static fallback must be valid"),
         parse("Ctrl+Alt+O").expect("static fallback must be valid"),
         parse("Ctrl+Shift+Space").expect("static fallback must be valid"),
     ]
@@ -388,16 +391,16 @@ mod tests {
     /* ---------- the locked default ---------- */
 
     #[test]
-    fn the_default_is_win_o_per_gate_g5() {
+    fn the_default_is_ctrl_shift_zero() {
         let hk = Hotkey::default_global();
-        assert!(hk.meta, "G5 specifies the Windows key");
-        assert_eq!(hk.key, Key::Char('O'));
-        assert!(!hk.ctrl && !hk.alt && !hk.shift);
+        assert!(hk.ctrl && hk.shift, "default uses Ctrl+Shift");
+        assert_eq!(hk.key, Key::Char('0'));
+        assert!(!hk.meta && !hk.alt);
     }
 
     #[test]
     fn the_default_survives_its_own_validation() {
-        // An embarrassing but easy mistake: adding Win+O to the reserved list.
+        // An embarrassing but easy mistake: adding default to the reserved list.
         assert!(validate(&Hotkey::default_global()).is_ok());
     }
 
@@ -425,8 +428,20 @@ mod tests {
     #[test]
     fn common_spellings_all_parse_to_the_same_chord() {
         let expect = Hotkey::default_global();
-        for s in ["Win+O", "win+o", "Super+O", "Meta+O", "Cmd+O", " WIN + O "] {
+        for s in [
+            "Ctrl+Shift+0",
+            "ctrl+shift+0",
+            "Shift+Ctrl+0",
+            "shift+ctrl+0",
+            " CTRL + SHIFT + 0 ",
+        ] {
             assert_eq!(parse(s).unwrap(), expect, "failed on {s:?}");
+        }
+
+        // Win+O legacy chord also continues to parse consistently
+        let win_o = parse("Win+O").unwrap();
+        for s in ["win+o", "Super+O", "Meta+O", "Cmd+O", " WIN + O "] {
+            assert_eq!(parse(s).unwrap(), win_o, "failed on {s:?}");
         }
     }
 
@@ -571,11 +586,15 @@ mod tests {
 
     #[test]
     fn accelerator_format_matches_what_tauri_expects() {
-        assert_eq!(Hotkey::default_global().to_accelerator(), "Super+KeyO");
+        assert_eq!(
+            Hotkey::default_global().to_accelerator(),
+            "CommandOrControl+Shift+Digit0"
+        );
         assert_eq!(
             parse("Ctrl+Shift+O").unwrap().to_accelerator(),
             "CommandOrControl+Shift+KeyO"
         );
+        assert_eq!(parse("Win+O").unwrap().to_accelerator(), "Super+KeyO");
         assert_eq!(
             parse("Ctrl+F5").unwrap().to_accelerator(),
             "CommandOrControl+F5"

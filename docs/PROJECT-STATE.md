@@ -111,11 +111,25 @@ The voice pipeline was audited end-to-end against real audio hardware contracts 
 - **Forensic Diagnosis:** `tokio::process::Command` implements `creation_flags` as an inherent method on Windows. Importing `std::os::windows::process::CommandExt` triggered `#[warn(unused_imports)]`.
 - **Resolution:** Removed the redundant import.
 
+### 10. Voice Audio Normalization, Adaptive Noise Floor & Continuous Capture
+- **Forensic Diagnosis:**
+  1. Quiet microphone inputs produced peak signals below 0.05 (-26 dBFS), causing high word error rates and hallucinated repetitions in `whisper-cli`.
+  2. Fixed RMS speech energy threshold (`0.012`) failed in rooms with variable ambient noise (fans/AC) or quiet voices.
+  3. When the microphone was open and the listener was in `ListenState::Waiting`, speech did not automatically trigger audio recording without a manual wake trigger.
+  4. The 800 ms silence timeout cut off contemplative natural speech during brief mid-sentence pauses.
+- **Resolution:**
+  1. Added automatic peak gain normalization in `src-tauri/src/voice/audio.rs` (`encode_wav_16k_mono`) with dynamic gain boost up to 12x (targeting 85% full-scale / -1.4 dBFS) with soft saturation protection.
+  2. Implemented asymmetric exponential moving average ambient noise-floor tracking in `src-tauri/src/voice/capture.rs`, computing an adaptive speech threshold (`floor * 2.2 + 0.004`) to handle varying acoustic environments.
+  3. Updated `Listener::push_block` in `listener.rs` to automatically transition from `ListenState::Waiting` to `ListenState::Recording` and emit `ListenAction::BeginCapture` on speech.
+  4. Increased `SILENCE_TIMEOUT_MS` from 800 ms to 900 ms.
+  5. Handled `ListenAction::BeginCapture` in `VoiceService::poll` by invoking `capture.begin_utterance()`.
+  6. Enhanced `VoiceButton.jsx` and `index.css` with dedicated recording styles, animated green indicators, and live level meters.
+
 ---
 
 ## 4. IMMEDIATE OBJECTIVE: MILESTONE 5 (M5)
 
-With M0–M4 hardened and passing 436 unit/integration tests, we proceed to **Milestone 5 (Capability Broker & Security Boundary)**.
+With M0–M4 hardened and passing 437 unit/integration tests, we proceed to **Milestone 5 (Capability Broker & Security Boundary)**.
 
 ### Non-Negotiable Gate Rule (G4 / R-2):
 **No write action, tool execution, or OS modification capability may be implemented until the Capability Broker is verified.**
