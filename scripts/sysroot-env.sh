@@ -10,7 +10,7 @@
 # link time with "unable to find library -latk-1.0", which is a confusing
 # place to end up after everything appeared to resolve.
 
-_ORION_SYSROOT="${ORION_SYSROOT:-$HOME/.sysroot}/root"
+_ORION_SYSROOT="${ORION_SYSROOT:-$HOME/sysroot}/root"
 
 export PKG_CONFIG_PATH="$_ORION_SYSROOT/usr/lib/x86_64-linux-gnu/pkgconfig:$_ORION_SYSROOT/usr/share/pkgconfig"
 export PKG_CONFIG_SYSROOT_DIR="$_ORION_SYSROOT"

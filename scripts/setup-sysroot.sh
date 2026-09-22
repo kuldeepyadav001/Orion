@@ -26,7 +26,7 @@
 
 set -euo pipefail
 
-SYSROOT="${ORION_SYSROOT:-$HOME/.sysroot}"
+SYSROOT="${ORION_SYSROOT:-$HOME/sysroot}"
 DEBS="$SYSROOT/debs"
 ROOT="$SYSROOT/root"
 MIRROR_MAIN="http://deb.debian.org/debian/pool/main"

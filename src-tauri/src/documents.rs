@@ -274,6 +274,21 @@ pub async fn start_embedder(
     // `--embedding` puts llama-server in embedding mode, where /v1/embeddings
     // works and /v1/chat/completions does not. Two threads is plenty: chunks
     // are short and the chat model needs the remaining cores far more.
+    let mut sidecar = sidecar;
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(target_dir) = exe.parent() {
+            sidecar = sidecar.current_dir(target_dir);
+            let key = if cfg!(windows) {
+                "PATH"
+            } else {
+                "LD_LIBRARY_PATH"
+            };
+            let sep = if cfg!(windows) { ";" } else { ":" };
+            let existing = std::env::var(key).unwrap_or_default();
+            sidecar = sidecar.env(key, format!("{}{}{}", target_dir.display(), sep, existing));
+        }
+    }
+
     let spawned = sidecar
         .args([
             "--model".into(),
@@ -347,6 +362,9 @@ pub async fn start_embedder(
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
 
     while std::time::Instant::now() < deadline {
+        if service.state().await == EmbedState::Unavailable {
+            return;
+        }
         if let Ok(r) = http.get(&url).bearer_auth(&config.auth_token).send().await {
             if r.status().is_success() {
                 *service.embedder.lock().await = Some(embedder);

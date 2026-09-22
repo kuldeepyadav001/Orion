@@ -97,28 +97,27 @@ const ENGINE_WAIT: std::time::Duration = std::time::Duration::from_secs(180);
 /// loading: one starts the engine, and all of them wait on the same health
 /// check.
 async fn ensure_engine(app: &tauri::AppHandle, state: &State<'_, AppState>) -> Result<()> {
-    let started = state.engine_started.clone();
+    let engine = state.engine.clone();
+    let status = engine.status().await;
 
-    if !started.initialized() {
-        let engine = state.engine.clone();
+    // Already answering: nothing to wait for.
+    if status.state == EngineState::Ready {
+        return Ok(());
+    }
+
+    let needs_spawn = !state.engine_started.initialized() || status.state == EngineState::Error;
+
+    if needs_spawn {
         let manager = state.manager.clone();
         let sidecars = state.sidecars.clone();
         let tier = *state.active_tier.lock().await;
         let handle = app.clone();
 
-        // set() returning Err means another message won the race; that caller
-        // is spawning it, and we fall through to wait alongside them.
-        if started.set(()).is_ok() {
-            tracing::info!("first message: starting the engine now");
-            tauri::async_runtime::spawn(async move {
-                start_engine(sidecars, handle, engine, manager, tier).await;
-            });
-        }
-    }
-
-    // Already answering: nothing to wait for.
-    if state.engine.status().await.state == EngineState::Ready {
-        return Ok(());
+        tracing::info!("starting engine (previous state: {:?})", status.state);
+        let _ = state.engine_started.set(());
+        tauri::async_runtime::spawn(async move {
+            start_engine(sidecars, handle, engine, manager, tier).await;
+        });
     }
 
     // Wait for the health check rather than firing into a loading model.
@@ -398,6 +397,88 @@ async fn list_documents(state: State<'_, AppState>) -> Result<Vec<rag::store::St
 /* ------------------------------------------------------------------ */
 /* voice                                                               */
 /* ------------------------------------------------------------------ */
+
+/// Locate the directory where Tauri sidecars and shared libraries are stored.
+pub fn locate_binaries_dir() -> Option<std::path::PathBuf> {
+    if let Ok(manifest) = std::env::var("CARGO_MANIFEST_DIR") {
+        let d = std::path::PathBuf::from(manifest).join("binaries");
+        if d.is_dir() {
+            return Some(d);
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            let beside = parent.join("binaries");
+            if beside.is_dir() {
+                return Some(beside);
+            }
+        }
+    }
+    for prefix in &["src-tauri/binaries", "binaries", "../src-tauri/binaries"] {
+        let d = std::path::PathBuf::from(prefix);
+        if d.is_dir() {
+            return Some(d);
+        }
+    }
+    None
+}
+
+/// Automatically mirror dynamic shared libraries (.dll on Windows, .so on Linux, .dylib on macOS)
+/// from the binaries source directory to the running executable's directory.
+///
+/// Tauri's dev runner copies only the executable into target/debug or target_clean/debug,
+/// leaving the shared libraries behind. On Windows, this causes immediate STATUS_DLL_NOT_FOUND (0xC0000135).
+/// Syncing them dynamically ensures sidecars find all dependencies without manual file copying.
+pub fn sync_sidecar_libraries() {
+    let Some(bin_dir) = locate_binaries_dir() else {
+        return;
+    };
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    let Some(target_dir) = exe.parent() else {
+        return;
+    };
+
+    if bin_dir == target_dir {
+        return;
+    }
+
+    let Ok(entries) = std::fs::read_dir(&bin_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        let is_lib = name.ends_with(".dll")
+            || name.ends_with(".so")
+            || name.contains(".so.")
+            || name.ends_with(".dylib");
+        if is_lib {
+            let dest = target_dir.join(name);
+            let should_copy = if !dest.exists() {
+                true
+            } else {
+                let src_len = entry.metadata().map(|m| m.len()).unwrap_or(0);
+                let dst_len = std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
+                src_len != dst_len
+            };
+
+            if should_copy {
+                if let Err(e) = std::fs::copy(&path, &dest) {
+                    tracing::warn!(src = %path.display(), dst = %dest.display(), error = %e, "failed to mirror sidecar library");
+                } else {
+                    tracing::info!(src = %path.display(), dst = %dest.display(), "mirrored sidecar library");
+                }
+            }
+        }
+    }
+}
 
 /// Where whisper-cli lives. Beside the other sidecars or overridden by env.
 fn whisper_cli_path() -> std::path::PathBuf {
@@ -740,6 +821,36 @@ async fn start_engine(
         }
     };
 
+    // Ensure DLLs / shared libraries are mirrored and in PATH for llama-server
+    sync_sidecar_libraries();
+    let mut sidecar = sidecar;
+    let mut search_paths = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(target_dir) = exe.parent() {
+            sidecar = sidecar.current_dir(target_dir);
+            search_paths.push(target_dir.to_string_lossy().to_string());
+        }
+    }
+    if let Some(bin_dir) = locate_binaries_dir() {
+        search_paths.push(bin_dir.to_string_lossy().to_string());
+    }
+    if !search_paths.is_empty() {
+        let key = if cfg!(windows) {
+            "PATH"
+        } else {
+            "LD_LIBRARY_PATH"
+        };
+        let sep = if cfg!(windows) { ";" } else { ":" };
+        let existing = std::env::var(key).unwrap_or_default();
+        let joined = search_paths.join(sep);
+        let new_val = if existing.is_empty() {
+            joined
+        } else {
+            format!("{joined}{sep}{existing}")
+        };
+        sidecar = sidecar.env(key, new_val);
+    }
+
     let spawned = sidecar
         .args([
             "--model".into(),
@@ -773,6 +884,7 @@ async fn start_engine(
     registry.register("llama-server (chat)", child);
 
     // Drain sidecar output into our logs; llama-server is chatty on stderr.
+    let engine_for_exit = engine.clone();
     tauri::async_runtime::spawn(async move {
         while let Some(ev) = rx.recv().await {
             match ev {
@@ -783,7 +895,17 @@ async fn start_engine(
                     tracing::debug!(target: "llama", "{}", String::from_utf8_lossy(&b).trim())
                 }
                 CommandEvent::Terminated(p) => {
-                    tracing::warn!(?p, "llama-server exited");
+                    let msg = match p.code {
+                        Some(-1073741515) => {
+                            "llama-server exited with code 0xC0000135 (STATUS_DLL_NOT_FOUND). Required DLLs (ggml.dll, llama.dll) are missing from the executable directory.".to_string()
+                        }
+                        Some(code) => {
+                            format!("llama-server exited unexpectedly with code {code}")
+                        }
+                        None => "llama-server was terminated by a signal".to_string(),
+                    };
+                    tracing::warn!(?p, "{}", msg);
+                    engine_for_exit.set_status(EngineState::Error, msg).await;
                     break;
                 }
                 _ => {}
@@ -899,6 +1021,8 @@ pub fn run() {
             use presence::tauri_glue::timed;
 
             trace.record(presence::Phase::RuntimeInit, boot.elapsed());
+
+            sync_sidecar_libraries();
 
             let data_dir = db::data_dir()?;
             let database = timed(&mut trace, presence::Phase::Database, || -> Result<Db> {

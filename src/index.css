@@ -323,6 +323,11 @@ button:disabled {
   background: var(--text-faint);
 }
 
+.dot.idle {
+  background: var(--text-faint);
+  opacity: 0.65;
+}
+
 .dot.ok {
   background: var(--ok);
   box-shadow: 0 0 8px rgba(61, 220, 132, 0.75);

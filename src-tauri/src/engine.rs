@@ -173,6 +173,14 @@ impl Engine {
         let url = format!("{}/health", cfg.base_url());
 
         while std::time::Instant::now() < deadline {
+            let current = self.status().await;
+            if current.state == EngineState::Error {
+                return Err(OrionError::Engine(format!(
+                    "engine failed to start: {}",
+                    current.detail
+                )));
+            }
+
             match self
                 .http
                 .get(&url)

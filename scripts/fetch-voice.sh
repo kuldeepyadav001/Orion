@@ -70,14 +70,17 @@ done < <(find "$TMP/x" \( -type f -o -type l \) \( -name '*.so*' -o -name '*.dll
 echo "==> copied $LIBS shared library files/links"
 
 for profile in debug release; do
-  T="$ROOT/src-tauri/target/$profile"
-  if [ -d "$T" ]; then
-    cp "$DEST/whisper-cli${EXT}" "$T/" 2>/dev/null || true
-    while IFS= read -r lib; do
-      cp -a "$lib" "$T/" 2>/dev/null || true
-    done < <(find "$TMP/x" \( -type f -o -type l \) \( -name '*.so*' -o -name '*.dll' -o -name '*.dylib' \))
-    echo "==> mirrored into target/$profile"
-  fi
+  for base in "${CARGO_TARGET_DIR:-}" "$ROOT/src-tauri/target" "$ROOT/src-tauri/target_clean"; do
+    [ -z "$base" ] && continue
+    T="$base/$profile"
+    if [ -d "$T" ]; then
+      cp "$DEST/whisper-cli${EXT}" "$T/" 2>/dev/null || true
+      while IFS= read -r lib; do
+        cp -a "$lib" "$T/" 2>/dev/null || true
+      done < <(find "$TMP/x" \( -type f -o -type l \) \( -name '*.so*' -o -name '*.dll' -o -name '*.dylib' \))
+      echo "==> mirrored into $T"
+    fi
+  done
 done
 
 # Models go in the data directory alongside the chat model.

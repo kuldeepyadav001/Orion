@@ -105,12 +105,15 @@ echo "==> copied $LIBCOUNT shared librar$([ "$LIBCOUNT" -eq 1 ] && echo y || ech
 # Found the hard way on a real machine: the app compiled, launched, and the
 # engine died in 65 ms with no output.
 for profile in debug release; do
-  TARGET_DIR="$ROOT/src-tauri/target/$profile"
-  if [ -d "$TARGET_DIR" ]; then
-    find "$TMP/x" -type f \( -name '*.so*' -o -name '*.dll' -o -name '*.dylib' \) \
-      -exec cp {} "$TARGET_DIR/" \; 2>/dev/null || true
-    echo "==> libraries mirrored into target/$profile"
-  fi
+  for base in "${CARGO_TARGET_DIR:-}" "$ROOT/src-tauri/target" "$ROOT/src-tauri/target_clean"; do
+    [ -z "$base" ] && continue
+    TARGET_DIR="$base/$profile"
+    if [ -d "$TARGET_DIR" ]; then
+      find "$TMP/x" -type f \( -name '*.so*' -o -name '*.dll' -o -name '*.dylib' \) \
+        -exec cp {} "$TARGET_DIR/" \; 2>/dev/null || true
+      echo "==> libraries mirrored into $TARGET_DIR"
+    fi
+  done
 done
 
 echo "==> installed: $DEST/llama-server-${TRIPLE}${EXT}"

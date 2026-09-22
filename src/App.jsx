@@ -161,10 +161,10 @@ export default function App() {
 
   const send = useCallback(async () => {
     const text = input.trim();
-    // Deliberately NOT gated on engine.state. The engine now starts on the
-    // first message, so it is idle until someone types — refusing input until
-    // "ready" would mean it never becomes ready.
-    if (!text || streaming || engine.state === "error") return;
+    // Deliberately NOT gated on engine.state == "ready". The engine starts on the
+    // first message, so it is in standby until someone types. We also allow retrying
+    // if an error occurred previously.
+    if (!text || streaming) return;
 
     setInput("");
     pending.current = "";
@@ -192,7 +192,7 @@ export default function App() {
         return next;
       });
     }
-  }, [input, streaming, engine.state]);
+  }, [input, streaming]);
 
   const stop = useCallback(async () => {
     try {
@@ -221,25 +221,27 @@ export default function App() {
   };
 
   const label = {
-    // "Idle" is not an error and not work in progress. Before this existed
-    // the app reported "Starting engine…" forever after launch, because the
-    // engine is lazy and genuinely had not been asked to do anything yet.
-    idle: "Ready",
+    // "Idle" means the app is open and ready to load on demand, but weights
+    // have not been mapped yet. Calling it "Ready" misled users into thinking
+    // inference was instantaneous before the cold-load happened.
+    idle: "Standby",
     starting: "Starting engine…",
     loading: "Loading model…",
     ready: "Ready",
     error: "Engine error",
   }[engine.state] ?? engine.state;
 
-  // These must match the classes in index.css (.dot.ok / .dot.err / .dot.warn).
-  // They previously emitted ready/error/loading, which matched nothing, so the
-  // indicator was permanently grey however the engine was doing.
+  // These must match the classes in index.css (.dot.ok / .dot.err / .dot.warn / .dot.idle).
+  // "ready" is solid green; "idle" is neutral standby; "starting"/"loading" is pulsing amber;
+  // "error" is red.
   const dotClass =
-    engine.state === "ready" || engine.state === "idle"
+    engine.state === "ready"
       ? "ok"
-      : engine.state === "error"
-        ? "err"
-        : "warn";
+      : engine.state === "idle"
+        ? "idle"
+        : engine.state === "error"
+          ? "err"
+          : "warn";
 
   // Clears the visible thread. History stays in SQLite; this is a fresh view,
   // not a delete.
@@ -320,7 +322,16 @@ export default function App() {
           <button className="side-link" onClick={() => setShowSystem(true)}>
             System
           </button>
-          <div className="engine-chip" title={engine.detail || label}>
+          <div
+            className="engine-chip"
+            title={
+              engine.detail
+                ? `${label}: ${engine.detail}`
+                : engine.state === "idle"
+                  ? "Standby: model loads into memory on your first message"
+                  : label
+            }
+          >
             <span className={`dot ${dotClass}`} />
             <span className="truncate">{label}</span>
           </div>

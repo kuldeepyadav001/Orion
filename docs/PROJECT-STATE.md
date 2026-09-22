@@ -84,6 +84,33 @@ The voice pipeline was audited end-to-end against real audio hardware contracts 
 - **Forensic Diagnosis:** `scripts/setup-sysroot.sh` omitted `libasound2-dev` and `libasound2t64`, preventing `alsa-sys` from building in rootless/headless Docker sandboxes.
 - **Resolution:** Added ALSA packages to `PACKAGES` in `setup-sysroot.sh`.
 
+### 6. Windows Sidecar DLL Loader Failure (`STATUS_DLL_NOT_FOUND` / `0xC0000135` / `-1073741515`)
+- **Forensic Diagnosis:** When running `npm run tauri dev` on Windows with a custom `$env:CARGO_TARGET_DIR` (e.g. `$PWD\src-tauri\target_clean`), the Tauri CLI copied `llama-server-x86_64-pc-windows-msvc.exe` into `target_clean\debug\`, but left the required dynamic runtime libraries (`ggml.dll`, `llama.dll`, `ggml-base.dll`, `ggml-cpu.dll`, etc.) in `src-tauri\binaries\`. Because Windows resolves DLLs relative to the executable path and `PATH`, and neither contained `src-tauri\binaries\`, Windows terminated `llama-server.exe` within 54 ms with exit code `-1073741515` (`0xC0000135`). The exact same crash hit the embedding sidecar.
+- **Resolution:**
+  1. Added `sync_sidecar_libraries()` in `src-tauri/src/lib.rs` which executes on app startup and before starting sidecars: it scans candidate `binaries/` locations and automatically mirrors all `.dll` / `.so` / `.dylib` files directly into `current_exe().parent()` (`target_clean\debug\`), completely removing the need for manual library copying regardless of target directory.
+  2. Updated `start_engine` and `start_embedder` to explicitly prepend the executable directory and the binaries directory to `PATH` (on Windows) / `LD_LIBRARY_PATH` (on Linux), and set the process `current_dir`.
+  3. Updated `scripts/fetch-sidecars.sh` and `scripts/fetch-voice.sh` to mirror libraries into `$CARGO_TARGET_DIR`, `target_clean`, and `target`.
+
+### 7. Engine 180-Second Hang on Child Process Crash
+- **Forensic Diagnosis:** When `llama-server` crashed on spawn, the background listener received `CommandEvent::Terminated(p)`, logged a warning, and exited the loop. However, it never notified `engine`. Meanwhile, `ensure_engine` / `wait_until_ready` entered an HTTP polling loop to `127.0.0.1:49999/health`. Because the port was closed, `reqwest` received `Connection refused`, which `wait_until_ready` misclassified as "server still binding", looping repeatedly for the full 180-second timeout while reporting `Waiting for engine…`. The user was left waiting 3 minutes with no clue that the engine had already died.
+- **Resolution:**
+  1. Added child termination notification in `start_engine`: when `CommandEvent::Terminated(p)` is received, `engine.set_status(EngineState::Error, ...)` is immediately invoked with exact exit code diagnostics (specifically identifying `0xC0000135 / STATUS_DLL_NOT_FOUND`).
+  2. In `engine.rs`, `wait_until_ready` checks `self.status().await.state == EngineState::Error` on every cycle and bails out immediately with the exact cause instead of hanging for 180 seconds.
+  3. In `documents.rs`, `start_embedder` checks `service.state().await == EmbedState::Unavailable` to abort immediately on termination.
+  4. In `ensure_engine`, if the engine previously failed (`EngineState::Error`), it allows re-attempting spawn on subsequent prompts.
+
+### 8. Deceptive UI Readiness Status at Launch
+- **Forensic Diagnosis:** `App.jsx` mapped `EngineState::Idle` to `"Ready"` and `.dot.ok` (green). This falsely informed users that the 2.4 GB chat model was already loaded into memory at startup. When the user sent their first message, the status suddenly switched to amber "Starting engine…" and froze, destroying user trust.
+- **Resolution:**
+  1. Mapped `idle` state honestly to `"Standby"` with a neutral muted `.dot.idle` indicator.
+  2. Only genuine `ready` state (verified `/health` HTTP 200) receives `"Ready"` and solid green `.dot.ok`.
+  3. Added informative tooltips explaining that the model loads into memory upon the first message.
+  4. Removed the blocking guard in `send()` for `engine.state === "error"` so the user can retry sending after resolving an issue.
+
+### 9. Unused Windows Import Warning in `transcribe.rs`
+- **Forensic Diagnosis:** `tokio::process::Command` implements `creation_flags` as an inherent method on Windows. Importing `std::os::windows::process::CommandExt` triggered `#[warn(unused_imports)]`.
+- **Resolution:** Removed the redundant import.
+
 ---
 
 ## 4. IMMEDIATE OBJECTIVE: MILESTONE 5 (M5)
