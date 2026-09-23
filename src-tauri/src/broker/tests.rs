@@ -8,7 +8,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use crate::db::Db;
-use super::domain::{Directive, Domain, DomainSource};
+use super::domain::{Directive, Domain};
 use super::tier::{ActionKind, CapabilityTier};
 use super::{CapabilityBroker, EvaluationResult};
 
@@ -184,7 +184,7 @@ async fn t1_write_records_undo_and_reverts_cleanly() {
     // Get undo history
     let undos = broker.undo_history(5).await.unwrap();
     assert_eq!(undos.len(), 1);
-    let journal_id = undos[0].id.clone();
+    let _journal_id = undos[0].id.clone();
 
     // Mutate file again
     broker

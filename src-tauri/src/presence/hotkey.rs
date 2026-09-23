@@ -653,10 +653,15 @@ mod tests {
         assert_eq!(hk.display_for(Platform::Linux), "Ctrl+Shift+O");
         assert_eq!(hk.display_for(Platform::MacOs), "⌃⇧O");
 
-        let meta = Hotkey::default_global();
-        assert_eq!(meta.display_for(Platform::Windows), "Win+O");
-        assert_eq!(meta.display_for(Platform::Linux), "Super+O");
-        assert_eq!(meta.display_for(Platform::MacOs), "⌘O");
+        let default_hk = Hotkey::default_global();
+        assert_eq!(default_hk.display_for(Platform::Windows), "Ctrl+Shift+0");
+        assert_eq!(default_hk.display_for(Platform::Linux), "Ctrl+Shift+0");
+        assert_eq!(default_hk.display_for(Platform::MacOs), "⌃⇧0");
+
+        let win_chord = parse("Win+O").unwrap();
+        assert_eq!(win_chord.display_for(Platform::Windows), "Win+O");
+        assert_eq!(win_chord.display_for(Platform::Linux), "Super+O");
+        assert_eq!(win_chord.display_for(Platform::MacOs), "⌘O");
     }
 
     #[test]
