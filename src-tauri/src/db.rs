@@ -229,6 +229,36 @@ impl Db {
         out.reverse();
         Ok(out)
     }
+
+    /// Read an application setting by key from the database.
+    pub fn get_setting(&self, key: &str) -> Result<Option<String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT value FROM settings WHERE key = ?1")
+            .map_err(|e| OrionError::Db(format!("failed to prepare setting query: {e}")))?;
+
+        let mut rows = stmt
+            .query(params![key])
+            .map_err(|e| OrionError::Db(format!("failed to query setting: {e}")))?;
+
+        if let Some(row) = rows.next().map_err(|e| OrionError::Db(e.to_string()))? {
+            Ok(Some(row.get(0).map_err(|e| OrionError::Db(e.to_string()))?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Persist or update an application setting in the database.
+    pub fn set_setting(&self, key: &str, value: &str) -> Result<()> {
+        self.conn
+            .execute(
+                "INSERT INTO settings (key, value) VALUES (?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![key, value],
+            )
+            .map_err(|e| OrionError::Db(format!("failed to write setting: {e}")))?;
+        Ok(())
+    }
 }
 
 /// Platform-appropriate data directory, e.g.
@@ -318,5 +348,17 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM messages", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n, 0, "messages must cascade with their session");
+    }
+
+    #[test]
+    fn roundtrips_settings_upsert() {
+        let (db, _g) = temp_db();
+        assert_eq!(db.get_setting("nonexistent").unwrap(), None);
+
+        db.set_setting("theme", "dark").unwrap();
+        assert_eq!(db.get_setting("theme").unwrap(), Some("dark".into()));
+
+        db.set_setting("theme", "light").unwrap();
+        assert_eq!(db.get_setting("theme").unwrap(), Some("light".into()));
     }
 }

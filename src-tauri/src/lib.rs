@@ -20,6 +20,7 @@ pub mod rag;
 pub mod sidecars;
 pub mod voice;
 pub mod broker;
+pub mod persona;
 
 use std::sync::Arc;
 
@@ -61,6 +62,8 @@ pub struct AppState {
     pub manager: Arc<ModelManager>,
     /// Capability Broker enforcing domain isolation, sandboxing, and audit trails.
     pub broker: Arc<broker::CapabilityBroker>,
+    /// Master passcode security lock: true if unlocked or not configured.
+    pub is_unlocked: Arc<std::sync::atomic::AtomicBool>,
     /// Ensures the lazy engine start happens exactly once, even if several
     /// messages are sent before it finishes loading.
     pub engine_started: Arc<tokio::sync::OnceCell<()>>,
@@ -148,6 +151,12 @@ async fn send_message(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<()> {
+    if !state.is_unlocked.load(std::sync::atomic::Ordering::SeqCst) {
+        return Err(OrionError::Security(
+            "Orion is locked. Enter master passcode to proceed.".into(),
+        ));
+    }
+
     let message = message.trim().to_string();
     if message.is_empty() {
         return Err(OrionError::Config("message is empty".into()));
@@ -187,13 +196,19 @@ async fn send_message(
         }
     };
 
-    let system_prompt = if grounded.is_some() {
+    let persona = {
+        let db = state.db.lock().await;
+        persona::get_active_persona(&db).unwrap_or(persona::PersonaKind::General)
+    };
+
+    let base_prompt = if grounded.is_some() {
         rag::context::GROUNDED_SYSTEM_PROMPT
     } else {
         SYSTEM_PROMPT
     };
+    let system_prompt = persona.enhance_prompt(base_prompt);
 
-    let mut msgs = vec![ChatMessage::system(system_prompt)];
+    let mut msgs = vec![ChatMessage::system(&system_prompt)];
     msgs.extend(history.into_iter().map(|m| ChatMessage {
         role: m.role,
         content: m.content,
@@ -816,6 +831,136 @@ async fn broker_reject_ticket(ticket_id: String, state: State<'_, AppState>) -> 
 }
 
 /* ------------------------------------------------------------------ */
+/* personas & onboarding (M6)                                         */
+/* ------------------------------------------------------------------ */
+
+/// List all available workload personas with their capabilities.
+#[tauri::command]
+fn list_personas() -> Vec<persona::PersonaInfo> {
+    persona::list_personas()
+}
+
+/// Retrieve the active persona.
+#[tauri::command]
+async fn get_active_persona(state: State<'_, AppState>) -> Result<persona::PersonaInfo> {
+    let db = state.db.lock().await;
+    let kind = persona::get_active_persona(&db)?;
+    Ok(kind.info())
+}
+
+/// Set the active persona.
+#[tauri::command]
+async fn set_active_persona(
+    persona: String,
+    state: State<'_, AppState>,
+) -> Result<persona::PersonaInfo> {
+    let db = state.db.lock().await;
+    persona::set_active_persona(&db, &persona)
+}
+
+/// Check if the first-run onboarding wizard has been completed.
+#[tauri::command]
+async fn get_onboarding_status(state: State<'_, AppState>) -> Result<bool> {
+    let db = state.db.lock().await;
+    let completed = db
+        .get_setting(persona::SETTING_KEY_ONBOARDING)?
+        .map_or(false, |v| v == "true" || v == "1");
+    Ok(completed)
+}
+
+/// Complete the first-run onboarding wizard and configure initial persona.
+#[tauri::command]
+async fn complete_onboarding(
+    persona: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<()> {
+    let db = state.db.lock().await;
+    if let Some(p) = persona {
+        let _ = persona::set_active_persona(&db, &p)?;
+    }
+    db.set_setting(persona::SETTING_KEY_ONBOARDING, "true")?;
+    tracing::info!("first-run onboarding wizard completed");
+    Ok(())
+}
+
+/* ------------------------------------------------------------------ */
+/* master passcode security lock (M6)                                 */
+/* ------------------------------------------------------------------ */
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct LockStatus {
+    pub enabled: bool,
+    pub locked: bool,
+    pub hint: Option<String>,
+}
+
+/// Retrieve current lock status (enabled, locked, hint).
+#[tauri::command]
+async fn lock_status(state: State<'_, AppState>) -> Result<LockStatus> {
+    let db = state.db.lock().await;
+    let enabled = persona::is_lock_configured(&db)?;
+    let locked = enabled && !state.is_unlocked.load(std::sync::atomic::Ordering::SeqCst);
+    let hint = if enabled { persona::get_lock_hint(&db)? } else { None };
+    Ok(LockStatus {
+        enabled,
+        locked,
+        hint,
+    })
+}
+
+/// Attempt to unlock Orion using the user passcode.
+#[tauri::command]
+async fn unlock_with_passcode(passcode: String, state: State<'_, AppState>) -> Result<bool> {
+    let db = state.db.lock().await;
+    let ok = persona::verify_passcode(&db, &passcode)?;
+    if ok {
+        state.is_unlocked.store(true, std::sync::atomic::Ordering::SeqCst);
+        tracing::info!("orion unlocked successfully");
+    } else {
+        tracing::warn!("failed unlock attempt with incorrect passcode");
+    }
+    Ok(ok)
+}
+
+/// Set or update the master security passcode.
+#[tauri::command]
+async fn set_master_lock(
+    passcode: String,
+    hint: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<()> {
+    let db = state.db.lock().await;
+    persona::set_passcode(&db, &passcode, hint.as_deref())?;
+    state.is_unlocked.store(true, std::sync::atomic::Ordering::SeqCst);
+    Ok(())
+}
+
+/// Remove master lock protection (requires current passcode for verification).
+#[tauri::command]
+async fn remove_master_lock(
+    current_passcode: String,
+    state: State<'_, AppState>,
+) -> Result<bool> {
+    let db = state.db.lock().await;
+    let removed = persona::remove_passcode(&db, &current_passcode)?;
+    if removed {
+        state.is_unlocked.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+    Ok(removed)
+}
+
+/// Lock the application immediately.
+#[tauri::command]
+async fn lock_app_now(state: State<'_, AppState>) -> Result<()> {
+    let db = state.db.lock().await;
+    if persona::is_lock_configured(&db)? {
+        state.is_unlocked.store(false, std::sync::atomic::Ordering::SeqCst);
+        tracing::info!("orion manually locked");
+    }
+    Ok(())
+}
+
+/* ------------------------------------------------------------------ */
 /* sidecar                                                             */
 /* ------------------------------------------------------------------ */
 
@@ -1166,6 +1311,8 @@ pub fn run() {
             let embed = Arc::new(documents::EmbedService::new());
             let voice_svc = Arc::new(voice::VoiceService::new());
             let sidecars = Arc::new(sidecars::SidecarRegistry::new());
+            let lock_configured = persona::is_lock_configured(&database).unwrap_or(false);
+            let is_unlocked = Arc::new(std::sync::atomic::AtomicBool::new(!lock_configured));
             let db_arc = Arc::new(Mutex::new(database));
             let workspace_dir = db::data_dir().unwrap_or_default().join("workspace");
             let broker = Arc::new(broker::CapabilityBroker::new(db_arc.clone(), workspace_dir));
@@ -1183,6 +1330,7 @@ pub fn run() {
                 voice: voice_svc.clone(),
                 manager: manager.clone(),
                 broker: broker.clone(),
+                is_unlocked: is_unlocked.clone(),
                 engine_started: Arc::new(tokio::sync::OnceCell::new()),
             });
 
@@ -1337,7 +1485,17 @@ pub fn run() {
             broker_undo_history,
             broker_rollback,
             broker_confirm_ticket,
-            broker_reject_ticket
+            broker_reject_ticket,
+            list_personas,
+            get_active_persona,
+            set_active_persona,
+            get_onboarding_status,
+            complete_onboarding,
+            lock_status,
+            unlock_with_passcode,
+            set_master_lock,
+            remove_master_lock,
+            lock_app_now
         ])
         .build(tauri::generate_context!())
         .expect("error while building Orion")

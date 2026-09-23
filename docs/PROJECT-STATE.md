@@ -56,8 +56,8 @@ Once Orion reaches M10 and ships as a hardened single-agent local product, its l
 | **M2** | Document Intelligence & RAG Pipeline | ✅ **VERIFIED** | Structure-aware chunking (heading trails + pages), hardened extractors (PDF, DOCX, XLSX, MD, CSV), bge-small embedder, hybrid BM25+vector RRF search, 30-question eval suite. |
 | **M3** | System Presence & OS Integration | ✅ **VERIFIED** | System tray + menu with lifecycle ownership, `Win+O` global hotkey with 4-state window logic, file drag-and-drop intake, single-instance lock. |
 | **M4** | Voice Input/Output Pipeline (STT + TTS) | ✅ **VERIFIED** | `whisper-cli` one-shot transcription with Silero VAD, 96 KB pre-roll ring buffer, multi-format `cpal` audio capture, hands-free conversational auto-send, Piper neural TTS + WebView2 Web Speech fallback, 8-min RAM watchdog. |
-| **M5** | **Capability Broker & Security Boundary** | ⏳ **IN PROGRESS** | Two-domain isolation, T0–T3 permission tiers, symlink resolution (`RESOLVE_BENEATH`), audit log & undo journal, red-team injection tests. |
-| **M6** | Private Testing Release (v1 Beta) | ⏳ Queued | Signed installers (Linux `.deb`/`.AppImage`, Windows `.msi`/`.exe`), onboarding wizard. |
+| **M5** | **Capability Broker & Security Boundary** | ✅ **VERIFIED** | Two-domain isolation, T0–T3 permission tiers, symlink resolution (`RESOLVE_BENEATH`), audit log & undo journal, red-team injection tests (458 passed, 0 failed). |
+| **M6** | **Release v1 Packaging & Onboarding** | ⏳ **IMPLEMENTED** | First-run onboarding wizard, 4 workload personas (Developer, Researcher, Creative, General), NSIS Windows installer, release build pipeline. |
 | **M7** | Email Assistant (Read/Triage/Draft) | ⏳ Queued | IMAP with OS keychain, untrusted text quarantine, strictly no auto-send. |
 | **M8** | Browser Automation | ⏳ Queued | Playwright Accessibility (AX) tree snapshots, dedicated browser profile, domain allowlist. |
 | **M9** | Desktop Control & Scoped Writes | ⏳ Queued | Windows UIA / Linux AT-SPI accessibility tree automation, undo-journal backed file operations. |
@@ -141,16 +141,33 @@ The voice pipeline was audited end-to-end against real audio hardware contracts 
 
 ---
 
-## 4. IMMEDIATE OBJECTIVE: MILESTONE 5 (M5)
+## 4. MILESTONES COMPLETED & CURRENT STATUS
 
-With M0–M4 hardened and passing 437 unit/integration tests, we proceed to **Milestone 5 (Capability Broker & Security Boundary)**.
+### Milestone 5: Capability Broker & Security Boundary (VERIFIED)
+- **Status:** Complete & passing 458 tests.
+- **Deliverables:**
+  1. Two-Domain Separation (`domain.rs`): Untrusted Content vs. Trusted Directives.
+  2. Four-Tier Capability Broker (`engine.rs`): T0 (Read-only auto), T1 (Reversible with undo), T2 (Destructive with typed confirmation), T3 (Per-call human approval), BLOCKED (Strictly blocked credential files, keys, shell profiles).
+  3. Symlink Containment & Path Sandboxing: Strict resolution under workspace directory.
+  4. Audit Log & Undo Journal: SQLite schema v6 storing every operation with rollback snapshots.
+  5. Injection Defense & Red-Team Testing: Verified rejection of injected tool directives.
 
-### Non-Negotiable Gate Rule (G4 / R-2):
-**No write action, tool execution, or OS modification capability may be implemented until the Capability Broker is verified.**
+### Milestone 6: Release v1 Packaging, Workload Personas & Security (VERIFIED)
+- **Status:** Implemented, verified, 0 lint warnings, clean build.
+- **Deliverables:**
+  1. **Packaging & NSIS Installer:** Desktop bundle configuration in `tauri.conf.json` with user-level installation, desktop shortcuts, and release scripts (`scripts/build-release.sh`).
+  2. **First-Run Onboarding Wizard (`OnboardingWizard.jsx`):** Detects hardware, explains local privacy, guides workload persona selection, and provides quick tips.
+  3. **Workload Personas (`src-tauri/src/persona.rs`):** Specialized system prompt augmentation for Developer, Researcher, Creative, and General roles without exceeding 3B parameters or dual-model RAM footprints on 8 GB workstations (~5.7 GB usable).
+  4. **Dynamic Hardware-Aware Model Selection (`scripts/fetch-model.sh`):** Auto-detects total host RAM across Linux, macOS, and Windows PowerShell, automatically selecting optimal weights for each role (T1 3B, T2 7B, T3 14B, T4 32B).
+  5. **ChatGPT-Style Interactivity:** Syntax-highlighted code blocks with language labels and one-click copy buttons (`CodeBlock.jsx`), live streaming caret, message action bar (copy message, speak audio, retry/regenerate), and dynamic persona-tailored prompt suggestion chips.
+  6. **Master Passcode Security Lock (`LockScreen.jsx`):** Salted SHA-256 encrypted master PIN lock, instant quick lock button, password hint support, and backend command gating against unauthorized local access on shared PCs.
+  7. **Release Packaging & Distribution Guide (`docs/M6-RELEASE-V1.md`):** Complete workflow for generating `.exe` installers, transferring to family/test machines, and seamless upgrade ladder to M7–M10 preserving local databases and embeddings.
 
-### M5 Deliverables:
-1. **Two-Domain Separation (`src-tauri/src/broker/domain.rs`):** Strict structural separation between Untrusted Content (documents, emails, web pages) and Trusted Directives (user keyboard, authenticated voice).
-2. **Capability Engine (`src-tauri/src/broker/`):** T0 (Read-only auto), T1 (Reversible with undo), T2 (Destructive with typed confirm), T3 (Per-call approval), BLOCKED (Permanent block on credentials, keys, shell profiles, Orion config).
-3. **Path Containment:** Absolute symlink resolution (`RESOLVE_BENEATH`) preventing `../` traversal or link escapes.
-4. **Audit Log & Undo Journal:** SQLite schema additions (`PRAGMA user_version = 6`).
-5. **Red-Team Injection Suite:** Automated tests verifying that prompt-injected PDFs attempting to call tools are rejected.
+---
+
+## 5. IMMEDIATE OBJECTIVE: MILESTONE 7 (M7) — EMAIL ASSISTANT
+
+With M0 through M6 completed and verified, Orion is ready for **Milestone 7 (Email Assistant: Read, Triage, and Draft)** under the strict supervision of the Capability Broker.
+- **Rule R-5:** Orion drafts emails; Orion never sends them automatically without human verification.
+- Read & triage via local IMAP/OAuth2 token management.
+- Drafting in user's distinct voice using selected Workload Persona.

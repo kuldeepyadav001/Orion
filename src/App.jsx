@@ -7,6 +7,9 @@ import DocumentList from "./DocumentList";
 import DropZone from "./DropZone.jsx";
 import Logo from "./Logo";
 import VoiceButton from "./VoiceButton";
+import OnboardingWizard from "./OnboardingWizard";
+import CodeBlock from "./CodeBlock";
+import { LockScreen, LockSettingsModal } from "./LockScreen";
 
 /**
  * Clean markdown, backticks, code blocks, and citations from text before speech synthesis.
@@ -23,6 +26,162 @@ function cleanForSpeech(text) {
     .replace(/\s+/g, " ")
     .trim();
 }
+
+const PERSONA_SUGGESTIONS = {
+  developer: [
+    {
+      icon: "⚡",
+      title: "Refactor for O(n) performance",
+      sub: "Optimize loops & allocations",
+      prompt: "Can you review and refactor this code snippet for optimal O(n) runtime performance and low memory allocations?",
+    },
+    {
+      icon: "🧪",
+      title: "Generate unit tests",
+      sub: "Edge cases & property tests",
+      prompt: "Write comprehensive unit tests covering edge cases, potential panics, and error boundaries for this logic:",
+    },
+    {
+      icon: "🔍",
+      title: "Debug & explain code",
+      sub: "Find race conditions & bugs",
+      prompt: "Explain how this code works under the hood and identify any race conditions, memory leaks, or anti-patterns:",
+    },
+    {
+      icon: "📐",
+      title: "System architecture review",
+      sub: "Domain boundaries & API design",
+      prompt: "Design a clean, modular architecture for a high-throughput microservice handling concurrent requests with low latency.",
+    },
+  ],
+  researcher: [
+    {
+      icon: "📑",
+      title: "Cross-examine documents",
+      sub: (count) => (count > 0 ? `${count} documents indexed` : "Add files to enable"),
+      prompt: "Cross-examine all documents in my library. Summarize the core methodology, conflicting conclusions, and key findings.",
+      requiresDocs: true,
+    },
+    {
+      icon: "🔬",
+      title: "Synthesize empirical data",
+      sub: () => "Extract tables & citations",
+      prompt: "Synthesize the empirical evidence and experimental findings from our research data into a structured comparison table.",
+    },
+    {
+      icon: "💡",
+      title: "Formulate hypothesis",
+      sub: () => "Explore literature gaps",
+      prompt: "Based on current state-of-the-art literature, identify 3 unexplored research gaps and formulate falsifiable hypotheses.",
+    },
+    {
+      icon: "📊",
+      title: "Methodological critique",
+      sub: () => "Variables, power & bias",
+      prompt: "Critique the methodology of this study. Assess sample size validity, potential confounding variables, and threats to internal validity:",
+    },
+  ],
+  creative: [
+    {
+      icon: "🖋",
+      title: "Draft an immersive scene",
+      sub: () => "Sensory detail & tension",
+      prompt: "Draft an atmospheric opening scene set in a rain-swept cyberpunk transit hub, focusing on sensory details and subtext.",
+    },
+    {
+      icon: "💡",
+      title: "Brainstorm 5 concept hooks",
+      sub: () => "Fresh premises & twists",
+      prompt: "Brainstorm 5 original high-concept story premises exploring the psychological impact of sentient local AI assistants.",
+    },
+    {
+      icon: "🎭",
+      title: "Craft dialogue friction",
+      sub: () => "Subtext & authentic voices",
+      prompt: "Write a tense dialogue between a senior flight engineer and an inquisitive safety inspector uncovering a hidden hardware flaw.",
+    },
+    {
+      icon: "✨",
+      title: "Polish prose for rhythm",
+      sub: () => "Cadence, verbs & punchiness",
+      prompt: "Polish the following draft to improve its rhythm, emotional resonance, and word economy without altering the core meaning:",
+    },
+  ],
+  general: [
+    {
+      icon: "▤",
+      title: "Summarise a document",
+      sub: (count) => (count > 0 ? `${count} in your library` : "Add a file to enable"),
+      prompt: "Summarise the most important takeaways and action points from the documents in my library.",
+      requiresDocs: true,
+    },
+    {
+      icon: "✎",
+      title: "Draft professional email",
+      sub: () => "Clear, courteous & concise",
+      prompt: "Draft a concise, professional follow-up email after a project kickoff meeting outlining action items and next steps.",
+    },
+    {
+      icon: "✦",
+      title: "What can Orion do?",
+      sub: () => "Capabilities & local privacy",
+      prompt: "What can you do? Explain your local offline capabilities, RAG library search, and privacy model.",
+    },
+    {
+      icon: "🧠",
+      title: "Explain a concept",
+      sub: () => "Intuitive analogy & clarity",
+      prompt: "Explain how transformer self-attention mechanisms work using an intuitive, real-world analogy suitable for a general audience.",
+    },
+  ],
+};
+
+const FOLLOWUP_CHIPS = {
+  developer: [
+    "Show a step-by-step code example",
+    "Add error handling & validation",
+    "Analyze time and memory complexity",
+  ],
+  researcher: [
+    "Cite specific evidence & excerpts",
+    "Identify counterarguments & limitations",
+    "Format findings into a comparison table",
+  ],
+  creative: [
+    "Enhance descriptive imagery & atmosphere",
+    "Introduce more interpersonal tension",
+    "Make the tone more punchy and concise",
+  ],
+  general: [
+    "Explain this more simply with an analogy",
+    "Provide 3 actionable next steps",
+    "Summarize in concise bullet points",
+  ],
+};
+
+const markdownComponents = {
+  code(props) {
+    const { children, className } = props;
+    const match = /language-(\w+)/.exec(className || "");
+    const isBlock = match || (typeof children === "string" && children.includes("\n"));
+    if (isBlock) {
+      return (
+        <CodeBlock
+          language={match ? match[1] : ""}
+          code={String(children).replace(/\n$/, "")}
+        />
+      );
+    }
+    return (
+      <code className="inline-code">
+        {children}
+      </code>
+    );
+  },
+  pre(props) {
+    return <div className="code-pre-wrap">{props.children}</div>;
+  },
+};
 
 /**
  * Orion M0 shell.
@@ -49,6 +208,11 @@ export default function App() {
   const [hotkey, setHotkey] = useState("");
   const [speaking, setSpeaking] = useState(false);
   const [autoSpeak, setAutoSpeak] = useState(true);
+  const [showOnboarding, setShowOnboarding] = useState(false);
+  const [persona, setPersona] = useState(null);
+  const [lockStatus, setLockStatus] = useState({ enabled: false, locked: false, hint: null });
+  const [showLockSettings, setShowLockSettings] = useState(false);
+  const [copiedIndex, setCopiedIndex] = useState(null);
 
   const audioPlayerRef = useRef(null);
   const lastSourceRef = useRef("text");
@@ -59,13 +223,53 @@ export default function App() {
 
   const speakTextRef = useRef(null);
 
+  const refreshLockStatus = useCallback(async () => {
+    try {
+      const status = await invoke("lock_status");
+      setLockStatus(status);
+    } catch (e) {
+      console.error("Failed to load lock status:", e);
+    }
+  }, []);
+
+  const handleLockNow = async () => {
+    try {
+      await invoke("lock_app_now");
+      refreshLockStatus();
+    } catch (e) {
+      console.error("Failed to lock app:", e);
+    }
+  };
+
+  const copyMessage = useCallback(async (content, index) => {
+    try {
+      await navigator.clipboard.writeText(content);
+      setCopiedIndex(index);
+      setTimeout(() => setCopiedIndex(null), 2000);
+    } catch (err) {
+      console.error("Failed to copy message:", err);
+    }
+  }, []);
+
   // The label is computed in Rust so it matches the chord actually
   // registered, and uses the right glyphs for this platform.
   useEffect(() => {
     invoke("hotkey_label")
       .then(setHotkey)
       .catch(() => {});
-  }, []);
+
+    invoke("get_onboarding_status")
+      .then((completed) => {
+        if (!completed) setShowOnboarding(true);
+      })
+      .catch(() => {});
+
+    invoke("get_active_persona")
+      .then(setPersona)
+      .catch(() => {});
+
+    refreshLockStatus();
+  }, [refreshLockStatus]);
 
   const chatRef = useRef(null);
   const taRef = useRef(null);
@@ -343,6 +547,27 @@ export default function App() {
 
   const send = useCallback(() => sendMessage(input, false), [sendMessage, input]);
 
+  const regenerateLast = useCallback(() => {
+    if (streaming || messages.length === 0) return;
+    let lastUserText = "";
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === "user") {
+        lastUserText = messages[i].content;
+        break;
+      }
+    }
+    if (!lastUserText) return;
+
+    setMessages((prev) => {
+      const next = [...prev];
+      if (next[next.length - 1]?.role === "assistant") {
+        next.pop();
+      }
+      return next;
+    });
+    sendMessage(lastUserText, false);
+  }, [messages, streaming, sendMessage]);
+
   const stop = useCallback(async () => {
     stopSpeaking();
     try {
@@ -471,21 +696,49 @@ export default function App() {
         </div>
 
         <div className="side-foot">
-          <button className="side-link" onClick={() => setShowSystem(true)}>
-            System
-          </button>
-          <div
-            className="engine-chip"
-            title={
-              engine.detail
-                ? `${label}: ${engine.detail}`
-                : engine.state === "idle"
-                  ? "Standby: model loads into memory on your first message"
-                  : label
-            }
-          >
-            <span className={`dot ${dotClass}`} />
-            <span className="truncate">{label}</span>
+          {persona && (
+            <button
+              className="persona-pill"
+              onClick={() => setShowSystem(true)}
+              title="Active workload persona — click to change"
+            >
+              <span className="persona-pill-icon">{persona.icon}</span>
+              <span className="persona-pill-text truncate">{persona.name}</span>
+            </button>
+          )}
+          <div className="side-foot-row">
+            <button className="side-link" onClick={() => setShowSystem(true)}>
+              System
+            </button>
+            <button
+              className="side-link"
+              onClick={() => setShowLockSettings(true)}
+              title={lockStatus?.enabled ? "Master Passcode Configured" : "Enable Master Lock"}
+            >
+              {lockStatus?.enabled ? "🔒 Lock" : "🛡 Lock"}
+            </button>
+            {lockStatus?.enabled && (
+              <button
+                className="btn-quick-lock"
+                onClick={handleLockNow}
+                title="Lock Orion immediately"
+              >
+                🔒
+              </button>
+            )}
+            <div
+              className="engine-chip"
+              title={
+                engine.detail
+                  ? `${label}: ${engine.detail}`
+                  : engine.state === "idle"
+                    ? "Standby: model loads into memory on your first message"
+                    : label
+              }
+            >
+              <span className={`dot ${dotClass}`} />
+              <span className="truncate">{label}</span>
+            </div>
           </div>
         </div>
       </aside>
@@ -507,35 +760,21 @@ export default function App() {
               </p>
 
               <div className="suggestions">
-                <button
-                  className="suggestion"
-                  onClick={() => setInput("Summarise the document I added")}
-                  disabled={docCount === 0}
-                >
-                  <span className="sg-icon">▤</span>
-                  <span className="sg-title">Summarise a document</span>
-                  <span className="sg-sub">
-                    {docCount > 0
-                      ? `${docCount} in your library`
-                      : "Add a file to enable"}
-                  </span>
-                </button>
-                <button
-                  className="suggestion"
-                  onClick={() => setInput("What can you do?")}
-                >
-                  <span className="sg-icon">✦</span>
-                  <span className="sg-title">What can you do?</span>
-                  <span className="sg-sub">Capabilities and limits</span>
-                </button>
-                <button
-                  className="suggestion"
-                  onClick={() => setInput("Draft a short professional email")}
-                >
-                  <span className="sg-icon">✎</span>
-                  <span className="sg-title">Draft something</span>
-                  <span className="sg-sub">Email, notes, an outline</span>
-                </button>
+                {(PERSONA_SUGGESTIONS[persona?.id] || PERSONA_SUGGESTIONS.general).map((sg, idx) => (
+                  <button
+                    key={idx}
+                    className="suggestion"
+                    onClick={() => setInput(sg.prompt)}
+                    disabled={sg.requiresDocs && docCount === 0}
+                    title={sg.prompt}
+                  >
+                    <span className="sg-icon">{sg.icon}</span>
+                    <span className="sg-title">{sg.title}</span>
+                    <span className="sg-sub">
+                      {typeof sg.sub === "function" ? sg.sub(docCount) : sg.sub}
+                    </span>
+                  </button>
+                ))}
               </div>
             </div>
           ) : (
@@ -548,30 +787,55 @@ export default function App() {
                     <div className="msg-role">
                       <span>{m.role === "user" ? "You" : "Orion"}</span>
                       {m.role === "assistant" && m.content && (
-                        <button
-                          type="button"
-                          className={`btn-msg-speak ${isLastAssistant && speaking ? "speaking" : ""}`}
-                          onClick={() => {
-                            if (isLastAssistant && speaking) {
-                              stopSpeaking();
-                            } else {
-                              speakText(m.content);
+                        <div className="msg-actions">
+                          <button
+                            type="button"
+                            className="btn-msg-action"
+                            onClick={() => copyMessage(m.content, i)}
+                            title="Copy response"
+                            aria-label="Copy response"
+                          >
+                            {copiedIndex === i ? "✓ Copied" : "📋 Copy"}
+                          </button>
+                          <button
+                            type="button"
+                            className={`btn-msg-action btn-msg-speak ${isLastAssistant && speaking ? "speaking" : ""}`}
+                            onClick={() => {
+                              if (isLastAssistant && speaking) {
+                                stopSpeaking();
+                              } else {
+                                speakText(m.content);
+                              }
+                            }}
+                            title={
+                              isLastAssistant && speaking
+                                ? "Stop speaking"
+                                : "Read aloud"
                             }
-                          }}
-                          title={
-                            isLastAssistant && speaking
-                              ? "Stop speaking"
-                              : "Read aloud"
-                          }
-                          aria-label="Read aloud"
-                        >
-                          {isLastAssistant && speaking ? "⏹ Stop" : "🔊"}
-                        </button>
+                            aria-label="Read aloud"
+                          >
+                            {isLastAssistant && speaking ? "⏹ Stop" : "🔊 Speak"}
+                          </button>
+                          {isLastAssistant && !streaming && (
+                            <button
+                              type="button"
+                              className="btn-msg-action btn-msg-retry"
+                              onClick={regenerateLast}
+                              title="Regenerate this response"
+                              aria-label="Regenerate response"
+                            >
+                              🔄 Retry
+                            </button>
+                          )}
+                        </div>
                       )}
                     </div>
                     <div className="bubble">
                       {m.role === "assistant" ? (
-                        <Markdown>{m.content}</Markdown>
+                        <>
+                          <Markdown components={markdownComponents}>{m.content}</Markdown>
+                          {streaming && isLastAssistant && <span className="streaming-cursor" />}
+                        </>
                       ) : (
                         m.content
                       )}
@@ -628,6 +892,21 @@ export default function App() {
             </div>
           )}
         </main>
+
+        {messages.length > 0 && !streaming && (
+          <div className="followup-chips">
+            {(FOLLOWUP_CHIPS[persona?.id] || FOLLOWUP_CHIPS.general).map((chip, idx) => (
+              <button
+                key={idx}
+                type="button"
+                className="followup-chip"
+                onClick={() => sendMessage(chip, false)}
+              >
+                <span className="chip-spark">✦</span> {chip}
+              </button>
+            ))}
+          </div>
+        )}
 
         <footer className="composer">
           <VoiceButton
@@ -692,7 +971,36 @@ export default function App() {
         </footer>
       </div>
 
-      {showSystem && <SystemPanel onClose={() => setShowSystem(false)} />}
+      {showSystem && (
+        <SystemPanel
+          onClose={() => setShowSystem(false)}
+          onPersonaChanged={(newP) => setPersona(newP)}
+        />
+      )}
+
+      {showOnboarding && (
+        <OnboardingWizard
+          onComplete={() => {
+            setShowOnboarding(false);
+            invoke("get_active_persona").then(setPersona).catch(() => {});
+          }}
+        />
+      )}
+
+      {lockStatus?.locked && (
+        <LockScreen
+          lockStatus={lockStatus}
+          onUnlocked={refreshLockStatus}
+        />
+      )}
+
+      {showLockSettings && (
+        <LockSettingsModal
+          lockStatus={lockStatus}
+          onClose={() => setShowLockSettings(false)}
+          onStatusChanged={refreshLockStatus}
+        />
+      )}
     </div>
   );
 }
