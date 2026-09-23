@@ -19,6 +19,9 @@ pub enum OrionError {
     #[error("configuration error: {0}")]
     Config(String),
 
+    #[error("security violation: {0}")]
+    Security(String),
+
     #[error("no model is installed")]
     NoModel,
 

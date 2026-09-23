@@ -24,7 +24,7 @@ use crate::error::{OrionError, Result};
 /// Bumped whenever the schema changes; `migrate` applies the gap.
 /// This is a real migration ladder, not `CREATE TABLE IF NOT EXISTS` — that
 /// approach silently ignores every change to an existing table.
-const SCHEMA_VERSION: i32 = 1;
+const SCHEMA_VERSION: i32 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredMessage {
@@ -107,6 +107,40 @@ impl Db {
                     "#,
                 )
                 .map_err(|e| OrionError::Db(format!("migration v1 failed: {e}")))?;
+        }
+
+        if current < 2 {
+            self.conn
+                .execute_batch(
+                    r#"
+                    CREATE TABLE broker_audit_log (
+                        id          TEXT PRIMARY KEY,
+                        timestamp   TEXT NOT NULL,
+                        domain      TEXT NOT NULL CHECK (domain IN ('trusted','untrusted')),
+                        action      TEXT NOT NULL,
+                        target      TEXT NOT NULL,
+                        tier        TEXT NOT NULL CHECK (tier IN ('T0','T1','T2','T3','BLOCKED')),
+                        decision    TEXT NOT NULL CHECK (decision IN ('ALLOWED','REJECTED','CONFIRMED','DENIED')),
+                        reason      TEXT NOT NULL
+                    );
+
+                    CREATE INDEX idx_broker_audit_time
+                        ON broker_audit_log(timestamp DESC);
+
+                    CREATE TABLE broker_undo_journal (
+                        id          TEXT PRIMARY KEY,
+                        timestamp   TEXT NOT NULL,
+                        action      TEXT NOT NULL,
+                        target_path TEXT NOT NULL,
+                        backup_data BLOB,
+                        is_undone   INTEGER NOT NULL DEFAULT 0 CHECK (is_undone IN (0, 1))
+                    );
+
+                    CREATE INDEX idx_broker_undo_path
+                        ON broker_undo_journal(target_path, timestamp DESC);
+                    "#,
+                )
+                .map_err(|e| OrionError::Db(format!("migration v2 failed: {e}")))?;
         }
 
         self.conn

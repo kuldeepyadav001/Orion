@@ -19,6 +19,7 @@ pub mod profiler;
 pub mod rag;
 pub mod sidecars;
 pub mod voice;
+pub mod broker;
 
 use std::sync::Arc;
 
@@ -58,6 +59,8 @@ pub struct AppState {
     pub voice: Arc<voice::VoiceService>,
     /// Model catalogue, kept so the engine can be started on first use.
     pub manager: Arc<ModelManager>,
+    /// Capability Broker enforcing domain isolation, sandboxing, and audit trails.
+    pub broker: Arc<broker::CapabilityBroker>,
     /// Ensures the lazy engine start happens exactly once, even if several
     /// messages are sent before it finishes loading.
     pub engine_started: Arc<tokio::sync::OnceCell<()>>,
@@ -771,6 +774,48 @@ async fn set_active_tier(tier: String, state: State<'_, AppState>) -> Result<Tie
 }
 
 /* ------------------------------------------------------------------ */
+/* capability broker (M5)                                             */
+/* ------------------------------------------------------------------ */
+
+/// Query the append-only Capability Broker audit trail.
+#[tauri::command]
+async fn broker_audit_log(
+    limit: Option<usize>,
+    state: State<'_, AppState>,
+) -> Result<Vec<broker::AuditRecord>> {
+    state.broker.audit_log(limit.unwrap_or(50)).await
+}
+
+/// Query recent rollback entries in the Capability Broker undo journal.
+#[tauri::command]
+async fn broker_undo_history(
+    limit: Option<usize>,
+    state: State<'_, AppState>,
+) -> Result<Vec<broker::UndoRecord>> {
+    state.broker.undo_history(limit.unwrap_or(20)).await
+}
+
+/// Rollback a previous reversible modification recorded in the undo journal.
+#[tauri::command]
+async fn broker_rollback(journal_id: String, state: State<'_, AppState>) -> Result<String> {
+    let restored = state.broker.rollback(&journal_id).await?;
+    Ok(restored.to_string_lossy().to_string())
+}
+
+/// Confirm and execute an interactive ticket for high-tier actions (T2/T3).
+#[tauri::command]
+async fn broker_confirm_ticket(ticket_id: String, state: State<'_, AppState>) -> Result<String> {
+    let action = state.broker.confirm_ticket(&ticket_id).await?;
+    Ok(action.target_summary())
+}
+
+/// Reject a pending confirmation ticket.
+#[tauri::command]
+async fn broker_reject_ticket(ticket_id: String, state: State<'_, AppState>) -> Result<()> {
+    state.broker.reject_ticket(&ticket_id).await
+}
+
+/* ------------------------------------------------------------------ */
 /* sidecar                                                             */
 /* ------------------------------------------------------------------ */
 
@@ -1121,10 +1166,13 @@ pub fn run() {
             let embed = Arc::new(documents::EmbedService::new());
             let voice_svc = Arc::new(voice::VoiceService::new());
             let sidecars = Arc::new(sidecars::SidecarRegistry::new());
+            let db_arc = Arc::new(Mutex::new(database));
+            let workspace_dir = db::data_dir().unwrap_or_default().join("workspace");
+            let broker = Arc::new(broker::CapabilityBroker::new(db_arc.clone(), workspace_dir));
 
             app.manage(AppState {
                 engine: engine.clone(),
-                db: Arc::new(Mutex::new(database)),
+                db: db_arc.clone(),
                 session_id: Mutex::new(session_id),
                 profile,
                 models: ModelManager::new(db::data_dir().unwrap_or_default().join("models"))
@@ -1134,6 +1182,7 @@ pub fn run() {
                 sidecars: sidecars.clone(),
                 voice: voice_svc.clone(),
                 manager: manager.clone(),
+                broker: broker.clone(),
                 engine_started: Arc::new(tokio::sync::OnceCell::new()),
             });
 
@@ -1283,7 +1332,12 @@ pub fn run() {
             voice_tts_status,
             voice_speak,
             assess_dropped_files,
-            hotkey_label
+            hotkey_label,
+            broker_audit_log,
+            broker_undo_history,
+            broker_rollback,
+            broker_confirm_ticket,
+            broker_reject_ticket
         ])
         .build(tauri::generate_context!())
         .expect("error while building Orion")

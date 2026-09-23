@@ -1,9 +1,9 @@
 # ORION — PROJECT STATE & STRATEGIC MASTER RECORD
 
-**Last updated:** 2026-09-21
+**Last updated:** 2026-09-23
 **Current state:** `BUILDING`
-**Current phase:** M4 (Voice Pipeline Hardened & Verified) → Moving to M5 (Capability Broker)
-**Repo:** `https://github.com/kuldeepyadav001/Orion.git` (`main` @ `f5dfc21` + M4 voice fixes)
+**Current phase:** M4 (Voice Pipeline & Full Talking Loop Verified) → Advancing to M5 (Capability Broker)
+**Repo:** `https://github.com/kuldeepyadav001/Orion.git` (`main` @ `55df816`)
 
 ---
 
@@ -55,8 +55,8 @@ Once Orion reaches M10 and ships as a hardened single-agent local product, its l
 | **M1** | Hardware Profiler & Tiered Model Manager | ✅ **VERIFIED** | Dual-bounding RAM profiler (T0–T4), forced-tier override (`ORION_FORCE_PROFILE`), Apache/MIT redistribution gate, user `.gguf` fallback. |
 | **M2** | Document Intelligence & RAG Pipeline | ✅ **VERIFIED** | Structure-aware chunking (heading trails + pages), hardened extractors (PDF, DOCX, XLSX, MD, CSV), bge-small embedder, hybrid BM25+vector RRF search, 30-question eval suite. |
 | **M3** | System Presence & OS Integration | ✅ **VERIFIED** | System tray + menu with lifecycle ownership, `Win+O` global hotkey with 4-state window logic, file drag-and-drop intake, single-instance lock. |
-| **M4** | Voice Input Pipeline (STT) | ✅ **VERIFIED** | `whisper-cli` one-shot transcription with Silero VAD, 96 KB pre-roll ring buffer, RMS speech energy gate, multi-format `cpal` audio capture, live 5-bar meter in React UI. |
-| **M5** | **Capability Broker & Security Boundary** | ⏳ **NEXT UP** | Two-domain isolation, T0–T3 permission tiers, symlink resolution (`RESOLVE_BENEATH`), audit log & undo journal, red-team injection tests. |
+| **M4** | Voice Input/Output Pipeline (STT + TTS) | ✅ **VERIFIED** | `whisper-cli` one-shot transcription with Silero VAD, 96 KB pre-roll ring buffer, multi-format `cpal` audio capture, hands-free conversational auto-send, Piper neural TTS + WebView2 Web Speech fallback, 8-min RAM watchdog. |
+| **M5** | **Capability Broker & Security Boundary** | ⏳ **IN PROGRESS** | Two-domain isolation, T0–T3 permission tiers, symlink resolution (`RESOLVE_BENEATH`), audit log & undo journal, red-team injection tests. |
 | **M6** | Private Testing Release (v1 Beta) | ⏳ Queued | Signed installers (Linux `.deb`/`.AppImage`, Windows `.msi`/`.exe`), onboarding wizard. |
 | **M7** | Email Assistant (Read/Triage/Draft) | ⏳ Queued | IMAP with OS keychain, untrusted text quarantine, strictly no auto-send. |
 | **M8** | Browser Automation | ⏳ Queued | Playwright Accessibility (AX) tree snapshots, dedicated browser profile, domain allowlist. |
@@ -129,6 +129,15 @@ The voice pipeline was audited end-to-end against real audio hardware contracts 
   4. Increased `SILENCE_TIMEOUT_MS` from 800 ms to 900 ms.
   5. Handled `ListenAction::BeginCapture` in `VoiceService::poll` by invoking `capture.begin_utterance()`.
   6. Enhanced `VoiceButton.jsx` and `index.css` with dedicated recording styles, animated green indicators, and live level meters.
+
+### 6. Conversational Voice Loop & Dual-Engine Speech Output
+- **Forensic Diagnosis:** Voice transcripts were previously routed only to `<textarea>` requiring manual Enter keystrokes, which broke the conversational flow. Furthermore, if Piper standalone binaries were missing on Windows, TTS failed silently with no audio output or active visual indicators.
+- **Resolution:**
+  1. Implemented hands-free conversational auto-send: transcribing voice now immediately dispatches `sendMessage(clean, true)` without manual intervention.
+  2. Implemented dual-engine speech synthesis: calls local Piper neural TTS first, and instantly falls back to native Windows WebView2 `window.speechSynthesis` with natural English voices.
+  3. Added text sanitizer (`cleanForSpeech`) to strip code blocks, markdown links, and citation markers before speech.
+  4. Added active speaking HUD with electric cyan glow, `@keyframes speakingWave` equalizer animation, message bubble audio controls, and an auto-speak toggle.
+  5. Implemented an 8-minute inactivity watchdog that transitions llama-server to `Standby` and unloads model weights from RAM to honor the 5.7 GB usable RAM budget.
 
 ---
 
