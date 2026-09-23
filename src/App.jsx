@@ -31,6 +31,10 @@ export default function App() {
   const [grounded, setGrounded] = useState(null);
   const [library, setLibrary] = useState({ documents: 0, chunks: 0 });
   const [hotkey, setHotkey] = useState("");
+  const [speaking, setSpeaking] = useState(false);
+
+  const audioPlayerRef = useRef(null);
+  const lastSourceRef = useRef("text");
 
   // The label is computed in Rust so it matches the chord actually
   // registered, and uses the right glyphs for this platform.
@@ -84,6 +88,39 @@ export default function App() {
     };
   }, []);
 
+  /* ---------- TTS speech playback ---------- */
+
+  useEffect(() => {
+    let un;
+    listen("voice://speak", (e) => {
+      const audioUrl = e.payload;
+      if (!audioUrl) return;
+
+      if (audioPlayerRef.current) {
+        audioPlayerRef.current.pause();
+      }
+
+      const audio = new Audio(audioUrl);
+      audioPlayerRef.current = audio;
+      setSpeaking(true);
+
+      audio.onended = () => setSpeaking(false);
+      audio.onerror = () => setSpeaking(false);
+      audio.onpause = () => setSpeaking(false);
+
+      audio.play().catch(() => setSpeaking(false));
+    }).then((u) => {
+      un = u;
+    });
+
+    return () => {
+      un?.();
+      if (audioPlayerRef.current) {
+        audioPlayerRef.current.pause();
+      }
+    };
+  }, []);
+
   useEffect(() => {
     let alive = true;
 
@@ -117,9 +154,18 @@ export default function App() {
       });
     });
 
-    const unlistenDone = listen("chat://done", () => {
+    const unlistenDone = listen("chat://done", async () => {
+      const fullReply = pending.current;
       pending.current = "";
       setStreaming(false);
+
+      if (lastSourceRef.current === "voice" && fullReply.trim()) {
+        try {
+          await invoke("voice_speak", { text: fullReply });
+        } catch {
+          /* TTS unavailable or optional */
+        }
+      }
     });
 
     const unlistenErr = listen("chat://error", (e) => {
@@ -195,6 +241,10 @@ export default function App() {
   }, [input, streaming]);
 
   const stop = useCallback(async () => {
+    if (audioPlayerRef.current) {
+      audioPlayerRef.current.pause();
+    }
+    setSpeaking(false);
     try {
       await invoke("cancel_generation");
     } catch {
@@ -270,6 +320,7 @@ export default function App() {
   // slow generation on a machine that takes ~9 s to warm up. The user reads
   // it, corrects if needed, presses Enter.
   const onTranscript = useCallback((text) => {
+    lastSourceRef.current = "voice";
     setInput((prev) => (prev ? `${prev} ${text}` : text));
     taRef.current?.focus();
   }, []);
@@ -455,7 +506,13 @@ export default function App() {
         <footer className="composer">
           <VoiceButton
             onTranscript={onTranscript}
-            speaking={false /* TTS not wired yet; the indicator is ready for it */}
+            speaking={speaking}
+            onStopSpeaking={() => {
+              if (audioPlayerRef.current) {
+                audioPlayerRef.current.pause();
+              }
+              setSpeaking(false);
+            }}
           />
           <div className="composer-inner">
             <textarea

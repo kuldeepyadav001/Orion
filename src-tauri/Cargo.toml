@@ -33,6 +33,7 @@ thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 rand = "0.8"
+base64 = "0.22"
 sysinfo = "0.32"
 
 # Microphone capture. Optional so the crate still builds where there is no

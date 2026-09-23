@@ -21,7 +21,7 @@ import { listen } from "@tauri-apps/api/event";
  * The level meter matters most. A static "listening" label proves nothing;
  * a bar that moves when you speak proves the audio path works end to end.
  */
-export default function VoiceButton({ onTranscript, speaking }) {
+export default function VoiceButton({ onTranscript, speaking, onStopSpeaking }) {
     const [status, setStatus] = useState({
         state: "off",
         mic_open: false,
@@ -94,6 +94,10 @@ export default function VoiceButton({ onTranscript, speaking }) {
     }, [status.mic_open]);
 
     const toggle = useCallback(async () => {
+        if (speaking) {
+            onStopSpeaking?.();
+            return;
+        }
         setError(null);
         try {
             if (status.mic_open) {
@@ -104,7 +108,7 @@ export default function VoiceButton({ onTranscript, speaking }) {
         } catch (e) {
             setError(String(e));
         }
-    }, [status.mic_open]);
+    }, [status.mic_open, speaking, onStopSpeaking]);
 
     const talk = useCallback(async () => {
         setError(null);

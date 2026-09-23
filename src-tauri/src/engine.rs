@@ -104,6 +104,7 @@ pub struct Engine {
     http: reqwest::Client,
     /// Set while a generation is in flight; dropping/flagging it stops the stream.
     cancel: Mutex<Option<Arc<std::sync::atomic::AtomicBool>>>,
+    last_activity: std::sync::atomic::AtomicI64,
 }
 
 impl Engine {
@@ -121,7 +122,21 @@ impl Engine {
                 .build()
                 .expect("failed to build http client"),
             cancel: Mutex::new(None),
+            last_activity: std::sync::atomic::AtomicI64::new(chrono::Utc::now().timestamp()),
         }
+    }
+
+    /// Record interaction activity to reset the 8-minute inactivity sleep watchdog.
+    pub fn touch_activity(&self) {
+        let now = chrono::Utc::now().timestamp();
+        self.last_activity
+            .store(now, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// UNIX timestamp (seconds) of the most recent user prompt or generation activity.
+    pub fn last_activity(&self) -> i64 {
+        self.last_activity
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     pub async fn status(&self) -> EngineStatus {
@@ -230,6 +245,7 @@ impl Engine {
     where
         F: FnMut(&str),
     {
+        self.touch_activity();
         let Some(cfg) = self.config().await else {
             return Err(OrionError::Engine("engine not configured".into()));
         };

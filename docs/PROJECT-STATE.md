@@ -40,6 +40,11 @@ The model itself is replaceable open-weight compute (Qwen, Mistral, Gemma, Phi).
 ### 1.4 Post-M10 Transition to Production Multi-Agent System
 Once Orion reaches M10 and ships as a hardened single-agent local product, its local engine and capability broker will serve as an inference/execution backend for the broader Production Multi-Agent Engineering System. Specialized local models will collaborate across routing, extraction, coding, and review within the verified permission boundaries.
 
+### 1.5 Architecture Enhancements: Inactivity Sleep & Dual-Model Routing
+- **Auto-Hibernate Policy:** Inactivity watchdog timer unloads `llama-server` from RAM after a period of user inactivity (e.g., 10 minutes), freeing 3.5 GB–9 GB of memory back to the OS. State cleanly reverts to `Standby` and wakes transparently on next user prompt.
+- **Installer Workload Persona:** Setup wizard prompts users for their domain focus (Developer/Coder, Researcher/Analyst, Creative/Animation, or General Assistant), configuring an appropriate specialized model.
+- **Two-Tier Model Orchestration:** Lightweight Generalist model serves as the Front-of-House router handling voice input and quick conversation. When complex domain tasks are recognized, the Generalist enhances/structures the prompt, offloads from RAM, and brings the Specialist model into memory for deep execution.
+
 ---
 
 ## 2. VERIFIED MILESTONE PROGRESS (M0 — M4)

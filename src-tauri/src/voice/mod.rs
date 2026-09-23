@@ -42,7 +42,9 @@ pub mod capture;
 pub mod listener;
 pub mod service;
 pub mod transcribe;
+pub mod tts;
 
 pub use listener::{ListenAction, ListenState, Listener};
 pub use service::{VoiceService, VoiceStatus};
 pub use transcribe::Transcript;
+pub use tts::SpeechResult;

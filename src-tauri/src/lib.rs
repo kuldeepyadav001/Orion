@@ -105,7 +105,9 @@ async fn ensure_engine(app: &tauri::AppHandle, state: &State<'_, AppState>) -> R
         return Ok(());
     }
 
-    let needs_spawn = !state.engine_started.initialized() || status.state == EngineState::Error;
+    let needs_spawn = !state.engine_started.initialized()
+        || status.state == EngineState::Error
+        || status.state == EngineState::Idle;
 
     if needs_spawn {
         let manager = state.manager.clone();
@@ -119,6 +121,8 @@ async fn ensure_engine(app: &tauri::AppHandle, state: &State<'_, AppState>) -> R
             start_engine(sidecars, handle, engine, manager, tier).await;
         });
     }
+
+    state.engine.touch_activity();
 
     // Wait for the health check rather than firing into a loading model.
     // wait_until_ready polls /health and reports Loading while llama-server
@@ -696,6 +700,56 @@ async fn transcribe_samples(wav: Vec<u8>) -> Result<String> {
     Ok(t.text)
 }
 
+#[derive(Debug, Serialize)]
+struct TtsStatus {
+    pub available: bool,
+    pub binary: Option<String>,
+    pub model: Option<String>,
+}
+
+#[tauri::command]
+async fn voice_tts_status() -> Result<TtsStatus> {
+    let binary = voice::tts::find_piper_binary();
+    let models = models_dir();
+    let model = voice::tts::find_piper_model(&models);
+    let available = binary.is_file() && model.is_some();
+    Ok(TtsStatus {
+        available,
+        binary: binary.is_file().then(|| binary.to_string_lossy().to_string()),
+        model: model.map(|m| m.to_string_lossy().to_string()),
+    })
+}
+
+/// Synthesize text to speech using local Piper TTS and return the base64 WAV data URL.
+#[tauri::command]
+async fn voice_speak(text: String, app: tauri::AppHandle) -> Result<String> {
+    use base64::Engine;
+    use tauri::Emitter;
+
+    let binary = voice::tts::find_piper_binary();
+    if !binary.is_file() {
+        return Err(OrionError::Config(
+            "Piper TTS binary not found. Run ./scripts/fetch-tts.sh to enable speech synthesis."
+                .into(),
+        ));
+    }
+    let models = models_dir();
+    let model = voice::tts::find_piper_model(&models).ok_or_else(|| {
+        OrionError::Config(
+            "Piper voice model not found. Run ./scripts/fetch-tts.sh to download the model.".into(),
+        )
+    })?;
+
+    let result = voice::tts::synthesize(&binary, &model, &text).await?;
+    let base64_audio = format!(
+        "data:audio/wav;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(&result.wav_bytes)
+    );
+
+    let _ = app.emit("voice://speak", base64_audio.clone());
+    Ok(base64_audio)
+}
+
 #[tauri::command]
 async fn forget_document(document_id: String, state: State<'_, AppState>) -> Result<()> {
     let db = state.db.lock().await;
@@ -1082,6 +1136,41 @@ pub fn run() {
                 engine_started: Arc::new(tokio::sync::OnceCell::new()),
             });
 
+            // Inactivity Sleep Watchdog: 8 minutes of inactivity automatically offloads
+            // llama-server from active RAM back to Standby, protecting the user's
+            // ~5.7 GB usable RAM budget.
+            let engine_watchdog = engine.clone();
+            let sidecars_watchdog = sidecars.clone();
+            let app_handle_watchdog = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                const WATCHDOG_TIMEOUT_SECS: i64 = 8 * 60; // 8 minutes
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+                    let status = engine_watchdog.status().await;
+                    if status.state == EngineState::Ready {
+                        let elapsed =
+                            chrono::Utc::now().timestamp() - engine_watchdog.last_activity();
+                        if elapsed >= WATCHDOG_TIMEOUT_SECS {
+                            tracing::info!(
+                                elapsed_secs = elapsed,
+                                "8 minutes of inactivity reached: hibernating llama-server to reclaim RAM"
+                            );
+                            if sidecars_watchdog.terminate("llama-server (chat)") {
+                                engine_watchdog
+                                    .set_status(
+                                        EngineState::Idle,
+                                        "Standby — model offloaded after 8m inactivity to save RAM",
+                                    )
+                                    .await;
+                                use tauri::Emitter;
+                                let _ = app_handle_watchdog
+                                    .emit("engine://status", engine_watchdog.status().await);
+                            }
+                        }
+                    }
+                }
+            });
+
             timed(&mut trace, presence::Phase::SystemIntegration, || {
                 // Tauri owns the tray icon and its menu once build() returns
                 // and frees them in cleanup_before_exit. Holding a second
@@ -1190,6 +1279,8 @@ pub fn run() {
             voice_stop,
             voice_trigger,
             voice_poll,
+            voice_tts_status,
+            voice_speak,
             assess_dropped_files,
             hotkey_label
         ])

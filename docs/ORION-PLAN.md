@@ -98,6 +98,74 @@ Companions, all tiers: embeddings ~120 MB · Whisper STT 75–470 MB · Piper TT
 - Model registry is a **signed JSON manifest**, so new models ship without an app update.
 - Runtime downgrade: if a T3 machine is under memory pressure, offer the T2 model.
 
+### 3.4 Inactivity Sleep & Model Auto-Hibernation Policy
+
+Leaving 3.5 GB to 9 GB of quantized model weights sitting in resident RAM permanently blocks
+developers and professionals from running compilers, heavy IDEs, Docker, or CAD suites while
+Orion is in the background.
+
+- **Auto-Hibernate Policy:** Inactivity watchdog timer (configurable: 5, 10, 15 minutes; default 10m).
+- **Graceful Unload:** When the timer expires without user interaction, the engine terminates the
+  `llama-server` process, returning 100% of GPU VRAM and system RAM to the OS.
+- **Standby State Transition:** Status shifts honestly from `Ready` back to `Standby` (`Idle`).
+- **Seamless Wake:** The next message, global hotkey prompt, or voice capture transparently re-spawns
+  and memory-maps the weights (<1.5s on NVMe SSDs).
+- **Battery & Sleep Awareness:** System sleep/suspend signals and low-battery states (<20%) trigger
+  immediate hibernation rather than holding memory awake.
+
+### 3.5 Workload Personas & Installer Model Selection
+
+One generic model cannot match domain-trained specialized architectures. The installer / first-run
+wizard presents a clear workload persona filter:
+
+1. **Software Developer / Coder:** Deploys a state-of-the-art coding model (e.g. `Qwen2.5-Coder-7B`
+   or `3B` on lower RAM tiers) with deep AST comprehension, multi-language syntax, and refactoring prowess.
+2. **Researcher / Analyst:** Deploys a reasoning/analytical model tuned for dense context analysis,
+   mathematical rigor, and multi-document citation synthesis.
+3. **Creative / Scriptwriting / Animation:** Deploys a creative narrative model optimized for dialogue,
+   worldbuilding, and descriptive prompt expansion.
+4. **General Assistant:** Deploys the balanced default conversational model for daily productivity.
+
+### 3.6 Two-Tier Orchestration: Generalist Router + Domain Specialist
+
+To balance real-time conversational latency with deep domain power on personal machines:
+
+```
+                  ┌──────────────────────────────────────────────┐
+                  │                 USER INPUT                   │
+                  │        (Voice via Whisper / Hotkey)          │
+                  └──────────────────────┬───────────────────────┘
+                                         │
+                                         ▼
+                  ┌──────────────────────────────────────────────┐
+                  │        TIER 1: GENERALIST ROUTER             │
+                  │  (Fast, lightweight, handles voice chatter)  │
+                  └──────────────────────┬───────────────────────┘
+                                         │
+                         ┌───────────────┴───────────────┐
+                         ▼                               ▼
+                 [ General Query ]            [ Complex Domain Task ]
+                         │                               │
+                         ▼                               ▼
+                 Direct Streaming Answer         1. Enhance & Scaffolding Prompt
+                                                 2. Offload Generalist from RAM
+                                                 3. Load Specialist (e.g. Coder)
+                                                 4. Execute Deep Reasoning/Code
+                                                 5. Auto-Hibernate when done
+```
+
+1. **Voice is Always Front-of-House:** Voice audio transcription and everyday conversational
+   interactions are handled directly by the fast generalist model to maintain low latency.
+2. **Intent Classification & Prompt Enhancement:** When the generalist identifies a complex,
+   domain-specific challenge (e.g. writing an entire parser, complex architecture refactor), it
+   does not fail with a generic answer. Instead, it extracts requirements, structures constraints,
+   and enhances the prompt into an expert-grade directive.
+3. **Memory Arbitration & Model Swapping:** On memory-constrained workstations (≤16 GB RAM),
+   the generalist yields its memory slot, offloading to storage so the specialized model can load
+   without causing system paging or swap thrashing.
+4. **Unified Inactivity Watchdog:** Both models adhere to the Auto-Hibernation Policy, ensuring
+   zero memory waste when the user focuses elsewhere.
+
 ---
 
 ## 4. Voice (C5)

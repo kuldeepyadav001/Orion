@@ -171,6 +171,42 @@ impl SidecarRegistry {
         self.len() == 0
     }
 
+    /// Terminate a specific named sidecar by name, e.g. "llama-server (chat)".
+    ///
+    /// Used by the inactivity sleep watchdog to offload the model process from RAM
+    /// after 8 minutes of inactivity while leaving other services unharmed.
+    pub fn terminate(&self, target_name: &str) -> bool {
+        let mut to_kill = None;
+        match self.children.lock() {
+            Ok(mut guard) => {
+                if let Some(pos) = guard.iter().position(|(name, _)| name == target_name) {
+                    to_kill = Some(guard.remove(pos));
+                }
+            }
+            Err(poisoned) => {
+                let mut guard = poisoned.into_inner();
+                if let Some(pos) = guard.iter().position(|(name, _)| name == target_name) {
+                    to_kill = Some(guard.remove(pos));
+                }
+            }
+        }
+        if let Some((name, child)) = to_kill {
+            let pid = child.pid();
+            match child.kill() {
+                Ok(()) => {
+                    tracing::info!(sidecar = %name, pid, "sidecar terminated");
+                    true
+                }
+                Err(e) => {
+                    tracing::warn!(sidecar = %name, pid, error = %e, "could not kill sidecar");
+                    false
+                }
+            }
+        } else {
+            false
+        }
+    }
+
     /// Kill every registered child.
     ///
     /// Safe to call more than once: the list is drained, so a second call is
