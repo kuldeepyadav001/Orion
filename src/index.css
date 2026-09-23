@@ -708,6 +708,44 @@ button:disabled {
   text-transform: uppercase;
   color: var(--text-faint);
   margin-bottom: 6px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.btn-msg-speak {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-faint);
+  border-radius: 4px;
+  font-size: 11px;
+  padding: 1px 6px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  transition: all 0.15s ease;
+  line-height: 1.4;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.btn-msg-speak:hover {
+  background: var(--surface-3);
+  color: var(--text);
+  border-color: var(--border);
+}
+
+.btn-msg-speak.speaking {
+  background: rgba(0, 214, 255, 0.15);
+  border-color: rgba(0, 214, 255, 0.4);
+  color: var(--accent-2);
+  animation: pulse-speaking 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse-speaking {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
 }
 
 .bubble {
@@ -865,6 +903,39 @@ button:disabled {
 
 .composer textarea::placeholder {
   color: var(--text-faint);
+}
+
+.composer-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.btn-speak-toggle {
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text-faint);
+  font-size: 13px;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  transition: all 0.15s ease;
+}
+
+.btn-speak-toggle:hover {
+  background: var(--surface-3);
+  color: var(--text);
+  border-color: rgba(124, 92, 255, 0.35);
+}
+
+.btn-speak-toggle.active {
+  background: rgba(124, 92, 255, 0.15);
+  border-color: rgba(124, 92, 255, 0.4);
+  color: var(--accent-2);
 }
 
 .btn-send,
@@ -1319,6 +1390,7 @@ kbd {
 .voice-bar.busy     { background: var(--warn); }
 .voice-bar.speaking {
   background: var(--accent-2);
+  transition: none;
   animation: speakingWave 0.75s ease-in-out infinite;
 }
 .voice-bar.speaking:nth-child(1) { animation-delay: 0.0s; }

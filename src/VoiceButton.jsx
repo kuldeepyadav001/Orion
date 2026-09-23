@@ -155,11 +155,11 @@ export default function VoiceButton({ onTranscript, speaking, onStopSpeaking }) 
             <button
                 className={`voice-btn ${tone}`}
                 onClick={toggle}
-                title={status.available ? status.detail : status.detail}
-                aria-label={status.mic_open ? "Turn microphone off" : "Turn microphone on"}
-                disabled={!status.available && !status.mic_open}
+                title={speaking ? "Stop speaking" : status.detail}
+                aria-label={speaking ? "Stop speaking" : status.mic_open ? "Turn microphone off" : "Turn microphone on"}
+                disabled={!speaking && !status.available && !status.mic_open}
             >
-                <span className="voice-icon">{status.mic_open ? "●" : "○"}</span>
+                <span className="voice-icon">{speaking ? "🔊" : status.mic_open ? "●" : "○"}</span>
             </button>
 
             <div className="voice-readout">
@@ -172,7 +172,7 @@ export default function VoiceButton({ onTranscript, speaking, onStopSpeaking }) 
                         <span
                             key={i}
                             className={`voice-bar ${tone}`}
-                            style={{ height: `${status.mic_open ? h : 8}%` }}
+                            style={speaking ? undefined : { height: `${status.mic_open ? h : 8}%` }}
                         />
                     ))}
                 </div>
