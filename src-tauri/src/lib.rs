@@ -22,6 +22,7 @@ pub mod voice;
 
 use std::sync::Arc;
 
+use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager, State};
 use tauri_plugin_shell::process::CommandEvent;
 use tauri_plugin_shell::ShellExt;
@@ -700,8 +701,8 @@ async fn transcribe_samples(wav: Vec<u8>) -> Result<String> {
     Ok(t.text)
 }
 
-#[derive(Debug, Serialize)]
-struct TtsStatus {
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TtsStatus {
     pub available: bool,
     pub binary: Option<String>,
     pub model: Option<String>,
