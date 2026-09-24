@@ -103,7 +103,10 @@ impl DownloadManager {
         }
 
         // Dedicated is considered ready if not needed or installed
-        let dedicated_needed = persona_id == "developer" || persona_id == "coder";
+        let dedicated_needed = persona_id == "developer"
+            || persona_id == "coder"
+            || persona_id == "researcher"
+            || persona_id == "analyst";
         let dedicated_ok = !dedicated_needed || has_dedicated;
         let all_ready = has_general && dedicated_ok && has_whisper && has_piper;
 
@@ -155,6 +158,17 @@ impl DownloadManager {
                 installed: false,
             });
         }
+
+        // Semantic document embeddings
+        list.push(ResourceItem {
+            id: "bge-small-embed".into(),
+            name: "BGE Semantic Document Embedder".into(),
+            category: "embed".into(),
+            url: "https://huggingface.co/CompendiumLabs/bge-small-en-v1.5-gguf/resolve/main/bge-small-en-v1.5-q8_0.gguf?download=true".into(),
+            filename: "bge-small-en-v1.5-q8_0.gguf".into(),
+            approx_size_mb: 35,
+            installed: false,
+        });
 
         // Speech recognition
         list.push(ResourceItem {

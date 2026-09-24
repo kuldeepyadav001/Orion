@@ -292,18 +292,29 @@ export default function App() {
       .then(setHotkey)
       .catch(() => {});
 
-    invoke("get_onboarding_status")
-      .then((completed) => {
-        if (!completed) setShowOnboarding(true);
-      })
-      .catch(() => {});
-
     invoke("get_active_persona")
-      .then(setPersona)
+      .then(async (actPersona) => {
+        setPersona(actPersona);
+        const personaId = actPersona?.id || "general";
+        try {
+          const res = await invoke("check_resource_status", { persona: personaId });
+          const onboardingCompleted = await invoke("get_onboarding_status");
+          // If models are missing from disk OR onboarding hasn't been done, show setup wizard:
+          if (!onboardingCompleted || !res.all_ready) {
+            setShowOnboarding(true);
+          }
+        } catch {
+          /* fallback */
+        }
+      })
       .catch(() => {});
 
     refreshLockStatus();
     refreshModelInfo();
+
+    const handleOpenDownloader = () => setShowOnboarding(true);
+    window.addEventListener("open-resource-downloader", handleOpenDownloader);
+    return () => window.removeEventListener("open-resource-downloader", handleOpenDownloader);
   }, [refreshLockStatus, refreshModelInfo]);
 
   useEffect(() => {
@@ -795,9 +806,13 @@ export default function App() {
             <div className="role-info">
               <span className="role-title">
                 {persona?.name || "General"} Mode
-                {modelInfo?.is_specialized && (
+                {modelInfo?.is_specialized ? (
                   <span className="specialized-pill" title="Dedicated fine-tuned weights file active">
-                    Dedicated Weights
+                    Dedicated {persona?.name} Engine
+                  </span>
+                ) : (
+                  <span className="fallback-pill" title="Dedicated weights not downloaded yet. Using prompt-conditioned general model.">
+                    Prompt-Conditioned General Model
                   </span>
                 )}
               </span>
@@ -805,17 +820,32 @@ export default function App() {
                 {modelInfo?.file_name
                   ? `Engine: ${modelInfo.file_name.replace(/\.gguf$/i, "")}`
                   : (persona?.tagline || "Concise intelligence")}
+                {!modelInfo?.is_specialized && (persona?.id === "developer" || persona?.id === "researcher") && (
+                  <span className="missing-coder-notice"> · Dedicated {persona?.name} model missing from disk</span>
+                )}
               </span>
             </div>
           </div>
-          <button
-            type="button"
-            className="btn-switch-role"
-            onClick={() => setShowSystem(true)}
-            title="Switch workload persona"
-          >
-            Role Settings
-          </button>
+          <div className="header-actions">
+            {!modelInfo?.is_specialized && (persona?.id === "developer" || persona?.id === "researcher") && (
+              <button
+                type="button"
+                className="btn-download-special"
+                onClick={() => setShowOnboarding(true)}
+                title={`Download dedicated ${persona?.name} weights`}
+              >
+                📥 Download {persona?.name} Model
+              </button>
+            )}
+            <button
+              type="button"
+              className="btn-switch-role"
+              onClick={() => setShowSystem(true)}
+              title="Switch workload persona"
+            >
+              Role Settings
+            </button>
+          </div>
         </header>
 
         <main className="chat" ref={chatRef}>
@@ -864,9 +894,15 @@ export default function App() {
                       ) : (
                         <div className="msg-orion-meta">
                           <span className="orion-brand-name">Orion</span>
-                          <span className="persona-chip-tag" title="Role persona used for this response">
-                            {m.persona ? `${m.persona.icon} ${m.persona.name}` : `${persona?.icon || "⚡"} ${persona?.name || "General"}`}
-                          </span>
+                          {m.isSpecialized ? (
+                            <span className="persona-chip-tag specialized" title="Dedicated fine-tuned domain weights used for this response">
+                              {m.persona?.icon || "💻"} {m.persona?.name || "Specialist"} · Dedicated Engine
+                            </span>
+                          ) : (
+                            <span className="persona-chip-tag general" title="General model used with prompt conditioning">
+                              ⚡ General Model {m.persona?.id !== "general" ? `(${m.persona?.name || "Developer"} Prompt)` : ""}
+                            </span>
+                          )}
                           {m.modelName && (
                             <span
                               className={`model-source-tag ${m.isSpecialized ? "specialized" : "prompt-conditioned"}`}

@@ -130,18 +130,26 @@ export default function SystemPanel({ onClose, onPersonaChanged }) {
           <div className="persona-weights-guidance">
             <div className="weights-guidance-title">
               <span>💡</span>
-              <strong>Persona Conditioning vs. Dedicated Model Weights</strong>
+              <strong>Sequential Dual-Model Architecture</strong>
             </div>
             <p className="weights-guidance-desc">
-              Selecting <strong>{activePersona?.name || "a persona"}</strong> immediately specializes
-              Orion&apos;s expert instructions, reasoning style, and code generation standards on top of your
-              active model without requiring extra gigabytes of downloads.
+              Orion maintains your General Model and your chosen Dedicated Model on disk, swapping them in RAM sequentially so memory stays safely under your 5.7 GB limit.
             </p>
             <div className="weights-download-box">
-              <span className="download-label">To install dedicated fine-tuned weights (e.g. Qwen2.5-Coder):</span>
-              <code className="download-command">./scripts/fetch-model.sh coder</code>
+              <button
+                type="button"
+                className="btn-system-download"
+                onClick={() => {
+                  onClose?.();
+                  if (typeof window !== "undefined") {
+                    window.dispatchEvent(new CustomEvent("open-resource-downloader"));
+                  }
+                }}
+              >
+                📥 Download &amp; Verify All Offline Models &amp; Voices
+              </button>
               <span className="download-subtext">
-                When downloaded into <code>models/</code>, Orion automatically activates dedicated coder weights whenever Developer mode is selected!
+                Downloads both General &amp; Dedicated models directly inside Orion with a real-time progress bar. Zero terminal commands needed.
               </span>
             </div>
           </div>
