@@ -45,3 +45,60 @@ fi
 
 echo "==> [4/4] Release build completed successfully!"
 echo "    Check src-tauri/target/release/bundle/ for the installer packages."
+
+# 4. Packaging distribution bundle (Zip format for browser downloads)
+NSIS_DIR="$ROOT/src-tauri/target/release/bundle/nsis"
+DIST_DIR="$ROOT/src-tauri/target/release/bundle/dist_package"
+if [ -d "$NSIS_DIR" ]; then
+  LATEST_EXE="$(find "$NSIS_DIR" -name "*.exe" | head -n 1)"
+  if [ -n "$LATEST_EXE" ]; then
+    echo "==> Creating clean distribution ZIP archive..."
+    rm -rf "$DIST_DIR"
+    mkdir -p "$DIST_DIR"
+    cp "$LATEST_EXE" "$DIST_DIR/"
+    EXE_BASE="$(basename "$LATEST_EXE")"
+    
+    cat > "$DIST_DIR/Install-Orion.bat" <<EOF
+@echo off
+title Installing Orion Local AI...
+echo ===================================================
+echo   Orion Private AI Assistant - Setup Launcher
+echo ===================================================
+echo.
+echo [1/2] Unblocking installer permissions...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-ChildItem -Path '%~dp0' -Filter '*.exe' | Unblock-File"
+echo.
+echo [2/2] Launching installer...
+start "" "%~dp0$EXE_BASE"
+echo.
+echo Setup initiated. You may close this window.
+EOF
+
+    cat > "$DIST_DIR/HOW-TO-INSTALL.txt" <<EOF
+=====================================================================
+               Orion - Offline Personal AI Assistant
+=====================================================================
+
+QUICK INSTALLATION:
+1. Double-click "Install-Orion.bat" to start setup smoothly.
+   OR double-click "$EXE_BASE" directly.
+
+IF MICROSOFT EDGE OR WINDOWS SHOWS A WARNING:
+- In Edge: Click the three dots (...) -> Click "Keep" -> Click "Keep anyway".
+- In Windows: Click "More info" -> Click "Run anyway".
+(This appears because Orion is an independent, offline-first application
+running entirely on your computer without commercial Microsoft cloud certificates.)
+
+REQUIREMENTS:
+- 8 GB RAM or higher
+- Windows 10 or 11 (64-bit)
+- 100% offline, zero data leaves your PC.
+=====================================================================
+EOF
+
+    if command -v zip &> /dev/null; then
+      (cd "$DIST_DIR" && zip -r "$ROOT/src-tauri/target/release/bundle/Orion_v0.1.0_Windows_x64.zip" .)
+      echo "    Distribution ZIP: src-tauri/target/release/bundle/Orion_v0.1.0_Windows_x64.zip"
+    fi
+  fi
+fi

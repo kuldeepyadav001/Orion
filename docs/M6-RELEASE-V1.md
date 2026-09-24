@@ -153,13 +153,63 @@ src-tauri/target/release/bundle/nsis/Orion_0.1.0_x64-setup.exe
    * Launches the Onboarding Wizard to pick his primary persona.
    * Allows setting a Master Passcode if he shares his computer.
 
+### Solving "Isn't commonly downloaded" & Windows SmartScreen Warnings
+When sharing an installer directly over the web, Microsoft Edge and Windows Defender SmartScreen may display:
+> *"Orion_0.1.0_x64-setup.exe isn't commonly downloaded. Make sure you trust Orion_0.1.0_x64-setup.exe before you open it."*
+
+#### Why This Occurs:
+* Microsoft SmartScreen evaluates executables against a cloud reputation database.
+* Newly compiled independent binaries lack thousands of worldwide downloads and do not have an expensive commercial enterprise EV certificate ($400+/year).
+* Windows attaches an NTFS `Zone.Identifier=3` (Internet Zone) stream to downloaded `.exe` files.
+
+#### The 3 Solutions:
+1. **Share as a ZIP (`scripts/package-dist.bat` or `scripts/package-dist.ps1`):**
+   * Run `./scripts/package-dist.bat` to bundle the installer into `Orion_v0.1.0_Windows_x64.zip`.
+   * Web browsers (Edge/Chrome) do NOT block `.zip` files with the "not commonly downloaded" warning.
+   * Inside the `.zip`, users find `Install-Orion.bat` which automatically runs PowerShell `Unblock-File` to remove the internet quarantine flag before launching the installer.
+2. **Two-Click Bypass in Microsoft Edge:**
+   * Hover over the download item in Edge $\rightarrow$ Click the **three dots (`...`)**
+   * Click **Keep** $\rightarrow$ Click **Show more** $\rightarrow$ Click **Keep anyway**
+3. **Bypassing the Blue "Windows protected your PC" Screen:**
+   * Click **More info**
+   * Click **Run anyway**
+
 ### Upgradability to M7–M10
 * **Data Preservation:** User chats, library documents, vector embeddings, and master passcode settings reside in `%LOCALAPPDATA%\Orion\orion.db`.
 * **Zero-Downtime Upgrades:** Future installers (v0.2.0 for M7, v0.3.0 for M8, up to M10) simply replace the binaries and run backwards-compatible SQLite migrations without deleting local data.
 
 ---
 
-## 9. Master Roadmap Position
+## 9. In-App Resource Downloader & Dual-Model Sequential Router
+
+### 1. In-App Resource Setup (`src-tauri/src/downloader.rs` & `src/OnboardingWizard.jsx`)
+On a fresh Windows PC, Orion checks `%LOCALAPPDATA%\Orion\models\`. If models are missing:
+* **Interactive Step 3 Downloader:** Orion displays real-time streaming progress (`download://progress`):
+  - Current component name (e.g. `Downloading Qwen2.5-Coder 3B...`)
+  - Percentage bar (`0% – 100%`)
+  - Transferred bytes (`950 MB / 2100 MB`)
+  - Download speed (`14.5 MB/s`) and step counter (`Component 2 of 4`).
+* **Components Downloaded:**
+  1. Base General Model: `Qwen2.5-3B-Instruct` (~2.1 GB)
+  2. Dedicated Workload Model: `Qwen2.5-Coder-3B-Instruct` (~2.1 GB) if Developer, or `DeepSeek-R1-Distill-1.5B` if Researcher
+  3. Whisper Speech-to-Text: `ggml-tiny.en.bin` (~75 MB)
+  4. Piper Neural Voice: `en_US-lessac-medium.onnx` + `.json` (~35 MB)
+
+### 2. Sequential Dual-Model Memory Router
+* **The Invariant:** **Only ONE model is ever allowed in RAM at a time** (~2.0 GB).
+* **Disk Setup:** Both the General Model and Dedicated Model live on disk (~4.2 GB total).
+* **Sequential Dynamic Handoff:**
+  - Ordinary chat, daily questions, and voice transcription run on the **General Model**.
+  - When a deep coding or domain task arrives:
+    1. Orion unloads the General Model from RAM (`sidecars.terminate`).
+    2. Waits 400 ms for OS memory reclamation.
+    3. Loads the Dedicated Coder Model into RAM.
+    4. The UI displays an animated transition pill: `🔄 Sequential Memory Handoff: Swapping to coder model in RAM...`
+    5. Answers stream with `[Dedicated Coder Model]` attribution.
+
+---
+
+## 10. Master Roadmap Position
 
 | Milestone | Capability | Status |
 | :--- | :--- | :--- |
@@ -169,7 +219,7 @@ src-tauri/target/release/bundle/nsis/Orion_0.1.0_x64-setup.exe
 | **M3** | System Presence (tray, `Ctrl+Shift+0` hotkey, intake) | ✅ Verified |
 | **M4** | Voice Loop (Whisper STT, Piper TTS / Web Speech, 8-min watchdog) | ✅ Verified |
 | **M5** | Capability Broker & Security Boundary (Two-domain, Tiers, Audit, Undo) | ✅ Verified (458 tests passed) |
-| **M6** | **Release v1 (Packaging, NSIS, Onboarding, Personas, Lock, GPT-Interactivity)** | ✅ **Implemented & Verified** |
+| **M6** | **Release v1 (Packaging, In-App Downloader, Dual-Model Router, Personas, Lock)** | ✅ **Implemented & Verified** |
 | **M7** | Email Assistant (Read/Triage/Draft, IMAP, strictly no auto-send) | ⏳ Next Up |
 | **M8** | Browser Automation (Playwright AX tree, dedicated profile) | ⏳ Queued |
 | **M9** | Desktop Control & Scoped Writes (Accessibility tree automation) | ⏳ Queued |

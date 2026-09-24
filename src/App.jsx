@@ -213,6 +213,8 @@ export default function App() {
   const [lockStatus, setLockStatus] = useState({ enabled: false, locked: false, hint: null });
   const [showLockSettings, setShowLockSettings] = useState(false);
   const [copiedIndex, setCopiedIndex] = useState(null);
+  const [modelInfo, setModelInfo] = useState(null);
+  const [swapping, setSwapping] = useState(null);
 
   const audioPlayerRef = useRef(null);
   const lastSourceRef = useRef("text");
@@ -222,6 +224,38 @@ export default function App() {
   }, [autoSpeak]);
 
   const speakTextRef = useRef(null);
+
+  const refreshModelInfo = useCallback(async () => {
+    try {
+      const info = await invoke("active_model_info");
+      setModelInfo(info);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  useEffect(() => {
+    let unlistenSwapping;
+    let unlistenSwapped;
+
+    listen("engine://swapping", (e) => {
+      setSwapping(e.payload);
+    }).then((un) => {
+      unlistenSwapping = un;
+    });
+
+    listen("engine://swapped", () => {
+      setSwapping(null);
+      refreshModelInfo();
+    }).then((un) => {
+      unlistenSwapped = un;
+    });
+
+    return () => {
+      unlistenSwapping?.();
+      unlistenSwapped?.();
+    };
+  }, [refreshModelInfo]);
 
   const refreshLockStatus = useCallback(async () => {
     try {
@@ -269,7 +303,12 @@ export default function App() {
       .catch(() => {});
 
     refreshLockStatus();
-  }, [refreshLockStatus]);
+    refreshModelInfo();
+  }, [refreshLockStatus, refreshModelInfo]);
+
+  useEffect(() => {
+    refreshModelInfo();
+  }, [persona, refreshModelInfo]);
 
   const chatRef = useRef(null);
   const taRef = useRef(null);
@@ -520,7 +559,13 @@ export default function App() {
       setMessages((prev) => [
         ...prev,
         { role: "user", content: text },
-        { role: "assistant", content: "" },
+        {
+          role: "assistant",
+          content: "",
+          persona: persona,
+          modelName: modelInfo?.file_name,
+          isSpecialized: modelInfo?.is_specialized,
+        },
       ]);
       setCitations([]);
       setGrounded(null);
@@ -744,6 +789,35 @@ export default function App() {
       </aside>
 
       <div className="main">
+        <header className="chat-top-header">
+          <div className="active-role-indicator">
+            <span className="role-icon">{persona?.icon || "⚡"}</span>
+            <div className="role-info">
+              <span className="role-title">
+                {persona?.name || "General"} Mode
+                {modelInfo?.is_specialized && (
+                  <span className="specialized-pill" title="Dedicated fine-tuned weights file active">
+                    Dedicated Weights
+                  </span>
+                )}
+              </span>
+              <span className="role-subtext">
+                {modelInfo?.file_name
+                  ? `Engine: ${modelInfo.file_name.replace(/\.gguf$/i, "")}`
+                  : (persona?.tagline || "Concise intelligence")}
+              </span>
+            </div>
+          </div>
+          <button
+            type="button"
+            className="btn-switch-role"
+            onClick={() => setShowSystem(true)}
+            title="Switch workload persona"
+          >
+            Role Settings
+          </button>
+        </header>
+
         <main className="chat" ref={chatRef}>
           {messages.length === 0 ? (
             <div className="hero">
@@ -785,7 +859,28 @@ export default function App() {
                 return (
                   <div key={i} className={`msg ${m.role}`}>
                     <div className="msg-role">
-                      <span>{m.role === "user" ? "You" : "Orion"}</span>
+                      {m.role === "user" ? (
+                        <span className="msg-user-title">You</span>
+                      ) : (
+                        <div className="msg-orion-meta">
+                          <span className="orion-brand-name">Orion</span>
+                          <span className="persona-chip-tag" title="Role persona used for this response">
+                            {m.persona ? `${m.persona.icon} ${m.persona.name}` : `${persona?.icon || "⚡"} ${persona?.name || "General"}`}
+                          </span>
+                          {m.modelName && (
+                            <span
+                              className={`model-source-tag ${m.isSpecialized ? "specialized" : "prompt-conditioned"}`}
+                              title={
+                                m.isSpecialized
+                                  ? "Generated using dedicated fine-tuned model weights"
+                                  : "Generated using prompt conditioning on the active base model"
+                              }
+                            >
+                              {m.modelName.replace(/\.gguf$/i, "")}
+                            </span>
+                          )}
+                        </div>
+                      )}
                       {m.role === "assistant" && m.content && (
                         <div className="msg-actions">
                           <button
@@ -843,6 +938,13 @@ export default function App() {
                   </div>
                 );
               })}
+
+              {swapping && (
+                <div className="swapping-pill">
+                  <span className="swap-spinner">🔄</span>
+                  <span>Sequential Memory Handoff: Swapping to <strong>{swapping.to}</strong> model in RAM…</span>
+                </div>
+              )}
 
               {streaming && (
                 <div className="thinking">

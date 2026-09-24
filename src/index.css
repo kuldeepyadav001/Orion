@@ -2157,3 +2157,377 @@ kbd {
   line-height: 1.5;
 }
 
+/* ==================================================================== */
+/* Chat Top Header & Active Role Indicators                             */
+/* ==================================================================== */
+
+.chat-top-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 20px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border-soft);
+  flex-shrink: 0;
+}
+
+.active-role-indicator {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.role-icon {
+  font-size: 18px;
+  flex-shrink: 0;
+}
+
+.role-info {
+  display: flex;
+  flex-direction: column;
+}
+
+.role-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.specialized-pill {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 10px;
+  background: rgba(0, 214, 255, 0.15);
+  color: var(--accent-2);
+  border: 1px solid rgba(0, 214, 255, 0.35);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.role-subtext {
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+
+.btn-switch-role {
+  padding: 5px 11px;
+  border-radius: 6px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.btn-switch-role:hover {
+  background: var(--surface-3);
+  color: var(--text);
+  border-color: rgba(124, 92, 255, 0.4);
+}
+
+/* Message Role & Model Meta */
+.msg-orion-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.orion-brand-name {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.persona-chip-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(124, 92, 255, 0.14);
+  color: var(--accent-1);
+  border: 1px solid rgba(124, 92, 255, 0.28);
+}
+
+.model-source-tag {
+  font-size: 10.5px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  color: var(--text-faint);
+  background: var(--surface-3);
+  border: 1px solid var(--border-soft);
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+}
+
+.model-source-tag.specialized {
+  background: rgba(0, 214, 255, 0.1);
+  color: var(--accent-2);
+  border-color: rgba(0, 214, 255, 0.3);
+}
+
+.msg-user-title {
+  font-weight: 600;
+  color: var(--text-dim);
+}
+
+/* System panel persona guidance */
+.persona-weights-guidance {
+  margin-top: 14px;
+  padding: 14px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.weights-guidance-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12.5px;
+  color: var(--text);
+  margin-bottom: 6px;
+}
+
+.weights-guidance-desc {
+  font-size: 12px;
+  color: var(--text-dim);
+  line-height: 1.5;
+  margin: 0 0 10px;
+}
+
+.weights-download-box {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.download-label {
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+
+.download-command {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 12px;
+  padding: 6px 10px;
+  background: var(--bg-deep);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--accent-1);
+  display: inline-block;
+  width: fit-content;
+}
+
+.download-subtext {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.onboarding-persona-note {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-top: 14px;
+  background: var(--surface-2);
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border-soft);
+}
+
+/* ==================================================================== */
+/* In-App Resource Downloader & Dual-Model Setup (M6)                   */
+/* ==================================================================== */
+
+.resource-setup-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.resource-download-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 10px 0;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.resource-download-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  transition: all 0.15s ease;
+}
+
+.resource-download-item.completed {
+  border-color: rgba(62, 207, 142, 0.3);
+  background: rgba(62, 207, 142, 0.05);
+}
+
+.res-meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.res-icon {
+  font-size: 18px;
+}
+
+.res-meta div {
+  display: flex;
+  flex-direction: column;
+}
+
+.res-size {
+  font-size: 11.5px;
+  color: var(--text-faint);
+}
+
+.badge-pending {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 12px;
+  background: rgba(255, 184, 108, 0.15);
+  color: #ffb86c;
+  border: 1px solid rgba(255, 184, 108, 0.3);
+}
+
+.badge-installed {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 12px;
+  background: rgba(62, 207, 142, 0.15);
+  color: #3ecf8e;
+  border: 1px solid rgba(62, 207, 142, 0.3);
+}
+
+/* Download progress bar & telemetry */
+.download-progress-container {
+  padding: 14px 16px;
+  background: var(--bg-deep);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 10px 0;
+}
+
+.progress-label-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12.5px;
+}
+
+.progress-item-name {
+  font-weight: 550;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 80%;
+}
+
+.progress-pct {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-weight: 600;
+  color: var(--accent-1);
+}
+
+.progress-bar-track {
+  width: 100%;
+  height: 8px;
+  background: var(--surface-3);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.progress-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent-1), var(--accent-2));
+  border-radius: 4px;
+  transition: width 0.2s ease-out;
+}
+
+.progress-metrics-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--text-faint);
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+}
+
+.alert-error {
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: rgba(255, 92, 92, 0.12);
+  border: 1px solid rgba(255, 92, 92, 0.3);
+  color: var(--err);
+  font-size: 12px;
+}
+
+/* Ready banner */
+.ready-badge-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.ready-check-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: rgba(62, 207, 142, 0.15);
+  color: #3ecf8e;
+  border: 1px solid rgba(62, 207, 142, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 15px;
+}
+
+/* Sequential model memory handoff pill */
+.swapping-pill {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-radius: 8px;
+  background: rgba(0, 214, 255, 0.08);
+  border: 1px solid rgba(0, 214, 255, 0.25);
+  color: var(--accent-2);
+  font-size: 12px;
+  margin: 6px 0;
+  animation: pulse-swap 1.2s infinite ease-in-out;
+}
+
+.swap-spinner {
+  display: inline-block;
+  animation: rotate-spinner 1s infinite linear;
+}
+
+@keyframes rotate-spinner {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes pulse-swap {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+
+
+

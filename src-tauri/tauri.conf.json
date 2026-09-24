@@ -60,6 +60,9 @@
     "externalBin": [
       "binaries/llama-server"
     ],
+    "publisher": "Orion Local AI",
+    "copyright": "Copyright © 2026 Orion Authors. All rights reserved.",
+    "category": "Productivity",
     "shortDescription": "A private, offline-first personal AI",
     "longDescription": "Orion is a private AI assistant that runs entirely on your own machine. It chats, reads your documents, and acts on your behalf within a strict permission boundary. No cloud, no API keys, no data leaving your device."
   }

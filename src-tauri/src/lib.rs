@@ -21,6 +21,7 @@ pub mod sidecars;
 pub mod voice;
 pub mod broker;
 pub mod persona;
+pub mod downloader;
 
 use std::sync::Arc;
 
@@ -64,6 +65,10 @@ pub struct AppState {
     pub broker: Arc<broker::CapabilityBroker>,
     /// Master passcode security lock: true if unlocked or not configured.
     pub is_unlocked: Arc<std::sync::atomic::AtomicBool>,
+    /// In-app resource downloader.
+    pub downloader: Arc<downloader::DownloadManager>,
+    /// Tracks which model is currently resident in RAM ("general", "coder", "researcher").
+    pub active_loaded_model: Arc<tokio::sync::Mutex<String>>,
     /// Ensures the lazy engine start happens exactly once, even if several
     /// messages are sent before it finishes loading.
     pub engine_started: Arc<tokio::sync::OnceCell<()>>,
@@ -120,12 +125,16 @@ async fn ensure_engine(app: &tauri::AppHandle, state: &State<'_, AppState>) -> R
         let manager = state.manager.clone();
         let sidecars = state.sidecars.clone();
         let tier = *state.active_tier.lock().await;
+        let active_persona = {
+            let db = state.db.lock().await;
+            persona::get_active_persona(&db).ok()
+        };
         let handle = app.clone();
 
         tracing::info!("starting engine (previous state: {:?})", status.state);
         let _ = state.engine_started.set(());
         tauri::async_runtime::spawn(async move {
-            start_engine(sidecars, handle, engine, manager, tier).await;
+            start_engine(sidecars, handle, engine, manager, tier, active_persona).await;
         });
     }
 
@@ -167,6 +176,71 @@ async fn send_message(
     // Blocks until the model can answer. On a cold start this is the pause
     // the user sees instead of a 503.
     ensure_engine(&app, &state).await?;
+
+    let persona = {
+        let db = state.db.lock().await;
+        persona::get_active_persona(&db).unwrap_or(persona::PersonaKind::General)
+    };
+
+    // Sequential Dynamic Handoff (Dual-Model Router):
+    // Only ONE model is ever allowed in RAM. Check if prompt/persona requires specialized coder weights.
+    let is_code_task = persona == persona::PersonaKind::Developer
+        || message.contains("```")
+        || message.contains("function ")
+        || message.contains("fn ")
+        || message.contains("def ")
+        || message.contains("class ")
+        || message.contains("refactor")
+        || message.contains("algorithm")
+        || message.contains("debug ");
+
+    let target_kind = if is_code_task {
+        let coder_path = state.manager.models_dir().join("qwen2.5-coder-3b-instruct-q4_k_m.gguf");
+        if coder_path.is_file() { "coder" } else { "general" }
+    } else {
+        "general"
+    };
+
+    {
+        let mut loaded = state.active_loaded_model.lock().await;
+        if *loaded != target_kind && state.engine.status().await.state == EngineState::Ready {
+            let from = loaded.clone();
+            let to = target_kind.to_string();
+            tracing::info!(from = %from, to = %to, "initiating sequential model handoff in RAM");
+
+            let _ = app.emit("engine://swapping", serde_json::json!({
+                "from": from,
+                "to": to,
+                "reason": "Sequential handoff to dedicated model architecture"
+            }));
+
+            // 1. Unload current model from RAM
+            state.sidecars.terminate("llama-server (chat)");
+            state.engine.set_status(EngineState::Starting, format!("Swapping to {to} model in RAM...")).await;
+
+            // 2. Wait 400 ms for OS memory release
+            tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+
+            // 3. Spawn target model into RAM
+            let tier = *state.active_tier.lock().await;
+            let target_persona = if target_kind == "coder" {
+                Some(persona::PersonaKind::Developer)
+            } else {
+                Some(persona::PersonaKind::General)
+            };
+
+            let sidecars = state.sidecars.clone();
+            let handle = app.clone();
+            let engine = state.engine.clone();
+            let manager = state.manager.clone();
+
+            start_engine(sidecars, handle, engine, manager, tier, target_persona).await;
+            state.engine.wait_until_ready(ENGINE_WAIT).await?;
+
+            *loaded = to.clone();
+            let _ = app.emit("engine://swapped", serde_json::json!({ "active": to }));
+        }
+    }
 
     let session_id = state.session_id.lock().await.clone();
 
@@ -966,13 +1040,15 @@ async fn lock_app_now(state: State<'_, AppState>) -> Result<()> {
 
 /// Resolve which GGUF to load, in priority order:
 ///   1. `ORION_MODEL_PATH` — explicit override, always wins
-///   2. the catalogue model for the active tier, if installed
-///   3. the best installed catalogue model of any tier
-///   4. any user-supplied .gguf in the models directory
-///
-/// Falling back rather than refusing to start matters: a user who already has
-/// weights should not be blocked because our preferred file is absent.
-fn resolve_model(models: &ModelManager, tier: Tier) -> Result<std::path::PathBuf> {
+///   2. dedicated specialized weights for active persona (e.g. Coder, Reasoning) if present
+///   3. the catalogue model for the active tier, if installed
+///   4. the best installed catalogue model of any tier
+///   5. any user-supplied .gguf in the models directory
+fn resolve_model(
+    models: &ModelManager,
+    tier: Tier,
+    persona: Option<persona::PersonaKind>,
+) -> Result<std::path::PathBuf> {
     if let Ok(p) = std::env::var("ORION_MODEL_PATH") {
         let p = std::path::PathBuf::from(p);
         if p.is_file() {
@@ -983,6 +1059,54 @@ fn resolve_model(models: &ModelManager, tier: Tier) -> Result<std::path::PathBuf
             "ORION_MODEL_PATH does not point at a file: {}",
             p.display()
         )));
+    }
+
+    // 1. If Developer persona is active, prioritize specialized coder weights if present:
+    if let Some(persona::PersonaKind::Developer) = persona {
+        let dir = models.models_dir();
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let name = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("")
+                    .to_lowercase();
+                if name.ends_with(".gguf")
+                    && (name.contains("coder") || name.contains("qwen2.5-coder"))
+                {
+                    tracing::info!(
+                        path = %path.display(),
+                        "resolved specialized Developer coder weights"
+                    );
+                    return Ok(path);
+                }
+            }
+        }
+    }
+
+    // 2. If Researcher persona is active, prioritize specialized reasoning weights if present:
+    if let Some(persona::PersonaKind::Researcher) = persona {
+        let dir = models.models_dir();
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let name = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("")
+                    .to_lowercase();
+                if name.ends_with(".gguf")
+                    && (name.contains("deepseek") || name.contains("r1") || name.contains("distill"))
+                {
+                    tracing::info!(
+                        path = %path.display(),
+                        "resolved specialized Researcher reasoning weights"
+                    );
+                    return Ok(path);
+                }
+            }
+        }
     }
 
     if let Some(spec) = models.resolve_for_tier(tier) {
@@ -999,6 +1123,77 @@ fn resolve_model(models: &ModelManager, tier: Tier) -> Result<std::path::PathBuf
     Err(OrionError::NoModel)
 }
 
+/// Information about the active model file and persona.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ActiveModelInfo {
+    pub file_name: String,
+    pub is_specialized: bool,
+    pub persona_id: String,
+    pub persona_name: String,
+}
+
+#[tauri::command]
+async fn active_model_info(state: State<'_, AppState>) -> Result<ActiveModelInfo> {
+    let tier = *state.active_tier.lock().await;
+    let persona = {
+        let db = state.db.lock().await;
+        persona::get_active_persona(&db).unwrap_or(persona::PersonaKind::General)
+    };
+    let model_path = resolve_model(&state.manager, tier, Some(persona)).ok();
+    let file_name = model_path
+        .as_ref()
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+        .unwrap_or("No model loaded")
+        .to_string();
+
+    let is_specialized = file_name.to_lowercase().contains("coder")
+        || file_name.to_lowercase().contains("deepseek")
+        || file_name.to_lowercase().contains("r1");
+
+    Ok(ActiveModelInfo {
+        file_name,
+        is_specialized,
+        persona_id: persona.id().to_string(),
+        persona_name: persona.info().name,
+    })
+}
+
+/* ------------------------------------------------------------------ */
+/* in-app resource downloader (M6)                                    */
+/* ------------------------------------------------------------------ */
+
+#[tauri::command]
+async fn check_resource_status(
+    persona: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<downloader::ResourceStatus> {
+    let p = persona.unwrap_or_else(|| "general".into());
+    Ok(state.downloader.check_status(&p))
+}
+
+#[tauri::command]
+async fn start_resource_download(
+    persona: Option<String>,
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<()> {
+    let p = persona.unwrap_or_else(|| "general".into());
+    let dl = state.downloader.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) = dl.download_missing(&app, &p).await {
+            tracing::error!(error = %e, "resource download failed");
+        }
+    });
+    Ok(())
+}
+
+#[tauri::command]
+async fn cancel_resource_download(state: State<'_, AppState>) -> Result<()> {
+    state.downloader.cancel();
+    Ok(())
+}
+
 /// Spawn `llama-server` bound to loopback on an ephemeral port with a random
 /// bearer token, then wait for it to report healthy.
 async fn start_engine(
@@ -1007,8 +1202,9 @@ async fn start_engine(
     engine: Arc<Engine>,
     models: Arc<ModelManager>,
     tier: Tier,
+    persona: Option<persona::PersonaKind>,
 ) {
-    let model_path = match resolve_model(&models, tier) {
+    let model_path = match resolve_model(&models, tier, persona) {
         Ok(p) => p,
         Err(e) => {
             engine
@@ -1316,6 +1512,9 @@ pub fn run() {
             let db_arc = Arc::new(Mutex::new(database));
             let workspace_dir = db::data_dir().unwrap_or_default().join("workspace");
             let broker = Arc::new(broker::CapabilityBroker::new(db_arc.clone(), workspace_dir));
+            let models_dir_dl = db::data_dir().unwrap_or_default().join("models");
+            let downloader = Arc::new(downloader::DownloadManager::new(models_dir_dl));
+            let active_loaded_model = Arc::new(tokio::sync::Mutex::new("general".to_string()));
 
             app.manage(AppState {
                 engine: engine.clone(),
@@ -1331,6 +1530,8 @@ pub fn run() {
                 manager: manager.clone(),
                 broker: broker.clone(),
                 is_unlocked: is_unlocked.clone(),
+                downloader: downloader.clone(),
+                active_loaded_model: active_loaded_model.clone(),
                 engine_started: Arc::new(tokio::sync::OnceCell::new()),
             });
 
@@ -1495,7 +1696,11 @@ pub fn run() {
             unlock_with_passcode,
             set_master_lock,
             remove_master_lock,
-            lock_app_now
+            lock_app_now,
+            active_model_info,
+            check_resource_status,
+            start_resource_download,
+            cancel_resource_download
         ])
         .build(tauri::generate_context!())
         .expect("error while building Orion")
