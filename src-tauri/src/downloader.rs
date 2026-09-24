@@ -4,7 +4,7 @@
 //! directly into the user data `models/` directory with real-time streaming
 //! progress events (`download://progress`).
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;

@@ -1509,6 +1509,7 @@ pub fn run() {
             let sidecars = Arc::new(sidecars::SidecarRegistry::new());
             let lock_configured = persona::is_lock_configured(&database).unwrap_or(false);
             let is_unlocked = Arc::new(std::sync::atomic::AtomicBool::new(!lock_configured));
+            let initial_persona = persona::get_active_persona(&database).ok();
             let db_arc = Arc::new(Mutex::new(database));
             let workspace_dir = db::data_dir().unwrap_or_default().join("workspace");
             let broker = Arc::new(broker::CapabilityBroker::new(db_arc.clone(), workspace_dir));
@@ -1630,8 +1631,9 @@ pub fn run() {
                 let handle = app.handle().clone();
                 let mgr = manager.clone();
                 let engine_sidecars = sidecars.clone();
+                let persona_to_load = initial_persona;
                 tauri::async_runtime::spawn(async move {
-                    start_engine(engine_sidecars, handle, engine, mgr, tier).await;
+                    start_engine(engine_sidecars, handle, engine, mgr, tier, persona_to_load).await;
                 });
             } else {
                 tracing::info!(
