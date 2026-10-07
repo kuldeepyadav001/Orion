@@ -235,15 +235,38 @@ export default function App() {
       .catch(() => {});
   }, []);
 
-  const handleToggleMode = useCallback(async (targetPersonaId) => {
-    try {
-      await invoke("set_active_persona", { personaId: targetPersonaId });
-      const updated = await invoke("get_active_persona");
-      setPersona(updated);
-    } catch (e) {
-      console.error("Failed to switch mode:", e);
-    }
-  }, []);
+  const handleToggleMode = useCallback(
+    async (targetPersonaId) => {
+      try {
+        // Optimistic UI state update so the toggle clicks instantly with zero perceived lag
+        setPersona((prev) => ({
+          ...prev,
+          id: targetPersonaId,
+          name:
+            targetPersonaId === "general"
+              ? "General Assistant"
+              : specialistPersona?.name || "Specialist",
+          icon:
+            targetPersonaId === "general"
+              ? "⚡"
+              : specialistPersona?.icon || "💻",
+        }));
+
+        // Pass both persona and personaId for guaranteed compatibility across IPC
+        const updated = await invoke("set_active_persona", {
+          persona: targetPersonaId,
+          personaId: targetPersonaId,
+        });
+        if (updated) {
+          setPersona(updated);
+        }
+        refreshModelInfo();
+      } catch (e) {
+        console.error("Failed to switch mode:", e);
+      }
+    },
+    [specialistPersona, refreshModelInfo],
+  );
 
   const processDocumentOutput = useCallback(async (rawReply, lastUserQuery) => {
     if (!rawReply) return;
@@ -1026,7 +1049,7 @@ export default function App() {
           content: "",
           persona: persona,
           modelName: modelInfo?.file_name,
-          isSpecialized: modelInfo?.is_specialized,
+          isSpecialized: persona?.id !== "general",
         },
       ]);
       setCitations([]);

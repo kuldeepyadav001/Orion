@@ -192,15 +192,23 @@ async fn send_message(
 
     // Sequential Dynamic Handoff (Dual-Model Router):
     // Only ONE model is ever allowed in RAM. Check if prompt/persona requires specialized coder weights.
-    let is_code_task = persona == persona::PersonaKind::Developer
-        || message.contains("```")
-        || message.contains("function ")
-        || message.contains("fn ")
-        || message.contains("def ")
-        || message.contains("class ")
-        || message.contains("refactor")
-        || message.contains("algorithm")
-        || message.contains("debug ");
+    let is_code_task = if persona == persona::PersonaKind::Developer {
+        // In Specialist Developer mode: always route to the dedicated coder model
+        true
+    } else {
+        // In General mode: only route to coder model if user explicitly asks for code writing/debugging
+        let msg_lower = message.to_lowercase();
+        (message.contains("```") && (msg_lower.contains("code") || msg_lower.contains("error") || msg_lower.contains("bug") || msg_lower.contains("fix")))
+            || msg_lower.starts_with("write code")
+            || msg_lower.starts_with("implement a function")
+            || msg_lower.starts_with("create a function")
+            || msg_lower.starts_with("refactor this code")
+            || msg_lower.starts_with("write a script")
+            || msg_lower.starts_with("debug this code")
+            || msg_lower.contains("write a python script")
+            || msg_lower.contains("write a rust function")
+            || msg_lower.contains("write a javascript function")
+    };
 
     let target_kind = if is_code_task {
         let coder_path = state.manager.models_dir().join("qwen2.5-coder-3b-instruct-q4_k_m.gguf");
@@ -1383,14 +1391,69 @@ async fn get_active_persona(state: State<'_, AppState>) -> Result<persona::Perso
     Ok(kind.info())
 }
 
-/// Set the active persona.
+/// Set the active persona and trigger sequential model swap if needed.
 #[tauri::command]
 async fn set_active_persona(
-    persona: String,
+    persona: Option<String>,
+    persona_id: Option<String>,
     state: State<'_, AppState>,
+    app: tauri::AppHandle,
 ) -> Result<persona::PersonaInfo> {
-    let db = state.db.lock().await;
-    persona::set_active_persona(&db, &persona)
+    let target = persona.or(persona_id).unwrap_or_else(|| "general".into());
+    let info = {
+        let db = state.db.lock().await;
+        persona::set_active_persona(&db, &target)?
+    };
+
+    let target_kind = if target == "developer" { "coder" } else { "general" };
+    let should_swap = {
+        let loaded = state.active_loaded_model.lock().await;
+        *loaded != target_kind && state.engine.status().await.state == EngineState::Ready
+    };
+
+    if should_swap {
+        let tier = *state.active_tier.lock().await;
+        let sidecars = state.sidecars.clone();
+        let handle = app.clone();
+        let engine = state.engine.clone();
+        let manager = state.manager.clone();
+        let active_loaded = state.active_loaded_model.clone();
+
+        tauri::async_runtime::spawn(async move {
+            let from = {
+                let loaded = active_loaded.lock().await;
+                loaded.clone()
+            };
+            let to = target_kind.to_string();
+            tracing::info!(from = %from, to = %to, "persona toggled: swapping model in RAM");
+
+            let _ = handle.emit("engine://swapping", serde_json::json!({
+                "from": from,
+                "to": to,
+                "reason": format!("User switched active mode to {target}")
+            }));
+
+            sidecars.terminate("llama-server (chat)");
+            engine.set_status(EngineState::Starting, format!("Swapping to {to} model in RAM...")).await;
+
+            tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+
+            let target_persona = if target_kind == "coder" {
+                Some(persona::PersonaKind::Developer)
+            } else {
+                Some(persona::PersonaKind::General)
+            };
+
+            start_engine(sidecars, handle.clone(), engine.clone(), manager, tier, target_persona).await;
+            if let Ok(()) = engine.wait_until_ready(ENGINE_WAIT).await {
+                let mut loaded = active_loaded.lock().await;
+                *loaded = to.clone();
+                let _ = handle.emit("engine://swapped", serde_json::json!({ "active": to }));
+            }
+        });
+    }
+
+    Ok(info)
 }
 
 /// Check if the first-run onboarding wizard has been completed.
