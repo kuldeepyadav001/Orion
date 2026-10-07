@@ -114,9 +114,6 @@ For Excel spreadsheets (.xlsx):
 ```
 
 Orion's engine will automatically compile this into a genuine file in the user's workspace with instant 'Open File' and 'Show in Folder' actions."#;
-```
-
-Orion's engine will automatically compile this into a genuine file in the user's workspace with instant 'Open File' and 'Show in Folder' actions."#;
 
 /// Enumeration of all available specialized workload personas.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
