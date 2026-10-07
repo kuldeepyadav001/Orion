@@ -10,6 +10,11 @@ export default defineConfig({
     strictPort: true,
     watch: { ignored: ["**/src-tauri/**"] },
   },
+  resolve: {
+    alias: [
+      { find: /^exceljs$/, replacement: "exceljs/dist/exceljs.min.js" },
+    ],
+  },
   build: {
     target: "esnext",
     // Keep the bundle inspectable in pre-alpha.
