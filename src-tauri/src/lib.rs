@@ -22,6 +22,7 @@ pub mod voice;
 pub mod broker;
 pub mod persona;
 pub mod downloader;
+pub mod email;
 
 use std::sync::Arc;
 
@@ -31,7 +32,8 @@ use tauri_plugin_shell::process::CommandEvent;
 use tauri_plugin_shell::ShellExt;
 use tokio::sync::Mutex;
 
-use db::Db;
+use db::{Db, StoredEmail, StoredEmailSummary};
+use email::{generate_draft_reply, sanitize_email_body, triage_email_content, TriageAnalysis};
 use engine::{ChatMessage, Engine, EngineConfig, EngineState, EngineStatus};
 use error::{OrionError, Result};
 use models::{ModelManager, ModelStatus};
@@ -495,6 +497,314 @@ async fn clear_session_messages(
 ) -> Result<()> {
     let db = state.db.lock().await;
     db.clear_session_messages(&session_id)
+}
+
+/* ------------------------------------------------------------------ */
+/* native document generation & OS shell integration                 */
+/* ------------------------------------------------------------------ */
+
+use base64::Engine;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GeneratedDocumentMeta {
+    pub id: String,
+    pub filename: String,
+    pub path: String,
+    pub file_type: String,
+    pub size_bytes: u64,
+    pub created_at: String,
+}
+
+#[tauri::command]
+async fn save_generated_document(
+    filename: String,
+    data_base64: String,
+    file_type: String,
+    state: State<'_, AppState>,
+) -> Result<GeneratedDocumentMeta> {
+    let clean_filename = std::path::Path::new(&filename)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("document")
+        .replace(|c: char| !c.is_alphanumeric() && c != '.' && c != '_' && c != '-', "_");
+
+    let docs_dir = db::data_dir()?.join("generated_documents");
+    std::fs::create_dir_all(&docs_dir)
+        .map_err(|e| OrionError::Db(format!("cannot create generated_documents dir: {e}")))?;
+
+    let file_path = docs_dir.join(&clean_filename);
+
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(&data_base64)
+        .map_err(|e| OrionError::Config(format!("invalid base64 document: {e}")))?;
+
+    std::fs::write(&file_path, &bytes)
+        .map_err(|e| OrionError::Db(format!("failed to write document: {e}")))?;
+
+    let size_bytes = bytes.len() as u64;
+    let now = chrono::Utc::now().to_rfc3339();
+    let id = uuid::Uuid::new_v4().to_string();
+
+    {
+        let db = state.db.lock().await;
+        let _ = db.conn().execute(
+            "INSERT INTO broker_audit_log (id, timestamp, domain, action, target, tier, decision, reason)
+             VALUES (?1, ?2, 'trusted', 'document_generate', ?3, 'T1', 'ALLOWED', ?4)",
+            rusqlite::params![
+                id,
+                now,
+                file_path.display().to_string(),
+                format!("Generated {file_type} document ({size_bytes} bytes)"),
+            ],
+        );
+    }
+
+    Ok(GeneratedDocumentMeta {
+        id,
+        filename: clean_filename,
+        path: file_path.display().to_string(),
+        file_type,
+        size_bytes,
+        created_at: now,
+    })
+}
+
+#[tauri::command]
+async fn list_generated_documents() -> Result<Vec<GeneratedDocumentMeta>> {
+    let docs_dir = db::data_dir()?.join("generated_documents");
+    if !docs_dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut out = Vec::new();
+    let entries = std::fs::read_dir(&docs_dir)
+        .map_err(|e| OrionError::Db(format!("cannot read documents dir: {e}")))?;
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_file() {
+            let metadata = entry.metadata().ok();
+            let size_bytes = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
+            let filename = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_string();
+            let ext = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("")
+                .to_lowercase();
+            let created_at = metadata
+                .and_then(|m| m.created().ok())
+                .and_then(|t| {
+                    let d = t.duration_since(std::time::UNIX_EPOCH).ok()?;
+                    Some(chrono::DateTime::from_timestamp(d.as_secs() as i64, 0)?.to_rfc3339())
+                })
+                .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
+
+            out.push(GeneratedDocumentMeta {
+                id: uuid::Uuid::new_v4().to_string(),
+                filename,
+                path: path.display().to_string(),
+                file_type: ext,
+                size_bytes,
+                created_at,
+            });
+        }
+    }
+    out.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    Ok(out)
+}
+
+#[tauri::command]
+async fn open_document(path: String) -> Result<()> {
+    let p = std::path::Path::new(&path);
+    if !p.exists() {
+        return Err(OrionError::Config(format!("File does not exist: {path}")));
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", &path])
+            .spawn()
+            .map_err(|e| OrionError::Config(format!("failed to open file on Windows: {e}")))?;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| OrionError::Config(format!("failed to open file on macOS: {e}")))?;
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| OrionError::Config(format!("failed to open file on Linux: {e}")))?;
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn show_in_folder(path: String) -> Result<()> {
+    let p = std::path::Path::new(&path);
+    if !p.exists() {
+        return Err(OrionError::Config(format!("File does not exist: {path}")));
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer")
+            .args(["/select,", &path])
+            .spawn()
+            .map_err(|e| OrionError::Config(format!("failed to show in explorer: {e}")))?;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .args(["-R", &path])
+            .spawn()
+            .map_err(|e| OrionError::Config(format!("failed to reveal in finder: {e}")))?;
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        let parent = p.parent().unwrap_or(p);
+        std::process::Command::new("xdg-open")
+            .arg(parent)
+            .spawn()
+            .map_err(|e| OrionError::Config(format!("failed to open folder on Linux: {e}")))?;
+    }
+
+    Ok(())
+}
+
+/* ------------------------------------------------------------------ */
+/* Milestone 7: Sovereign Email Assistant (Read, Triage, Draft)       */
+/* ------------------------------------------------------------------ */
+
+#[tauri::command]
+async fn list_inbox_emails(
+    filter: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<Vec<StoredEmailSummary>> {
+    let db = state.db.lock().await;
+    let _ = db.seed_default_emails_if_empty();
+    db.list_emails(filter.as_deref())
+}
+
+#[tauri::command]
+async fn get_inbox_email(
+    id: String,
+    state: State<'_, AppState>,
+) -> Result<StoredEmail> {
+    let db = state.db.lock().await;
+    db.get_email(&id)?
+        .ok_or_else(|| OrionError::Db(format!("email '{id}' not found")))
+}
+
+#[tauri::command]
+async fn triage_inbox_email(
+    id: String,
+    state: State<'_, AppState>,
+) -> Result<TriageAnalysis> {
+    let email = {
+        let db = state.db.lock().await;
+        db.get_email(&id)?
+            .ok_or_else(|| OrionError::Db(format!("email '{id}' not found")))?
+    };
+
+    let analysis = triage_email_content(&email.subject, &email.body_sanitized, &email.sender);
+
+    // Record Tier 0 audit event
+    let now = chrono::Utc::now().to_rfc3339();
+    let audit_id = uuid::Uuid::new_v4().to_string();
+    {
+        let db = state.db.lock().await;
+        let _ = db.conn().execute(
+            "INSERT INTO broker_audit_log (id, timestamp, domain, action, target, tier, decision, reason)
+             VALUES (?1, ?2, 'untrusted', 'email_triage', ?3, 'T0', 'ALLOWED', ?4)",
+            rusqlite::params![
+                audit_id,
+                now,
+                email.subject,
+                format!("Triaged email from {} ({})", email.sender, analysis.category),
+            ],
+        );
+    }
+
+    Ok(analysis)
+}
+
+#[tauri::command]
+async fn draft_email_response(
+    id: String,
+    tone: String,
+    user_name: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<String> {
+    let email = {
+        let db = state.db.lock().await;
+        db.get_email(&id)?
+            .ok_or_else(|| OrionError::Db(format!("email '{id}' not found")))?
+    };
+
+    let author_name = user_name.unwrap_or_else(|| "Orion User".to_string());
+    let draft = generate_draft_reply(
+        &email.sender_name,
+        &email.subject,
+        &email.body_sanitized,
+        &tone,
+        &author_name,
+    );
+
+    // Save draft in SQLite
+    {
+        let db = state.db.lock().await;
+        db.update_email_draft(&id, &draft)?;
+
+        // Tier 1 Audit log under Rule R-5 (Strictly no auto-send)
+        let now = chrono::Utc::now().to_rfc3339();
+        let audit_id = uuid::Uuid::new_v4().to_string();
+        let _ = db.conn().execute(
+            "INSERT INTO broker_audit_log (id, timestamp, domain, action, target, tier, decision, reason)
+             VALUES (?1, ?2, 'trusted', 'email_draft', ?3, 'T1', 'ALLOWED', ?4)",
+            rusqlite::params![
+                audit_id,
+                now,
+                format!("Draft reply for: {}", email.subject),
+                "Draft generated under Rule R-5: Strictly no auto-send. Awaiting human dispatch.",
+            ],
+        );
+    }
+
+    Ok(draft)
+}
+
+#[tauri::command]
+async fn mark_inbox_email_read(
+    id: String,
+    is_read: bool,
+    state: State<'_, AppState>,
+) -> Result<()> {
+    let db = state.db.lock().await;
+    db.mark_email_read(&id, is_read)
+}
+
+#[tauri::command]
+async fn delete_inbox_email(
+    id: String,
+    state: State<'_, AppState>,
+) -> Result<()> {
+    let db = state.db.lock().await;
+    db.delete_email(&id)
 }
 
 /// The measured (or simulated) hardware profile.
@@ -1883,7 +2193,17 @@ pub fn run() {
             active_model_info,
             check_resource_status,
             start_resource_download,
-            cancel_resource_download
+            cancel_resource_download,
+            save_generated_document,
+            list_generated_documents,
+            open_document,
+            show_in_folder,
+            list_inbox_emails,
+            get_inbox_email,
+            triage_inbox_email,
+            draft_email_response,
+            mark_inbox_email_read,
+            delete_inbox_email
         ])
         .build(tauri::generate_context!())
         .expect("error while building Orion")

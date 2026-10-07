@@ -11,6 +11,10 @@ import OnboardingWizard from "./OnboardingWizard";
 import CodeBlock from "./CodeBlock";
 import { LockScreen, LockSettingsModal } from "./LockScreen";
 import { ChatHistoryList } from "./ChatSidebar";
+import DocumentCard from "./DocumentCard";
+import DocumentModal from "./DocumentModal";
+import EmailStudio from "./EmailStudio";
+import { TEMPLATES } from "./documentGenerator";
 
 /**
  * Clean markdown, backticks, code blocks, and citations from text before speech synthesis.
@@ -123,6 +127,24 @@ const PERSONA_SUGGESTIONS = {
       prompt: "Draft a concise, professional follow-up email after a project kickoff meeting outlining action items and next steps.",
     },
     {
+      icon: "📊",
+      title: "Generate Excel Budget",
+      sub: () => "Formulas, P&L, auto-styles",
+      prompt: "Generate an Excel budget spreadsheet with revenue projections, operational costs, and profit calculations.",
+    },
+    {
+      icon: "📄",
+      title: "Generate Word Proposal",
+      sub: () => "Architecture spec & callouts",
+      prompt: "Generate a Word document architecture proposal for Project Orion sovereign deployment.",
+    },
+    {
+      icon: "📑",
+      title: "Generate PDF Audit Report",
+      sub: () => "Vector PDF & compliance",
+      prompt: "Generate a formal executive PDF audit report on sovereign AI and data privacy compliance.",
+    },
+    {
       icon: "✦",
       title: "What can Orion do?",
       sub: () => "Capabilities & local privacy",
@@ -224,6 +246,29 @@ export default function App() {
   const [sidebarTab, setSidebarTab] = useState("chats"); // "chats" | "library"
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [editTitleValue, setEditTitleValue] = useState("");
+  const [showDocModal, setShowDocModal] = useState(false);
+  const [showEmailStudio, setShowEmailStudio] = useState(false);
+
+  const handleDocumentGenerated = useCallback(
+    (doc) => {
+      const ext = (doc.file_type || doc.filename?.split(".").pop() || "").toUpperCase();
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          content: `I've compiled and saved your native **${ext}** document: \`${doc.filename}\`.\n\nIt is compiled and saved locally on your workstation with zero cloud transmission. You can launch it in your default application, view it in your folder, or download a copy below:`,
+          document: doc,
+          persona: persona,
+          modelName: modelInfo?.file_name,
+          isSpecialized: modelInfo?.is_specialized,
+        },
+      ]);
+      if (autoSpeakRef.current) {
+        speakTextRef.current?.(cleanForSpeech(`I've generated and saved your document: ${doc.filename}`));
+      }
+    },
+    [persona, modelInfo],
+  );
 
   const audioPlayerRef = useRef(null);
   const lastSourceRef = useRef("text");
@@ -758,6 +803,151 @@ export default function App() {
       setGrounded(null);
       setStreaming(true);
 
+      // Check if user specifically requests document generation
+      const lower = text.toLowerCase();
+      const isDocGenerationRequest =
+        (lower.includes("excel") ||
+          lower.includes("spreadsheet") ||
+          lower.includes(".xlsx") ||
+          lower.includes("word document") ||
+          lower.includes(".docx") ||
+          lower.includes("word proposal") ||
+          lower.includes("pdf report") ||
+          lower.includes(".pdf") ||
+          lower.includes("audit report")) &&
+        (lower.includes("generate") ||
+          lower.includes("create") ||
+          lower.includes("export") ||
+          lower.includes("build") ||
+          lower.includes("make"));
+
+      if (isDocGenerationRequest) {
+        try {
+          let docResult;
+          let summaryMsg = "";
+
+          if (
+            lower.includes("excel") ||
+            lower.includes("spreadsheet") ||
+            lower.includes(".xlsx") ||
+            lower.includes("budget")
+          ) {
+            docResult = await TEMPLATES.budget_tracker.build();
+            summaryMsg = `I have compiled and saved your native Microsoft Excel spreadsheet: **\`${docResult.filename}\`**.\n\n### Document Summary\n- **Type**: Microsoft Excel (.xlsx OOXML)\n- **Features**: 12-Month Financial Model, Dynamic \`=SUM()\` and \`=AVERAGE()\` Formulas, Formatted Currency Cells, Auto-Fitted Columns, Orion Styling.\n- **Storage**: Scoped local storage with Capability Broker Tier 1 audit logging.`;
+          } else if (
+            lower.includes("word") ||
+            lower.includes("docx") ||
+            lower.includes("proposal") ||
+            lower.includes("specification")
+          ) {
+            docResult = await TEMPLATES.project_proposal.build();
+            summaryMsg = `I have compiled and saved your native Microsoft Word document: **\`${docResult.filename}\`**.\n\n### Document Summary\n- **Type**: Microsoft Word (.docx OOXML)\n- **Features**: Formal System Architecture Specification, Styled Headings, Executive Callout Highlight, Comparison Tables, Air-Gapped Security Verification.\n- **Storage**: Scoped local storage with Capability Broker Tier 1 audit logging.`;
+          } else {
+            docResult = await TEMPLATES.executive_report.build();
+            summaryMsg = `I have compiled and saved your native Adobe PDF document: **\`${docResult.filename}\`**.\n\n### Document Summary\n- **Type**: Adobe PDF (.pdf Vector)\n- **Features**: Executive Sovereign AI Audit Report, Metric Data Table, Page Numbering Footers, Offline Attestation.\n- **Storage**: Scoped local storage with Capability Broker Tier 1 audit logging.`;
+          }
+
+          const savedDoc = await invoke("save_generated_document", {
+            filename: docResult.filename,
+            dataBase64: docResult.base64,
+            fileType: docResult.fileType,
+          });
+
+          const fullDoc = {
+            ...savedDoc,
+            base64: docResult.base64,
+          };
+
+          setMessages((prev) => {
+            const next = [...prev];
+            next[next.length - 1] = {
+              role: "assistant",
+              content: summaryMsg,
+              document: fullDoc,
+              persona: persona,
+              modelName: modelInfo?.file_name,
+              isSpecialized: modelInfo?.is_specialized,
+            };
+            return next;
+          });
+          setStreaming(false);
+
+          if (autoSpeakRef.current) {
+            speakTextRef.current?.(
+              cleanForSpeech(`I've generated and saved your document: ${docResult.filename}`),
+            );
+          }
+          return;
+        } catch (err) {
+          console.error("Document generation error:", err);
+          // Fall back to standard LLM chat if templating fails
+        }
+      }
+
+      // Check if user requests email triage / inbox inspection
+      if (
+        (lower.includes("inbox") ||
+          lower.includes("email") ||
+          lower.includes("emails") ||
+          lower.includes("mail")) &&
+        (lower.includes("check") ||
+          lower.includes("triage") ||
+          lower.includes("open") ||
+          lower.includes("read") ||
+          lower.includes("show") ||
+          lower.includes("urgent"))
+      ) {
+        try {
+          const list = await invoke("list_inbox_emails", { filter: null });
+          const urgentCount = list.filter((e) => e.triage_category === "Urgent").length;
+          const actionCount = list.filter((e) => e.triage_category === "Action Required").length;
+          const unreadCount = list.filter((e) => !e.is_read).length;
+
+          let emailListSummary =
+            `### ✉️ Sovereign Email Assistant (M7 Triage)\n\n` +
+            `You have **${list.length} messages** in your local inbox (${unreadCount} unread).\n` +
+            `- 🔴 **${urgentCount} Urgent** requiring immediate attention\n` +
+            `- 🟡 **${actionCount} Action Required** pending review/proposal\n\n` +
+            `**Rule R-5 Active:** Strictly no auto-send. Opening Sovereign Email Studio for review:\n\n` +
+            `#### Priority Inbox Overview:\n`;
+
+          list.slice(0, 4).forEach((e) => {
+            const badge =
+              e.triage_category === "Urgent"
+                ? "🔴 Urgent"
+                : e.triage_category === "Action Required"
+                  ? "🟡 Action"
+                  : "🔵 Info";
+            emailListSummary += `- **${badge}** \`P${e.priority_score}\` · **${e.sender_name}**: *${e.subject}*\n`;
+          });
+
+          setMessages((prev) => {
+            const next = [...prev];
+            next[next.length - 1] = {
+              role: "assistant",
+              content: emailListSummary,
+              persona: persona,
+              modelName: modelInfo?.file_name,
+              isSpecialized: modelInfo?.is_specialized,
+            };
+            return next;
+          });
+          setStreaming(false);
+          setShowEmailStudio(true);
+
+          if (autoSpeakRef.current) {
+            speakTextRef.current?.(
+              cleanForSpeech(
+                `You have ${urgentCount} urgent and ${actionCount} action items in your sovereign inbox.`,
+              ),
+            );
+          }
+          return;
+        } catch (err) {
+          console.error("Inbox triage error:", err);
+        }
+      }
+
       try {
         await invoke("send_message", { message: text });
       } catch (e) {
@@ -1111,6 +1301,22 @@ export default function App() {
             >
               + New Chat
             </button>
+            <button
+              type="button"
+              className="btn-doc-header"
+              onClick={() => setShowDocModal(true)}
+              title="Generate native Excel, Word, or PDF document"
+            >
+              📄 Documents
+            </button>
+            <button
+              type="button"
+              className="btn-email-header"
+              onClick={() => setShowEmailStudio(true)}
+              title="Sovereign Email Assistant (M7: Read, Triage, Draft)"
+            >
+              ✉️ Mail
+            </button>
             {!modelInfo?.is_specialized && (persona?.id === "developer" || persona?.id === "researcher") && (
               <button
                 type="button"
@@ -1250,9 +1456,13 @@ export default function App() {
                         <>
                           <Markdown components={markdownComponents}>{m.content}</Markdown>
                           {streaming && isLastAssistant && <span className="streaming-cursor" />}
+                          {m.document && <DocumentCard doc={m.document} />}
                         </>
                       ) : (
-                        m.content
+                        <>
+                          {m.content}
+                          {m.document && <DocumentCard doc={m.document} />}
+                        </>
                       )}
                     </div>
                   </div>
@@ -1331,6 +1541,15 @@ export default function App() {
         )}
 
         <footer className="composer">
+          <button
+            type="button"
+            className="btn-open-doc-studio"
+            onClick={() => setShowDocModal(true)}
+            title="Generate native Excel, Word, or PDF document"
+            aria-label="Generate native document"
+          >
+            📄
+          </button>
           <VoiceButton
             onTranscript={onTranscript}
             speaking={speaking}
@@ -1421,6 +1640,21 @@ export default function App() {
           lockStatus={lockStatus}
           onClose={() => setShowLockSettings(false)}
           onStatusChanged={refreshLockStatus}
+        />
+      )}
+
+      {showDocModal && (
+        <DocumentModal
+          isOpen={showDocModal}
+          onClose={() => setShowDocModal(false)}
+          onDocumentGenerated={handleDocumentGenerated}
+        />
+      )}
+
+      {showEmailStudio && (
+        <EmailStudio
+          isOpen={showEmailStudio}
+          onClose={() => setShowEmailStudio(false)}
         />
       )}
     </div>
