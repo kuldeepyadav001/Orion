@@ -235,6 +235,15 @@ export default function App() {
       .catch(() => {});
   }, []);
 
+  const refreshModelInfo = useCallback(async () => {
+    try {
+      const info = await invoke("active_model_info");
+      setModelInfo(info);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
   const handleToggleMode = useCallback(
     async (targetPersonaId) => {
       try {
@@ -564,15 +573,6 @@ export default function App() {
       );
     } catch (err) {
       console.error("Failed to delete session:", err);
-    }
-  }, []);
-
-  const refreshModelInfo = useCallback(async () => {
-    try {
-      const info = await invoke("active_model_info");
-      setModelInfo(info);
-    } catch {
-      /* ignore */
     }
   }, []);
 
