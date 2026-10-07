@@ -33,8 +33,9 @@ use tauri_plugin_shell::ShellExt;
 use tokio::sync::Mutex;
 
 use db::{Db, StoredEmail, StoredEmailSummary};
-use email::{generate_draft_reply, sanitize_email_body, triage_email_content, TriageAnalysis};
+use email::{generate_draft_reply, triage_email_content, TriageAnalysis};
 use engine::{ChatMessage, Engine, EngineConfig, EngineState, EngineStatus};
+use base64::Engine as _;
 use error::{OrionError, Result};
 use models::{ModelManager, ModelStatus};
 use profiler::{HardwareProfile, Tier, TierRecommendation};
@@ -502,8 +503,6 @@ async fn clear_session_messages(
 /* ------------------------------------------------------------------ */
 /* native document generation & OS shell integration                 */
 /* ------------------------------------------------------------------ */
-
-use base64::Engine;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GeneratedDocumentMeta {

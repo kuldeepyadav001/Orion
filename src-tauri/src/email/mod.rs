@@ -237,7 +237,7 @@ pub fn triage_email_content(subject: &str, sanitized_body: &str, sender: &str) -
 pub fn generate_draft_reply(
     sender_name: &str,
     subject: &str,
-    body: &str,
+    _body: &str,
     tone: &str,
     user_name: &str,
 ) -> String {
