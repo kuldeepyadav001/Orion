@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Markdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import SystemPanel from "./SystemPanel";
@@ -40,6 +41,7 @@ import {
   enrichDocumentSpec,
   parseMarkdownTable,
   parseMarkdownSections,
+  parseMarkdownDocument,
   compileDocumentFromSpec,
   buildExcelDocument,
   buildWordDocument,
@@ -62,27 +64,30 @@ function cleanForSpeech(text) {
     .trim();
 }
 
-
 const FOLLOWUP_CHIPS = {
   developer: [
-    "Show a step-by-step code example",
-    "Add error handling & validation",
-    "Analyze time and memory complexity",
+    "Explain architectural trade-offs & edge cases",
+    "Show full production-ready code with types",
+    "Analyze time and memory complexity benchmarks",
+    "Compile this solution into an executive PDF report",
   ],
   researcher: [
-    "Cite specific evidence & excerpts",
-    "Identify counterarguments & limitations",
-    "Format findings into a comparison table",
+    "Structure empirical findings into a comparison table",
+    "Detail potential counterarguments & data boundaries",
+    "Synthesize key strategic recommendations",
+    "Compile this analysis into an executive PDF report",
   ],
   creative: [
-    "Enhance descriptive imagery & atmosphere",
-    "Introduce more interpersonal tension",
-    "Make the tone more punchy and concise",
+    "Develop deeper character backstories & motives",
+    "Enhance atmospheric worldbuilding & pacing",
+    "Write an alternative dramatic resolution",
+    "Compile this narrative into a formatted document",
   ],
   general: [
-    "Explain this more simply with an analogy",
-    "Provide 3 actionable next steps",
-    "Summarize in concise bullet points",
+    "Compile this into an executive PDF report",
+    "Break down into actionable implementation steps",
+    "Format key metrics into a comparison table",
+    "Explain technical trade-offs with an analogy",
   ],
 };
 
@@ -111,6 +116,52 @@ const markdownComponents = {
   pre(props) {
     if (!props.children) return null;
     return <div className="code-pre-wrap">{props.children}</div>;
+  },
+  table(props) {
+    return (
+      <div className="chat-table-wrapper">
+        <table className="chat-table">{props.children}</table>
+      </div>
+    );
+  },
+  thead(props) {
+    return <thead className="chat-thead">{props.children}</thead>;
+  },
+  tbody(props) {
+    return <tbody className="chat-tbody">{props.children}</tbody>;
+  },
+  tr(props) {
+    return <tr className="chat-tr">{props.children}</tr>;
+  },
+  th(props) {
+    return <th className="chat-th">{props.children}</th>;
+  },
+  td(props) {
+    return <td className="chat-td">{props.children}</td>;
+  },
+  blockquote(props) {
+    return <blockquote className="chat-blockquote">{props.children}</blockquote>;
+  },
+  h1(props) {
+    return <h1 className="chat-h1">{props.children}</h1>;
+  },
+  h2(props) {
+    return <h2 className="chat-h2">{props.children}</h2>;
+  },
+  h3(props) {
+    return <h3 className="chat-h3">{props.children}</h3>;
+  },
+  ul(props) {
+    return <ul className="chat-ul">{props.children}</ul>;
+  },
+  ol(props) {
+    return <ol className="chat-ol">{props.children}</ol>;
+  },
+  li(props) {
+    return <li className="chat-li">{props.children}</li>;
+  },
+  hr() {
+    return <hr className="chat-hr" />;
   },
 };
 
@@ -864,6 +915,96 @@ export default function App() {
 
   /* ---------- send ---------- */
 
+  const handleExportFromMessage = useCallback(
+    async (msgIndex, format) => {
+      const msg = messages[msgIndex];
+      if (!msg || !msg.content) return;
+
+      try {
+        if (format === "xlsx") {
+          const table = parseMarkdownTable(msg.content);
+          if (table && table.rows.length > 0) {
+            const doc = await buildExcelDocument({
+              filename: "Data_Analysis.xlsx",
+              title: "Orion Data Export",
+              columns: table.columns,
+              rows: table.rows,
+              showTotals: true,
+            });
+            const savedDoc = await invoke("save_generated_document", {
+              filename: doc.filename,
+              dataBase64: doc.base64,
+              fileType: doc.fileType,
+            });
+            setMessages((prev) => {
+              const next = [...prev];
+              next[msgIndex] = {
+                ...next[msgIndex],
+                document: { ...savedDoc, base64: doc.base64 },
+              };
+              return next;
+            });
+          }
+        } else if (format === "pdf") {
+          const docParsed = parseMarkdownDocument(msg.content);
+          const safeSlug =
+            docParsed.title.replace(/[^a-zA-Z0-9_-]/g, "_").replace(/_+/g, "_").slice(0, 32) ||
+            "Executive_Report";
+          const filename = `${safeSlug}.pdf`;
+          const doc = await buildPdfDocument({
+            filename,
+            title: docParsed.title,
+            subtitle: docParsed.subtitle,
+            category: docParsed.category,
+            metrics: docParsed.metrics,
+            sections: docParsed.sections,
+          });
+          const savedDoc = await invoke("save_generated_document", {
+            filename: doc.filename,
+            dataBase64: doc.base64,
+            fileType: doc.fileType,
+          });
+          setMessages((prev) => {
+            const next = [...prev];
+            next[msgIndex] = {
+              ...next[msgIndex],
+              document: { ...savedDoc, base64: doc.base64 },
+            };
+            return next;
+          });
+        } else if (format === "docx") {
+          const docParsed = parseMarkdownDocument(msg.content);
+          const safeSlug =
+            docParsed.title.replace(/[^a-zA-Z0-9_-]/g, "_").replace(/_+/g, "_").slice(0, 32) ||
+            "Technical_Document";
+          const filename = `${safeSlug}.docx`;
+          const doc = await buildWordDocument({
+            filename,
+            title: docParsed.title,
+            subtitle: docParsed.subtitle,
+            sections: docParsed.sections,
+          });
+          const savedDoc = await invoke("save_generated_document", {
+            filename: doc.filename,
+            dataBase64: doc.base64,
+            fileType: doc.fileType,
+          });
+          setMessages((prev) => {
+            const next = [...prev];
+            next[msgIndex] = {
+              ...next[msgIndex],
+              document: { ...savedDoc, base64: doc.base64 },
+            };
+            return next;
+          });
+        }
+      } catch (err) {
+        console.error("Failed to compile document from message:", err);
+      }
+    },
+    [messages],
+  );
+
   const sendMessage = useCallback(
     async (textToSend, isVoice = false) => {
       const text = (textToSend ?? input).trim();
@@ -1064,16 +1205,6 @@ export default function App() {
               <IconLibrary size={13} />
               <span>Library</span>
               {docCount > 0 && <span className="tab-pill">{docCount}</span>}
-            </button>
-            <button
-              type="button"
-              className="sidebar-tab-btn"
-              onClick={() => setShowEmailStudio(true)}
-              title="Sovereign Email Assistant (M7)"
-            >
-              <IconMail size={13} />
-              <span>Email</span>
-              <span className="tab-pill">M7</span>
             </button>
           </div>
         )}
@@ -1432,13 +1563,56 @@ export default function App() {
                               <span>Retry</span>
                             </button>
                           )}
+
+                          {!m.document && !streaming && m.content && (
+                            <>
+                              {m.content.includes("|") && m.content.includes("---") && (
+                                <button
+                                  type="button"
+                                  className="btn-msg-action btn-msg-export"
+                                  onClick={() => handleExportFromMessage(i, "xlsx")}
+                                  title="Export markdown table to Microsoft Excel (.xlsx)"
+                                  aria-label="Export to Excel"
+                                >
+                                  <IconFileSpreadsheet size={12} />
+                                  <span>Excel</span>
+                                </button>
+                              )}
+                              {m.content.length > 100 && (
+                                <>
+                                  <button
+                                    type="button"
+                                    className="btn-msg-action btn-msg-export"
+                                    onClick={() => handleExportFromMessage(i, "pdf")}
+                                    title="Export into formatted Executive PDF (.pdf)"
+                                    aria-label="Export to PDF"
+                                  >
+                                    <IconFilePdf size={12} />
+                                    <span>PDF</span>
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="btn-msg-action btn-msg-export"
+                                    onClick={() => handleExportFromMessage(i, "docx")}
+                                    title="Export into formatted Word Document (.docx)"
+                                    aria-label="Export to Word"
+                                  >
+                                    <IconFileText size={12} />
+                                    <span>Word</span>
+                                  </button>
+                                </>
+                              )}
+                            </>
+                          )}
                         </div>
                       )}
                     </div>
                     <div className="bubble">
                       {m.role === "assistant" ? (
                         <>
-                          <Markdown components={markdownComponents}>{m.content}</Markdown>
+                          <Markdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+                            {m.content}
+                          </Markdown>
                           {streaming && isLastAssistant && <span className="streaming-cursor" />}
                           {m.document && <DocumentCard doc={m.document} />}
                         </>
@@ -1549,8 +1723,14 @@ export default function App() {
               }
             />
             {streaming ? (
-              <button className="btn-stop" onClick={stop} title="Stop">
-                ■
+              <button
+                type="button"
+                className="btn-stop"
+                onClick={stop}
+                title="Stop generation (Esc)"
+                aria-label="Stop generation"
+              >
+                <IconSquare size={12} />
               </button>
             ) : (
               <div className="composer-actions">

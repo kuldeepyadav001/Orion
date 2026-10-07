@@ -1,5 +1,18 @@
 import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import {
+  IconMail,
+  IconShield,
+  IconTrash,
+  IconRotateCw,
+  IconCopy,
+  IconCheck,
+  IconZap,
+  IconExternalLink,
+  IconX,
+  IconLock,
+  IconPencil,
+} from "./Icons";
 
 export default function EmailStudio({ isOpen, onClose }) {
   const [emails, setEmails] = useState([]);
@@ -79,7 +92,7 @@ export default function EmailStudio({ isOpen, onClose }) {
         userName: "Orion User",
       });
       setDraftText(generated);
-      setSelectedEmail((prev) => prev ? { ...prev, draft_reply: generated } : prev);
+      setSelectedEmail((prev) => (prev ? { ...prev, draft_reply: generated } : prev));
       setEmails((prev) =>
         prev.map((e) => (e.id === selectedEmail.id ? { ...e, has_draft: true } : e))
       );
@@ -148,7 +161,9 @@ export default function EmailStudio({ isOpen, onClose }) {
         {/* Top Header */}
         <div className="email-modal-header">
           <div className="email-header-title-wrap">
-            <span className="email-header-icon">✉️</span>
+            <div className="email-header-icon-box">
+              <IconMail size={18} />
+            </div>
             <div>
               <h3>Sovereign Email Assistant</h3>
               <p className="email-header-sub">
@@ -156,8 +171,14 @@ export default function EmailStudio({ isOpen, onClose }) {
               </p>
             </div>
           </div>
-          <button type="button" className="email-close-btn" onClick={onClose}>
-            ✕
+          <button
+            type="button"
+            className="email-close-btn"
+            onClick={onClose}
+            title="Close Email Assistant (Esc)"
+            aria-label="Close"
+          >
+            <IconX size={15} />
           </button>
         </div>
 
@@ -176,37 +197,42 @@ export default function EmailStudio({ isOpen, onClose }) {
               className={`email-filter-btn urgent ${filter === "urgent" ? "active" : ""}`}
               onClick={() => setFilter("urgent")}
             >
-              🔴 Urgent
+              <span className="filter-dot urgent-dot" />
+              <span>Urgent</span>
             </button>
             <button
               type="button"
               className={`email-filter-btn action ${filter === "action" ? "active" : ""}`}
               onClick={() => setFilter("action")}
             >
-              🟡 Action Required
+              <span className="filter-dot action-dot" />
+              <span>Action Required</span>
             </button>
             <button
               type="button"
               className={`email-filter-btn newsletter ${filter === "newsletter" ? "active" : ""}`}
               onClick={() => setFilter("newsletter")}
             >
-              🔵 Newsletter
+              <span className="filter-dot newsletter-dot" />
+              <span>Newsletter</span>
             </button>
             <button
               type="button"
               className={`email-filter-btn spam ${filter === "spam" ? "active" : ""}`}
               onClick={() => setFilter("spam")}
             >
-              🟣 Quarantined / Spam
+              <span className="filter-dot spam-dot" />
+              <span>Quarantined</span>
             </button>
           </div>
           <button
             type="button"
             className="email-refresh-btn"
             onClick={() => loadEmails(filter)}
-            title="Refresh Inbox"
+            title="Sync local inbox"
           >
-            🔄 Sync
+            <IconRotateCw size={13} className={loading ? "spin" : ""} />
+            <span>Sync</span>
           </button>
         </div>
 
@@ -257,7 +283,8 @@ export default function EmailStudio({ isOpen, onClose }) {
                     <span className="email-priority-tag">P{e.priority_score}</span>
                     {e.has_draft && (
                       <span className="email-draft-pill" title="Draft reply ready">
-                        ✏️ Draft ready
+                        <IconPencil size={11} />
+                        <span>Draft ready</span>
                       </span>
                     )}
                   </div>
@@ -272,10 +299,12 @@ export default function EmailStudio({ isOpen, onClose }) {
               <div className="email-detail-scroll">
                 {/* Quarantine / Security Banner */}
                 <div className="email-security-banner">
-                  <span className="security-icon">🛡️</span>
+                  <span className="security-icon">
+                    <IconShield size={16} />
+                  </span>
                   <div className="security-text">
-                    <strong>Untrusted Domain Quarantine Active</strong> • Zero-width characters &
-                    embedded scripts stripped • Strictly non-egress execution
+                    <strong>Untrusted Domain Quarantine Active</strong> • Zero-width characters &amp;
+                    embedded scripts stripped • Non-egress execution
                   </div>
                 </div>
 
@@ -286,11 +315,12 @@ export default function EmailStudio({ isOpen, onClose }) {
                     <div className="email-view-actions">
                       <button
                         type="button"
-                        className="email-action-icon-btn"
+                        className="email-action-icon-btn delete"
                         onClick={handleDelete}
                         title="Delete message"
+                        aria-label="Delete message"
                       >
-                        🗑️
+                        <IconTrash size={14} />
                       </button>
                     </div>
                   </div>
@@ -310,7 +340,10 @@ export default function EmailStudio({ isOpen, onClose }) {
                 {/* Triage Insight Box */}
                 <div className="email-triage-box">
                   <div className="triage-title">
-                    <span>⚡ Orion Sovereign Triage</span>
+                    <span className="triage-title-text">
+                      <IconZap size={14} />
+                      <span>Orion Sovereign Triage</span>
+                    </span>
                     <span className="triage-cat-badge">{selectedEmail.triage_category}</span>
                   </div>
                   {selectedEmail.triage_reason && (
@@ -321,7 +354,10 @@ export default function EmailStudio({ isOpen, onClose }) {
                       <div className="triage-actions-label">Extracted Action Items:</div>
                       <ul>
                         {parsedActionItems.map((act, idx) => (
-                          <li key={idx}>✓ {act}</li>
+                          <li key={idx}>
+                            <IconCheck size={12} className="action-check-icon" />
+                            <span>{act}</span>
+                          </li>
                         ))}
                       </ul>
                     </div>
@@ -338,8 +374,9 @@ export default function EmailStudio({ isOpen, onClose }) {
                 <div className="email-draft-studio">
                   <div className="draft-studio-header">
                     <div className="draft-studio-title">
-                      <span>✍️ Contextual Draft Reply</span>
-                      <span className="rule-badge">Rule R-5: Strictly No Auto-Send</span>
+                      <IconPencil size={14} />
+                      <span>Contextual Draft Reply</span>
+                      <span className="rule-badge">Rule R-5: No Auto-Send</span>
                     </div>
 
                     <div className="draft-tone-selector">
@@ -348,28 +385,28 @@ export default function EmailStudio({ isOpen, onClose }) {
                         className={`tone-btn ${draftTone === "professional" ? "active" : ""}`}
                         onClick={() => setDraftTone("professional")}
                       >
-                        👔 Professional
+                        Professional
                       </button>
                       <button
                         type="button"
                         className={`tone-btn ${draftTone === "direct" ? "active" : ""}`}
                         onClick={() => setDraftTone("direct")}
                       >
-                        ⚡ Direct
+                        Direct
                       </button>
                       <button
                         type="button"
                         className={`tone-btn ${draftTone === "technical" ? "active" : ""}`}
                         onClick={() => setDraftTone("technical")}
                       >
-                        🔧 Technical
+                        Technical
                       </button>
                       <button
                         type="button"
                         className={`tone-btn ${draftTone === "polite" ? "active" : ""}`}
                         onClick={() => setDraftTone("polite")}
                       >
-                        🤝 Polite
+                        Polite
                       </button>
                     </div>
                   </div>
@@ -381,13 +418,14 @@ export default function EmailStudio({ isOpen, onClose }) {
                       onClick={handleGenerateDraft}
                       disabled={drafting}
                     >
-                      {drafting ? "Synthesizing Sovereign Draft…" : "⚡ Generate Sovereign Draft"}
+                      <IconZap size={13} />
+                      <span>{drafting ? "Synthesizing Sovereign Draft…" : "Generate Sovereign Draft"}</span>
                     </button>
                   </div>
 
                   <textarea
                     className="draft-textarea"
-                    rows={8}
+                    rows={7}
                     placeholder="Click 'Generate Sovereign Draft' or compose your response here..."
                     value={draftText}
                     onChange={(e) => setDraftText(e.target.value)}
@@ -395,7 +433,8 @@ export default function EmailStudio({ isOpen, onClose }) {
 
                   <div className="draft-actions-bar">
                     <div className="draft-guard-note">
-                      🔒 Draft is stored locally. You retain 100% control over outbound transmission.
+                      <IconLock size={12} />
+                      <span>Draft is stored locally. You retain 100% control over outbound transmission.</span>
                     </div>
                     <div className="draft-btns">
                       <button
@@ -404,7 +443,17 @@ export default function EmailStudio({ isOpen, onClose }) {
                         onClick={handleCopyDraft}
                         disabled={!draftText}
                       >
-                        {copyFeedback ? "✓ Copied!" : "📋 Copy Draft"}
+                        {copyFeedback ? (
+                          <>
+                            <IconCheck size={13} />
+                            <span>Copied!</span>
+                          </>
+                        ) : (
+                          <>
+                            <IconCopy size={13} />
+                            <span>Copy Draft</span>
+                          </>
+                        )}
                       </button>
                       <button
                         type="button"
@@ -413,7 +462,8 @@ export default function EmailStudio({ isOpen, onClose }) {
                         disabled={!draftText}
                         title="Open system default mail client (mailto:)"
                       >
-                        ✉️ Open in Mail Client
+                        <IconExternalLink size={13} />
+                        <span>Open in Mail Client</span>
                       </button>
                     </div>
                   </div>
@@ -421,7 +471,9 @@ export default function EmailStudio({ isOpen, onClose }) {
               </div>
             ) : (
               <div className="email-pane-unselected">
-                <div className="empty-mail-orb">✉️</div>
+                <div className="empty-mail-box">
+                  <IconMail size={28} />
+                </div>
                 <h3>Select an email to inspect</h3>
                 <p>
                   Inbound messages are isolated in the Untrusted Domain. Orion automatically triages
