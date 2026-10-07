@@ -249,6 +249,17 @@ async fn send_message(
     {
         let db = state.db.lock().await;
         db.add_message(&session_id, "user", &message)?;
+
+        // Auto-title session from first user turn if still named "New chat"
+        if let Ok(Some(new_title)) = db.auto_title_session(&session_id, &message) {
+            let _ = app.emit(
+                "session://titled",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "title": new_title,
+                }),
+            );
+        }
     }
 
     let history = {
@@ -348,6 +359,142 @@ async fn send_message(
 async fn cancel_generation(state: State<'_, AppState>) -> Result<()> {
     state.engine.cancel().await;
     Ok(())
+}
+
+/* ------------------------------------------------------------------ */
+/* sessions & persistent chat                                         */
+/* ------------------------------------------------------------------ */
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SessionDeleteResult {
+    pub active_session_id: String,
+    pub sessions: Vec<db::SessionSummary>,
+    pub messages: Vec<db::StoredMessage>,
+}
+
+/// List all persistent sessions.
+/// Storage-first: only returns metadata so inactive session messages
+/// are not kept in RAM.
+#[tauri::command]
+async fn list_sessions(state: State<'_, AppState>) -> Result<Vec<db::SessionSummary>> {
+    let db = state.db.lock().await;
+    db.list_sessions()
+}
+
+/// Fetch the active session identifier.
+#[tauri::command]
+async fn get_active_session_id(state: State<'_, AppState>) -> Result<String> {
+    Ok(state.session_id.lock().await.clone())
+}
+
+/// Fetch messages for an active session with pagination.
+/// Keeps RAM bounded: defaults to the most recent 50 messages.
+#[tauri::command]
+async fn get_session_messages(
+    session_id: String,
+    limit: Option<usize>,
+    state: State<'_, AppState>,
+) -> Result<Vec<db::StoredMessage>> {
+    let db = state.db.lock().await;
+    let limit = limit.unwrap_or(50);
+    db.recent_messages(&session_id, limit)
+}
+
+/// Create a new conversation session and switch to it.
+#[tauri::command]
+async fn create_new_session(
+    title: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<db::SessionSummary> {
+    let title_str = title.unwrap_or_else(|| "New chat".to_string());
+    let (id, summary) = {
+        let db = state.db.lock().await;
+        let id = db.create_session(&title_str)?;
+        let _ = db.set_setting("last_active_session", &id);
+        let summary = db
+            .get_session(&id)?
+            .ok_or_else(|| OrionError::Db("failed to retrieve created session".to_string()))?;
+        (id, summary)
+    };
+    *state.session_id.lock().await = id;
+    Ok(summary)
+}
+
+/// Switch active session and fetch its messages.
+#[tauri::command]
+async fn switch_session(
+    session_id: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<db::StoredMessage>> {
+    let messages = {
+        let db = state.db.lock().await;
+        let _ = db
+            .get_session(&session_id)?
+            .ok_or_else(|| OrionError::Db(format!("session {session_id} not found")))?;
+        let _ = db.set_setting("last_active_session", &session_id);
+        db.recent_messages(&session_id, 50)?
+    };
+    *state.session_id.lock().await = session_id;
+    Ok(messages)
+}
+
+/// Rename an existing conversation session.
+#[tauri::command]
+async fn rename_session(
+    session_id: String,
+    title: String,
+    state: State<'_, AppState>,
+) -> Result<()> {
+    let db = state.db.lock().await;
+    db.rename_session(&session_id, &title)
+}
+
+/// Delete a session and its associated messages.
+/// If active, automatically switches to the next available session or creates a new one.
+#[tauri::command]
+async fn delete_session(
+    session_id: String,
+    state: State<'_, AppState>,
+) -> Result<SessionDeleteResult> {
+    let mut current_active = state.session_id.lock().await.clone();
+    let (new_active, sessions, messages) = {
+        let db = state.db.lock().await;
+        db.delete_session(&session_id)?;
+
+        let sessions = db.list_sessions()?;
+        if current_active == session_id {
+            if let Some(first) = sessions.first() {
+                current_active = first.id.clone();
+                let _ = db.set_setting("last_active_session", &current_active);
+                let msgs = db.recent_messages(&current_active, 50)?;
+                (current_active, sessions, msgs)
+            } else {
+                let new_id = db.create_session("New chat")?;
+                let _ = db.set_setting("last_active_session", &new_id);
+                let fresh_sessions = db.list_sessions()?;
+                (new_id, fresh_sessions, Vec::new())
+            }
+        } else {
+            let msgs = db.recent_messages(&current_active, 50)?;
+            (current_active, sessions, msgs)
+        }
+    };
+    *state.session_id.lock().await = new_active.clone();
+    Ok(SessionDeleteResult {
+        active_session_id: new_active,
+        sessions,
+        messages,
+    })
+}
+
+/// Clear all message turns in a session while keeping the session entry.
+#[tauri::command]
+async fn clear_session_messages(
+    session_id: String,
+    state: State<'_, AppState>,
+) -> Result<()> {
+    let db = state.db.lock().await;
+    db.clear_session_messages(&session_id)
 }
 
 /// The measured (or simulated) hardware profile.
@@ -1497,7 +1644,33 @@ pub fn run() {
                     std::fs::create_dir_all(&models_dir).ok();
                     let manager = Arc::new(ModelManager::new(models_dir).with_registry_file());
                     let tier = recommendation.tier;
-                    let session_id = database.create_session("New chat")?;
+
+                    // Restore the last active session, or pick the most recent one from SQLite,
+                    // or create a fresh one if no conversations exist yet.
+                    let last_session_id = database.get_setting("last_active_session").ok().flatten();
+                    let session_id = if let Some(last_id) = last_session_id {
+                        if database.get_session(&last_id).ok().flatten().is_some() {
+                            last_id
+                        } else if let Ok(sessions) = database.list_sessions() {
+                            if let Some(first) = sessions.first() {
+                                first.id.clone()
+                            } else {
+                                database.create_session("New chat")?
+                            }
+                        } else {
+                            database.create_session("New chat")?
+                        }
+                    } else if let Ok(sessions) = database.list_sessions() {
+                        if let Some(first) = sessions.first() {
+                            first.id.clone()
+                        } else {
+                            database.create_session("New chat")?
+                        }
+                    } else {
+                        database.create_session("New chat")?
+                    };
+                    let _ = database.set_setting("last_active_session", &session_id);
+
                     Ok((profile, recommendation, manager, tier, session_id))
                 })?;
             let _ = &recommendation;
@@ -1665,6 +1838,14 @@ pub fn run() {
             engine_status,
             send_message,
             cancel_generation,
+            list_sessions,
+            get_active_session_id,
+            get_session_messages,
+            create_new_session,
+            switch_session,
+            rename_session,
+            delete_session,
+            clear_session_messages,
             hardware_profile,
             tier_recommendation,
             list_models,

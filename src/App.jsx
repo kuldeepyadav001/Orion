@@ -10,6 +10,7 @@ import VoiceButton from "./VoiceButton";
 import OnboardingWizard from "./OnboardingWizard";
 import CodeBlock from "./CodeBlock";
 import { LockScreen, LockSettingsModal } from "./LockScreen";
+import { ChatHistoryList } from "./ChatSidebar";
 
 /**
  * Clean markdown, backticks, code blocks, and citations from text before speech synthesis.
@@ -216,6 +217,14 @@ export default function App() {
   const [modelInfo, setModelInfo] = useState(null);
   const [swapping, setSwapping] = useState(null);
 
+  // Permanent Chat History states
+  const [sessions, setSessions] = useState([]);
+  const [activeSessionId, setActiveSessionId] = useState(null);
+  const [activeSessionTitle, setActiveSessionTitle] = useState("New chat");
+  const [sidebarTab, setSidebarTab] = useState("chats"); // "chats" | "library"
+  const [isEditingTitle, setIsEditingTitle] = useState(false);
+  const [editTitleValue, setEditTitleValue] = useState("");
+
   const audioPlayerRef = useRef(null);
   const lastSourceRef = useRef("text");
   const autoSpeakRef = useRef(autoSpeak);
@@ -224,6 +233,136 @@ export default function App() {
   }, [autoSpeak]);
 
   const speakTextRef = useRef(null);
+
+  const refreshSessions = useCallback(async () => {
+    try {
+      const list = await invoke("list_sessions");
+      setSessions(list || []);
+      const activeId = await invoke("get_active_session_id");
+      if (activeId) {
+        setActiveSessionId(activeId);
+        const current = (list || []).find((s) => s.id === activeId);
+        if (current) {
+          setActiveSessionTitle(current.title || "New chat");
+        }
+      }
+    } catch (err) {
+      console.error("Failed to load sessions:", err);
+    }
+  }, []);
+
+  const loadInitialChat = useCallback(async () => {
+    try {
+      const list = await invoke("list_sessions");
+      setSessions(list || []);
+      const activeId = await invoke("get_active_session_id");
+      if (activeId) {
+        setActiveSessionId(activeId);
+        const current = (list || []).find((s) => s.id === activeId);
+        if (current) {
+          setActiveSessionTitle(current.title || "New chat");
+        }
+        // Storage-First: load only the most recent 50 messages from SQLite
+        const storedMsgs = await invoke("get_session_messages", {
+          sessionId: activeId,
+          limit: 50,
+        });
+        if (storedMsgs && storedMsgs.length > 0) {
+          setMessages(
+            storedMsgs.map((m) => ({
+              role: m.role,
+              content: m.content,
+              id: m.id,
+              created_at: m.created_at,
+            }))
+          );
+        }
+      }
+    } catch (err) {
+      console.error("Failed to load initial chat history:", err);
+    }
+  }, []);
+
+  const handleSelectSession = useCallback(
+    async (sessionId) => {
+      if (streaming || sessionId === activeSessionId) return;
+      try {
+        const storedMsgs = await invoke("switch_session", { sessionId });
+        setActiveSessionId(sessionId);
+        const s = sessions.find((x) => x.id === sessionId);
+        if (s) setActiveSessionTitle(s.title || "New chat");
+        setMessages(
+          (storedMsgs || []).map((m) => ({
+            role: m.role,
+            content: m.content,
+            id: m.id,
+            created_at: m.created_at,
+          }))
+        );
+        setCitations([]);
+        setGrounded(null);
+        setInput("");
+        refreshSessions();
+      } catch (err) {
+        console.error("Failed to switch session:", err);
+      }
+    },
+    [streaming, activeSessionId, sessions, refreshSessions]
+  );
+
+  const handleCreateSession = useCallback(async () => {
+    if (streaming) return;
+    try {
+      const newSession = await invoke("create_new_session", { title: "New chat" });
+      setActiveSessionId(newSession.id);
+      setActiveSessionTitle(newSession.title);
+      setMessages([]);
+      setCitations([]);
+      setGrounded(null);
+      setInput("");
+      refreshSessions();
+    } catch (err) {
+      console.error("Failed to create new session:", err);
+    }
+  }, [streaming, refreshSessions]);
+
+  const handleRenameSession = useCallback(
+    async (sessionId, newTitle) => {
+      if (!newTitle || !newTitle.trim()) return;
+      try {
+        await invoke("rename_session", { sessionId, title: newTitle.trim() });
+        setSessions((prev) =>
+          prev.map((s) => (s.id === sessionId ? { ...s, title: newTitle.trim() } : s))
+        );
+        if (sessionId === activeSessionId) {
+          setActiveSessionTitle(newTitle.trim());
+        }
+      } catch (err) {
+        console.error("Failed to rename session:", err);
+      }
+    },
+    [activeSessionId]
+  );
+
+  const handleDeleteSession = useCallback(async (sessionId) => {
+    try {
+      const res = await invoke("delete_session", { sessionId });
+      setSessions(res.sessions || []);
+      setActiveSessionId(res.active_session_id);
+      const current = (res.sessions || []).find((s) => s.id === res.active_session_id);
+      setActiveSessionTitle(current?.title || "New chat");
+      setMessages(
+        (res.messages || []).map((m) => ({
+          role: m.role,
+          content: m.content,
+          id: m.id,
+          created_at: m.created_at,
+        }))
+      );
+    } catch (err) {
+      console.error("Failed to delete session:", err);
+    }
+  }, []);
 
   const refreshModelInfo = useCallback(async () => {
     try {
@@ -311,11 +450,47 @@ export default function App() {
 
     refreshLockStatus();
     refreshModelInfo();
+    loadInitialChat();
 
     const handleOpenDownloader = () => setShowOnboarding(true);
     window.addEventListener("open-resource-downloader", handleOpenDownloader);
     return () => window.removeEventListener("open-resource-downloader", handleOpenDownloader);
-  }, [refreshLockStatus, refreshModelInfo]);
+  }, [refreshLockStatus, refreshModelInfo, loadInitialChat]);
+
+  // Listen for automatic titling from first turn
+  useEffect(() => {
+    let unlistenTitled;
+    listen("session://titled", (e) => {
+      const { session_id, title } = e.payload || {};
+      if (session_id) {
+        setSessions((prev) =>
+          prev.map((s) => (s.id === session_id ? { ...s, title } : s))
+        );
+        if (session_id === activeSessionId) {
+          setActiveSessionTitle(title);
+        }
+      }
+    }).then((un) => {
+      unlistenTitled = un;
+    });
+    return () => unlistenTitled?.();
+  }, [activeSessionId]);
+
+  // Global Keyboard Shortcuts (Ctrl+N for new chat, Ctrl+B for sidebar toggle)
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "n") {
+        e.preventDefault();
+        handleCreateSession();
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "b") {
+        e.preventDefault();
+        setSidebarOpen((v) => !v);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [handleCreateSession]);
 
   useEffect(() => {
     refreshModelInfo();
@@ -512,6 +687,7 @@ export default function App() {
       const fullReply = pending.current;
       pending.current = "";
       setStreaming(false);
+      refreshSessions();
 
       if ((lastSourceRef.current === "voice" || autoSpeakRef.current) && fullReply.trim()) {
         speakTextRef.current?.(fullReply);
@@ -674,15 +850,6 @@ export default function App() {
           ? "err"
           : "warn";
 
-  // Clears the visible thread. History stays in SQLite; this is a fresh view,
-  // not a delete.
-  const newChat = () => {
-    setMessages([]);
-    setCitations([]);
-    setGrounded(null);
-    setInput("");
-  };
-
   // Stable identity. An inline arrow here is recreated on every render, and
   // DropZone's listener effect depends on it: that caused one dropped file to
   // be indexed roughly 150 times. DropZone now also holds it behind a ref, so
@@ -736,20 +903,55 @@ export default function App() {
 
         <button
           className="btn-new"
-          onClick={newChat}
-          title={sidebarOpen ? undefined : "New chat"}
+          onClick={handleCreateSession}
+          title={sidebarOpen ? "New chat (Ctrl+N)" : "New chat"}
         >
           <span className="btn-new-icon">+</span>
           <span className="btn-new-text">New chat</span>
+          {sidebarOpen && <kbd className="btn-new-kbd">Ctrl+N</kbd>}
         </button>
 
-        <div className="side-section">
-          <div className="side-label">
-            Library
-            {docCount > 0 && <span className="count">{docCount}</span>}
+        {sidebarOpen && (
+          <div className="sidebar-tab-switcher">
+            <button
+              type="button"
+              className={`sidebar-tab-btn ${sidebarTab === "chats" ? "active" : ""}`}
+              onClick={() => setSidebarTab("chats")}
+            >
+              💬 Chats {sessions.length > 0 && <span className="tab-pill">{sessions.length}</span>}
+            </button>
+            <button
+              type="button"
+              className={`sidebar-tab-btn ${sidebarTab === "library" ? "active" : ""}`}
+              onClick={() => setSidebarTab("library")}
+            >
+              📚 Library {docCount > 0 && <span className="tab-pill">{docCount}</span>}
+            </button>
           </div>
-          <DocumentList onCountChange={(n) => setLibrary((l) => ({ ...l, documents: n }))} />
-        </div>
+        )}
+
+        {sidebarOpen ? (
+          sidebarTab === "chats" ? (
+            <div className="side-section side-chats-section">
+              <ChatHistoryList
+                sessions={sessions}
+                activeSessionId={activeSessionId}
+                onSelectSession={handleSelectSession}
+                onCreateSession={handleCreateSession}
+                onDeleteSession={handleDeleteSession}
+                onRenameSession={handleRenameSession}
+              />
+            </div>
+          ) : (
+            <div className="side-section">
+              <div className="side-label">
+                Library
+                {docCount > 0 && <span className="count">{docCount}</span>}
+              </div>
+              <DocumentList onCountChange={(n) => setLibrary((l) => ({ ...l, documents: n }))} />
+            </div>
+          )
+        ) : null}
 
         <div className="side-foot">
           {persona && (
@@ -801,6 +1003,80 @@ export default function App() {
 
       <div className="main">
         <header className="chat-top-header">
+          <div className="header-left-group">
+            {!sidebarOpen && (
+              <button
+                type="button"
+                className="btn-toggle-sidebar"
+                onClick={() => setSidebarOpen(true)}
+                title="Open conversations sidebar (Ctrl+B)"
+                aria-label="Toggle sidebar"
+              >
+                💬 Chats
+              </button>
+            )}
+
+            <div className="header-session-info">
+              {isEditingTitle ? (
+                <div className="header-rename-box">
+                  <input
+                    type="text"
+                    className="header-rename-input"
+                    value={editTitleValue}
+                    onChange={(e) => setEditTitleValue(e.target.value)}
+                    onBlur={() => {
+                      handleRenameSession(activeSessionId, editTitleValue);
+                      setIsEditingTitle(false);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        handleRenameSession(activeSessionId, editTitleValue);
+                        setIsEditingTitle(false);
+                      } else if (e.key === "Escape") {
+                        setIsEditingTitle(false);
+                      }
+                    }}
+                    autoFocus
+                    maxLength={60}
+                  />
+                  <button
+                    type="button"
+                    className="header-rename-save-btn"
+                    onClick={() => {
+                      handleRenameSession(activeSessionId, editTitleValue);
+                      setIsEditingTitle(false);
+                    }}
+                  >
+                    ✓
+                  </button>
+                </div>
+              ) : (
+                <div
+                  className="header-title-display"
+                  onClick={() => {
+                    setEditTitleValue(activeSessionTitle);
+                    setIsEditingTitle(true);
+                  }}
+                  title="Click to rename this conversation"
+                >
+                  <span className="header-chat-title">{activeSessionTitle || "New chat"}</span>
+                  <button
+                    type="button"
+                    className="header-title-edit-icon"
+                    title="Rename conversation"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setEditTitleValue(activeSessionTitle);
+                      setIsEditingTitle(true);
+                    }}
+                  >
+                    ✏️
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+
           <div className="active-role-indicator">
             <span className="role-icon">{persona?.icon || "⚡"}</span>
             <div className="role-info">
@@ -827,6 +1103,14 @@ export default function App() {
             </div>
           </div>
           <div className="header-actions">
+            <button
+              type="button"
+              className="btn-quick-new-chat"
+              onClick={handleCreateSession}
+              title="New conversation (Ctrl+N)"
+            >
+              + New Chat
+            </button>
             {!modelInfo?.is_specialized && (persona?.id === "developer" || persona?.id === "researcher") && (
               <button
                 type="button"

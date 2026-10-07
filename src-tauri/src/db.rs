@@ -35,6 +35,19 @@ pub struct StoredMessage {
     pub created_at: DateTime<Utc>,
 }
 
+/// Lightweight session metadata for sidebar display.
+/// Deliberately keeps RAM usage minimal: message contents are left in SQLite
+/// and only fetched on demand when an individual session is activated.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionSummary {
+    pub id: String,
+    pub title: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub message_count: i64,
+    pub snippet: Option<String>,
+}
+
 pub struct Db {
     conn: Connection,
 }
@@ -259,6 +272,185 @@ impl Db {
             .map_err(|e| OrionError::Db(format!("failed to write setting: {e}")))?;
         Ok(())
     }
+
+    /// List all conversation sessions with metadata and latest snippet.
+    /// Storage-first: does NOT load full message history into RAM.
+    pub fn list_sessions(&self) -> Result<Vec<SessionSummary>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT s.id, s.title, s.created_at, s.updated_at,
+                        COUNT(m.id) AS msg_count,
+                        (SELECT content FROM messages WHERE session_id = s.id ORDER BY created_at DESC, rowid DESC LIMIT 1) AS snippet
+                 FROM sessions s
+                 LEFT JOIN messages m ON s.id = m.session_id
+                 GROUP BY s.id
+                 ORDER BY s.updated_at DESC, s.rowid DESC",
+            )
+            .map_err(|e| OrionError::Db(format!("failed to prepare list_sessions: {e}")))?;
+
+        let rows = stmt
+            .query_map([], |r| {
+                let created_ts: String = r.get(2)?;
+                let updated_ts: String = r.get(3)?;
+                let raw_snippet: Option<String> = r.get(5)?;
+                let snippet = raw_snippet.map(|s| {
+                    let clean = s.replace('\n', " ").trim().to_string();
+                    if clean.chars().count() > 80 {
+                        let mut truncated: String = clean.chars().take(80).collect();
+                        truncated.push('…');
+                        truncated
+                    } else {
+                        clean
+                    }
+                });
+
+                Ok(SessionSummary {
+                    id: r.get(0)?,
+                    title: r.get(1)?,
+                    created_at: DateTime::parse_from_rfc3339(&created_ts)
+                        .map(|d| d.with_timezone(&Utc))
+                        .unwrap_or_else(|_| Utc::now()),
+                    updated_at: DateTime::parse_from_rfc3339(&updated_ts)
+                        .map(|d| d.with_timezone(&Utc))
+                        .unwrap_or_else(|_| Utc::now()),
+                    message_count: r.get(4)?,
+                    snippet,
+                })
+            })
+            .map_err(|e| OrionError::Db(format!("failed to query sessions: {e}")))?;
+
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(|e| OrionError::Db(format!("bad session row: {e}")))?);
+        }
+        Ok(out)
+    }
+
+    /// Fetch a single session's summary metadata.
+    pub fn get_session(&self, session_id: &str) -> Result<Option<SessionSummary>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT s.id, s.title, s.created_at, s.updated_at,
+                        COUNT(m.id) AS msg_count,
+                        (SELECT content FROM messages WHERE session_id = s.id ORDER BY created_at DESC, rowid DESC LIMIT 1) AS snippet
+                 FROM sessions s
+                 LEFT JOIN messages m ON s.id = m.session_id
+                 WHERE s.id = ?1
+                 GROUP BY s.id",
+            )
+            .map_err(|e| OrionError::Db(format!("failed to prepare get_session: {e}")))?;
+
+        let mut rows = stmt
+            .query_map(params![session_id], |r| {
+                let created_ts: String = r.get(2)?;
+                let updated_ts: String = r.get(3)?;
+                let raw_snippet: Option<String> = r.get(5)?;
+                let snippet = raw_snippet.map(|s| {
+                    let clean = s.replace('\n', " ").trim().to_string();
+                    if clean.chars().count() > 80 {
+                        let mut truncated: String = clean.chars().take(80).collect();
+                        truncated.push('…');
+                        truncated
+                    } else {
+                        clean
+                    }
+                });
+
+                Ok(SessionSummary {
+                    id: r.get(0)?,
+                    title: r.get(1)?,
+                    created_at: DateTime::parse_from_rfc3339(&created_ts)
+                        .map(|d| d.with_timezone(&Utc))
+                        .unwrap_or_else(|_| Utc::now()),
+                    updated_at: DateTime::parse_from_rfc3339(&updated_ts)
+                        .map(|d| d.with_timezone(&Utc))
+                        .unwrap_or_else(|_| Utc::now()),
+                    message_count: r.get(4)?,
+                    snippet,
+                })
+            })
+            .map_err(|e| OrionError::Db(format!("failed to query session: {e}")))?;
+
+        if let Some(row) = rows.next() {
+            Ok(Some(row.map_err(|e| OrionError::Db(format!("bad session row: {e}")))?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Rename an existing session title.
+    pub fn rename_session(&self, session_id: &str, title: &str) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
+        self.conn
+            .execute(
+                "UPDATE sessions SET title = ?1, updated_at = ?2 WHERE id = ?3",
+                params![title.trim(), now, session_id],
+            )
+            .map_err(|e| OrionError::Db(format!("failed to rename session: {e}")))?;
+        Ok(())
+    }
+
+    /// Permanently delete a session from disk.
+    /// Foreign key cascade automatically removes all associated messages in SQLite.
+    pub fn delete_session(&self, session_id: &str) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM sessions WHERE id = ?1", params![session_id])
+            .map_err(|e| OrionError::Db(format!("failed to delete session: {e}")))?;
+        Ok(())
+    }
+
+    /// Clear all messages in an active session while keeping the session entry itself.
+    pub fn clear_session_messages(&self, session_id: &str) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
+        self.conn
+            .execute("DELETE FROM messages WHERE session_id = ?1", params![session_id])
+            .map_err(|e| OrionError::Db(format!("failed to clear messages: {e}")))?;
+
+        self.conn
+            .execute(
+                "UPDATE sessions SET updated_at = ?1 WHERE id = ?2",
+                params![now, session_id],
+            )
+            .map_err(|e| OrionError::Db(format!("failed to touch session: {e}")))?;
+        Ok(())
+    }
+
+    /// Automatically title a session from its first turn if it still has the default title.
+    pub fn auto_title_session(&self, session_id: &str, first_message: &str) -> Result<Option<String>> {
+        let current_title: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT title FROM sessions WHERE id = ?1",
+                params![session_id],
+                |r| r.get(0),
+            )
+            .ok();
+
+        if let Some(title) = current_title {
+            if title == "New chat" || title.trim().is_empty() {
+                let clean = first_message.trim().replace('\n', " ");
+                let generated_title = if clean.chars().count() > 36 {
+                    let mut truncated: String = clean.chars().take(36).collect();
+                    if let Some(last_space) = truncated.rfind(' ') {
+                        if last_space > 10 {
+                            truncated.truncate(last_space);
+                        }
+                    }
+                    truncated
+                } else {
+                    clean
+                };
+
+                if !generated_title.is_empty() {
+                    self.rename_session(session_id, &generated_title)?;
+                    return Ok(Some(generated_title));
+                }
+            }
+        }
+        Ok(None)
+    }
 }
 
 /// Platform-appropriate data directory, e.g.
@@ -360,5 +552,51 @@ mod tests {
 
         db.set_setting("theme", "light").unwrap();
         assert_eq!(db.get_setting("theme").unwrap(), Some("light".into()));
+    }
+
+    #[test]
+    fn session_lifecycle_and_listing() {
+        let (db, _g) = temp_db();
+        let s1 = db.create_session("First chat").unwrap();
+        let s2 = db.create_session("Second chat").unwrap();
+
+        db.add_message(&s1, "user", "Hello world").unwrap();
+        db.add_message(&s1, "assistant", "Hi there! How can I help?").unwrap();
+
+        let list = db.list_sessions().unwrap();
+        assert_eq!(list.len(), 2);
+        let first = list.iter().find(|s| s.id == s1).unwrap();
+        assert_eq!(first.title, "First chat");
+        assert_eq!(first.message_count, 2);
+        assert!(first.snippet.as_ref().unwrap().contains("Hi there"));
+
+        db.rename_session(&s1, "Renamed Chat").unwrap();
+        let updated = db.get_session(&s1).unwrap().unwrap();
+        assert_eq!(updated.title, "Renamed Chat");
+
+        db.delete_session(&s2).unwrap();
+        let list_after = db.list_sessions().unwrap();
+        assert_eq!(list_after.len(), 1);
+        assert_eq!(list_after[0].id, s1);
+    }
+
+    #[test]
+    fn auto_titling_on_first_message() {
+        let (db, _g) = temp_db();
+        let s = db.create_session("New chat").unwrap();
+
+        let titled = db
+            .auto_title_session(&s, "How do I optimize SQLite queries in Rust?")
+            .unwrap();
+        assert!(titled.is_some());
+        let title = titled.unwrap();
+        assert!(title.starts_with("How do I optimize"));
+
+        let session = db.get_session(&s).unwrap().unwrap();
+        assert_eq!(session.title, title);
+
+        // Subsequent call does not overwrite custom title
+        let second = db.auto_title_session(&s, "Another message").unwrap();
+        assert!(second.is_none());
     }
 }
