@@ -655,3 +655,158 @@ function bufferToBase64(buffer) {
   }
   throw new Error("No base64 encoding function available in environment");
 }
+
+// ----------------------------------------------------------------------------
+// 4. CONVERSATIONAL LLM ARTIFACT PARSER & COMPILER
+// ----------------------------------------------------------------------------
+
+/**
+ * Extracts a structured document artifact emitted by the LLM.
+ * Matches:
+ * ```orion-doc:xlsx { ... } ```
+ * ```orion-doc:docx { ... } ```
+ * ```orion-doc:pdf  { ... } ```
+ * or <orion_document type="...">...</orion_document>
+ */
+export function extractDocBlock(text) {
+  if (!text) return null;
+
+  // Pattern 1: Codeblock with orion-doc:(xlsx|docx|pdf)
+  const codeBlockRegex = /```(?:orion-doc:)?(xlsx|docx|pdf)\s*\n?([\s\S]*?)\n?```/i;
+  const match = text.match(codeBlockRegex);
+  if (match) {
+    try {
+      const type = match[1].toLowerCase();
+      const jsonContent = match[2].trim();
+      const spec = JSON.parse(jsonContent);
+      return {
+        type,
+        spec,
+        rawBlock: match[0],
+      };
+    } catch (e) {
+      console.warn("Failed to parse orion-doc block JSON:", e);
+    }
+  }
+
+  // Pattern 2: XML tag <orion_document type="...">...</orion_document>
+  const xmlRegex = /<orion_document\s+type=["'](xlsx|docx|pdf)["'][^>]*>([\s\S]*?)<\/orion_document>/i;
+  const xmlMatch = text.match(xmlRegex);
+  if (xmlMatch) {
+    try {
+      const type = xmlMatch[1].toLowerCase();
+      const spec = JSON.parse(xmlMatch[2].trim());
+      return {
+        type,
+        spec,
+        rawBlock: xmlMatch[0],
+      };
+    } catch (e) {
+      console.warn("Failed to parse <orion_document> JSON:", e);
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Fallback parser that converts conversational Markdown tables into Excel columns & rows.
+ */
+export function parseMarkdownTable(text) {
+  if (!text) return null;
+  const lines = text.split("\n");
+  let inTable = false;
+  let headers = [];
+  const rows = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (line.startsWith("|") && line.endsWith("|")) {
+      const cells = line
+        .slice(1, -1)
+        .split("|")
+        .map((c) => c.trim());
+
+      // Check if separator row (e.g. |---|---|)
+      if (cells.every((c) => /^:?-+:?$/.test(c))) {
+        inTable = true;
+        continue;
+      }
+
+      if (!inTable) {
+        headers = cells;
+      } else {
+        // Parse numbers vs strings
+        const parsedRow = cells.map((val) => {
+          const num = Number(val.replace(/[$,]/g, ""));
+          return !isNaN(num) && val !== "" ? num : val;
+        });
+        rows.push(parsedRow);
+      }
+    } else if (inTable && rows.length > 0) {
+      break;
+    }
+  }
+
+  if (headers.length > 0 && rows.length > 0) {
+    return {
+      columns: headers.map((h, idx) => ({
+        header: h,
+        key: `col_${idx}`,
+        format: rows.some((r) => typeof r[idx] === "number") ? "number" : undefined,
+      })),
+      rows,
+    };
+  }
+
+  return null;
+}
+
+/**
+ * Fallback parser that converts Markdown headings and paragraphs into Word/PDF sections.
+ */
+export function parseMarkdownSections(text) {
+  if (!text) return [];
+  const lines = text.split("\n");
+  const sections = [];
+  let currentSection = null;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith("# ") || trimmed.startsWith("## ") || trimmed.startsWith("### ")) {
+      if (currentSection) sections.push(currentSection);
+      currentSection = {
+        heading: trimmed.replace(/^#+\s*/, ""),
+        paragraphs: [],
+        bulletPoints: [],
+      };
+    } else if (trimmed.startsWith("- ") || trimmed.startsWith("* ")) {
+      if (!currentSection) {
+        currentSection = { heading: "Overview", paragraphs: [], bulletPoints: [] };
+      }
+      currentSection.bulletPoints.push(trimmed.replace(/^[-*]\s*/, ""));
+    } else if (trimmed.length > 0 && !trimmed.startsWith("|")) {
+      if (!currentSection) {
+        currentSection = { heading: "Overview", paragraphs: [], bulletPoints: [] };
+      }
+      currentSection.paragraphs.push(trimmed);
+    }
+  }
+
+  if (currentSection) sections.push(currentSection);
+  return sections;
+}
+
+/**
+ * Compiles a document from either an explicit spec or conversational fallback.
+ */
+export async function compileDocumentFromSpec(type, spec) {
+  const normType = (type || "pdf").toLowerCase();
+  if (normType === "xlsx" || normType === "excel") {
+    return await buildExcelDocument(spec);
+  } else if (normType === "docx" || normType === "word") {
+    return await buildWordDocument(spec);
+  } else {
+    return await buildPdfDocument(spec);
+  }
+}

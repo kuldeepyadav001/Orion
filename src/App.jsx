@@ -12,9 +12,15 @@ import CodeBlock from "./CodeBlock";
 import { LockScreen, LockSettingsModal } from "./LockScreen";
 import { ChatHistoryList } from "./ChatSidebar";
 import DocumentCard from "./DocumentCard";
-import DocumentModal from "./DocumentModal";
-import EmailStudio from "./EmailStudio";
-import { TEMPLATES } from "./documentGenerator";
+import {
+  extractDocBlock,
+  parseMarkdownTable,
+  parseMarkdownSections,
+  compileDocumentFromSpec,
+  buildExcelDocument,
+  buildWordDocument,
+  buildPdfDocument,
+} from "./documentGenerator";
 
 /**
  * Clean markdown, backticks, code blocks, and citations from text before speech synthesis.
@@ -32,132 +38,6 @@ function cleanForSpeech(text) {
     .trim();
 }
 
-const PERSONA_SUGGESTIONS = {
-  developer: [
-    {
-      icon: "⚡",
-      title: "Refactor for O(n) performance",
-      sub: "Optimize loops & allocations",
-      prompt: "Can you review and refactor this code snippet for optimal O(n) runtime performance and low memory allocations?",
-    },
-    {
-      icon: "🧪",
-      title: "Generate unit tests",
-      sub: "Edge cases & property tests",
-      prompt: "Write comprehensive unit tests covering edge cases, potential panics, and error boundaries for this logic:",
-    },
-    {
-      icon: "🔍",
-      title: "Debug & explain code",
-      sub: "Find race conditions & bugs",
-      prompt: "Explain how this code works under the hood and identify any race conditions, memory leaks, or anti-patterns:",
-    },
-    {
-      icon: "📐",
-      title: "System architecture review",
-      sub: "Domain boundaries & API design",
-      prompt: "Design a clean, modular architecture for a high-throughput microservice handling concurrent requests with low latency.",
-    },
-  ],
-  researcher: [
-    {
-      icon: "📑",
-      title: "Cross-examine documents",
-      sub: (count) => (count > 0 ? `${count} documents indexed` : "Add files to enable"),
-      prompt: "Cross-examine all documents in my library. Summarize the core methodology, conflicting conclusions, and key findings.",
-      requiresDocs: true,
-    },
-    {
-      icon: "🔬",
-      title: "Synthesize empirical data",
-      sub: () => "Extract tables & citations",
-      prompt: "Synthesize the empirical evidence and experimental findings from our research data into a structured comparison table.",
-    },
-    {
-      icon: "💡",
-      title: "Formulate hypothesis",
-      sub: () => "Explore literature gaps",
-      prompt: "Based on current state-of-the-art literature, identify 3 unexplored research gaps and formulate falsifiable hypotheses.",
-    },
-    {
-      icon: "📊",
-      title: "Methodological critique",
-      sub: () => "Variables, power & bias",
-      prompt: "Critique the methodology of this study. Assess sample size validity, potential confounding variables, and threats to internal validity:",
-    },
-  ],
-  creative: [
-    {
-      icon: "🖋",
-      title: "Draft an immersive scene",
-      sub: () => "Sensory detail & tension",
-      prompt: "Draft an atmospheric opening scene set in a rain-swept cyberpunk transit hub, focusing on sensory details and subtext.",
-    },
-    {
-      icon: "💡",
-      title: "Brainstorm 5 concept hooks",
-      sub: () => "Fresh premises & twists",
-      prompt: "Brainstorm 5 original high-concept story premises exploring the psychological impact of sentient local AI assistants.",
-    },
-    {
-      icon: "🎭",
-      title: "Craft dialogue friction",
-      sub: () => "Subtext & authentic voices",
-      prompt: "Write a tense dialogue between a senior flight engineer and an inquisitive safety inspector uncovering a hidden hardware flaw.",
-    },
-    {
-      icon: "✨",
-      title: "Polish prose for rhythm",
-      sub: () => "Cadence, verbs & punchiness",
-      prompt: "Polish the following draft to improve its rhythm, emotional resonance, and word economy without altering the core meaning:",
-    },
-  ],
-  general: [
-    {
-      icon: "▤",
-      title: "Summarise a document",
-      sub: (count) => (count > 0 ? `${count} in your library` : "Add a file to enable"),
-      prompt: "Summarise the most important takeaways and action points from the documents in my library.",
-      requiresDocs: true,
-    },
-    {
-      icon: "✎",
-      title: "Draft professional email",
-      sub: () => "Clear, courteous & concise",
-      prompt: "Draft a concise, professional follow-up email after a project kickoff meeting outlining action items and next steps.",
-    },
-    {
-      icon: "📊",
-      title: "Generate Excel Budget",
-      sub: () => "Formulas, P&L, auto-styles",
-      prompt: "Generate an Excel budget spreadsheet with revenue projections, operational costs, and profit calculations.",
-    },
-    {
-      icon: "📄",
-      title: "Generate Word Proposal",
-      sub: () => "Architecture spec & callouts",
-      prompt: "Generate a Word document architecture proposal for Project Orion sovereign deployment.",
-    },
-    {
-      icon: "📑",
-      title: "Generate PDF Audit Report",
-      sub: () => "Vector PDF & compliance",
-      prompt: "Generate a formal executive PDF audit report on sovereign AI and data privacy compliance.",
-    },
-    {
-      icon: "✦",
-      title: "What can Orion do?",
-      sub: () => "Capabilities & local privacy",
-      prompt: "What can you do? Explain your local offline capabilities, RAG library search, and privacy model.",
-    },
-    {
-      icon: "🧠",
-      title: "Explain a concept",
-      sub: () => "Intuitive analogy & clarity",
-      prompt: "Explain how transformer self-attention mechanisms work using an intuitive, real-world analogy suitable for a general audience.",
-    },
-  ],
-};
 
 const FOLLOWUP_CHIPS = {
   developer: [
@@ -185,6 +65,9 @@ const FOLLOWUP_CHIPS = {
 const markdownComponents = {
   code(props) {
     const { children, className } = props;
+    if (className && className.includes("orion-doc")) {
+      return null;
+    }
     const match = /language-(\w+)/.exec(className || "");
     const isBlock = match || (typeof children === "string" && children.includes("\n"));
     if (isBlock) {
@@ -202,6 +85,7 @@ const markdownComponents = {
     );
   },
   pre(props) {
+    if (!props.children) return null;
     return <div className="code-pre-wrap">{props.children}</div>;
   },
 };
@@ -246,33 +130,169 @@ export default function App() {
   const [sidebarTab, setSidebarTab] = useState("chats"); // "chats" | "library"
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [editTitleValue, setEditTitleValue] = useState("");
-  const [showDocModal, setShowDocModal] = useState(false);
-  const [showEmailStudio, setShowEmailStudio] = useState(false);
-
-  const handleDocumentGenerated = useCallback(
-    (doc) => {
-      const ext = (doc.file_type || doc.filename?.split(".").pop() || "").toUpperCase();
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: "assistant",
-          content: `I've compiled and saved your native **${ext}** document: \`${doc.filename}\`.\n\nIt is compiled and saved locally on your workstation with zero cloud transmission. You can launch it in your default application, view it in your folder, or download a copy below:`,
-          document: doc,
-          persona: persona,
-          modelName: modelInfo?.file_name,
-          isSpecialized: modelInfo?.is_specialized,
-        },
-      ]);
-      if (autoSpeakRef.current) {
-        speakTextRef.current?.(cleanForSpeech(`I've generated and saved your document: ${doc.filename}`));
-      }
-    },
-    [persona, modelInfo],
-  );
+  const [specialistPersona, setSpecialistPersona] = useState({ id: "developer", name: "Developer", icon: "💻" });
 
   const audioPlayerRef = useRef(null);
   const lastSourceRef = useRef("text");
+  const lastUserQueryRef = useRef("");
   const autoSpeakRef = useRef(autoSpeak);
+  useEffect(() => {
+    autoSpeakRef.current = autoSpeak;
+  }, [autoSpeak]);
+
+  useEffect(() => {
+    invoke("list_personas")
+      .then((list) => {
+        const nonGen = list?.find((p) => p.id !== "general");
+        if (nonGen) setSpecialistPersona(nonGen);
+      })
+      .catch(() => {});
+  }, []);
+
+  const handleToggleMode = useCallback(async (targetPersonaId) => {
+    try {
+      await invoke("set_active_persona", { personaId: targetPersonaId });
+      const updated = await invoke("get_active_persona");
+      setPersona(updated);
+    } catch (e) {
+      console.error("Failed to switch mode:", e);
+    }
+  }, []);
+
+  const processDocumentOutput = useCallback(async (rawReply, lastUserQuery) => {
+    if (!rawReply) return;
+
+    // 1. Explicit orion-doc block emitted by LLM
+    const extracted = extractDocBlock(rawReply);
+    if (extracted) {
+      try {
+        const doc = await compileDocumentFromSpec(extracted.type, extracted.spec);
+        const savedDoc = await invoke("save_generated_document", {
+          filename: doc.filename,
+          dataBase64: doc.base64,
+          fileType: doc.fileType,
+        });
+
+        const cleanedText = rawReply.replace(extracted.rawBlock, "").trim();
+
+        setMessages((prev) => {
+          const next = [...prev];
+          const last = next[next.length - 1];
+          if (last && last.role === "assistant") {
+            last.content = cleanedText || `I've prepared your document: **${doc.filename}**.`;
+            last.document = {
+              ...savedDoc,
+              base64: doc.base64,
+            };
+          }
+          return next;
+        });
+        return;
+      } catch (err) {
+        console.error("Failed to compile orion-doc block:", err);
+      }
+    }
+
+    // 2. Conversational Intent fallback: User asked for Excel / Word / PDF
+    const query = (lastUserQuery || "").toLowerCase();
+    const isExcelReq =
+      query.includes("excel") ||
+      query.includes("spreadsheet") ||
+      query.includes(".xlsx") ||
+      query.includes("sheet");
+    const isWordReq =
+      query.includes("word doc") ||
+      query.includes(".docx") ||
+      query.includes("word document") ||
+      query.includes("proposal");
+    const isPdfReq =
+      query.includes("pdf") ||
+      query.includes("pdf report") ||
+      query.includes("export pdf");
+
+    if (isExcelReq || isWordReq || isPdfReq) {
+      try {
+        if (isExcelReq) {
+          const table = parseMarkdownTable(rawReply);
+          if (table && table.rows.length > 0) {
+            const doc = await buildExcelDocument({
+              filename: "Orion_Spreadsheet.xlsx",
+              title: "Orion Spreadsheet Export",
+              columns: table.columns,
+              rows: table.rows,
+              showTotals: true,
+            });
+            const savedDoc = await invoke("save_generated_document", {
+              filename: doc.filename,
+              dataBase64: doc.base64,
+              fileType: doc.fileType,
+            });
+            setMessages((prev) => {
+              const next = [...prev];
+              const last = next[next.length - 1];
+              if (last && last.role === "assistant") {
+                last.document = { ...savedDoc, base64: doc.base64 };
+              }
+              return next;
+            });
+          }
+        } else if (isWordReq) {
+          const sections = parseMarkdownSections(rawReply);
+          if (sections.length > 0) {
+            const doc = await buildWordDocument({
+              filename: "Orion_Document.docx",
+              title: sections[0]?.heading || "Orion Document",
+              sections,
+            });
+            const savedDoc = await invoke("save_generated_document", {
+              filename: doc.filename,
+              dataBase64: doc.base64,
+              fileType: doc.fileType,
+            });
+            setMessages((prev) => {
+              const next = [...prev];
+              const last = next[next.length - 1];
+              if (last && last.role === "assistant") {
+                last.document = { ...savedDoc, base64: doc.base64 };
+              }
+              return next;
+            });
+          }
+        } else if (isPdfReq) {
+          const sections = parseMarkdownSections(rawReply);
+          const table = parseMarkdownTable(rawReply);
+          if (table && sections.length > 0) {
+            sections[0].table = {
+              headers: table.columns.map((c) => c.header),
+              rows: table.rows,
+            };
+          }
+          if (sections.length > 0) {
+            const doc = await buildPdfDocument({
+              filename: "Orion_Report.pdf",
+              title: sections[0]?.heading || "Orion Report",
+              sections,
+            });
+            const savedDoc = await invoke("save_generated_document", {
+              filename: doc.filename,
+              dataBase64: doc.base64,
+              fileType: doc.fileType,
+            });
+            setMessages((prev) => {
+              const next = [...prev];
+              const last = next[next.length - 1];
+              if (last && last.role === "assistant") {
+                last.document = { ...savedDoc, base64: doc.base64 };
+              }
+              return next;
+            });
+          }
+        }
+      } catch (e) {
+        console.warn("Conversational document generation fallback error:", e);
+      }
+    }
+  }, []);
   useEffect(() => {
     autoSpeakRef.current = autoSpeak;
   }, [autoSpeak]);
@@ -728,14 +748,18 @@ export default function App() {
       });
     });
 
-    const unlistenDone = listen("chat://done", () => {
+    const unlistenDone = listen("chat://done", async () => {
       const fullReply = pending.current;
       pending.current = "";
       setStreaming(false);
       refreshSessions();
 
+      if (fullReply) {
+        await processDocumentOutput(fullReply, lastUserQueryRef.current);
+      }
+
       if ((lastSourceRef.current === "voice" || autoSpeakRef.current) && fullReply.trim()) {
-        speakTextRef.current?.(fullReply);
+        speakTextRef.current?.(cleanForSpeech(fullReply));
       }
     });
 
@@ -786,6 +810,7 @@ export default function App() {
 
       stopSpeaking();
       lastSourceRef.current = isVoice ? "voice" : "text";
+      lastUserQueryRef.current = text;
       setInput("");
       pending.current = "";
       setMessages((prev) => [
@@ -803,151 +828,6 @@ export default function App() {
       setGrounded(null);
       setStreaming(true);
 
-      // Check if user specifically requests document generation
-      const lower = text.toLowerCase();
-      const isDocGenerationRequest =
-        (lower.includes("excel") ||
-          lower.includes("spreadsheet") ||
-          lower.includes(".xlsx") ||
-          lower.includes("word document") ||
-          lower.includes(".docx") ||
-          lower.includes("word proposal") ||
-          lower.includes("pdf report") ||
-          lower.includes(".pdf") ||
-          lower.includes("audit report")) &&
-        (lower.includes("generate") ||
-          lower.includes("create") ||
-          lower.includes("export") ||
-          lower.includes("build") ||
-          lower.includes("make"));
-
-      if (isDocGenerationRequest) {
-        try {
-          let docResult;
-          let summaryMsg = "";
-
-          if (
-            lower.includes("excel") ||
-            lower.includes("spreadsheet") ||
-            lower.includes(".xlsx") ||
-            lower.includes("budget")
-          ) {
-            docResult = await TEMPLATES.budget_tracker.build();
-            summaryMsg = `I have compiled and saved your native Microsoft Excel spreadsheet: **\`${docResult.filename}\`**.\n\n### Document Summary\n- **Type**: Microsoft Excel (.xlsx OOXML)\n- **Features**: 12-Month Financial Model, Dynamic \`=SUM()\` and \`=AVERAGE()\` Formulas, Formatted Currency Cells, Auto-Fitted Columns, Orion Styling.\n- **Storage**: Scoped local storage with Capability Broker Tier 1 audit logging.`;
-          } else if (
-            lower.includes("word") ||
-            lower.includes("docx") ||
-            lower.includes("proposal") ||
-            lower.includes("specification")
-          ) {
-            docResult = await TEMPLATES.project_proposal.build();
-            summaryMsg = `I have compiled and saved your native Microsoft Word document: **\`${docResult.filename}\`**.\n\n### Document Summary\n- **Type**: Microsoft Word (.docx OOXML)\n- **Features**: Formal System Architecture Specification, Styled Headings, Executive Callout Highlight, Comparison Tables, Air-Gapped Security Verification.\n- **Storage**: Scoped local storage with Capability Broker Tier 1 audit logging.`;
-          } else {
-            docResult = await TEMPLATES.executive_report.build();
-            summaryMsg = `I have compiled and saved your native Adobe PDF document: **\`${docResult.filename}\`**.\n\n### Document Summary\n- **Type**: Adobe PDF (.pdf Vector)\n- **Features**: Executive Sovereign AI Audit Report, Metric Data Table, Page Numbering Footers, Offline Attestation.\n- **Storage**: Scoped local storage with Capability Broker Tier 1 audit logging.`;
-          }
-
-          const savedDoc = await invoke("save_generated_document", {
-            filename: docResult.filename,
-            dataBase64: docResult.base64,
-            fileType: docResult.fileType,
-          });
-
-          const fullDoc = {
-            ...savedDoc,
-            base64: docResult.base64,
-          };
-
-          setMessages((prev) => {
-            const next = [...prev];
-            next[next.length - 1] = {
-              role: "assistant",
-              content: summaryMsg,
-              document: fullDoc,
-              persona: persona,
-              modelName: modelInfo?.file_name,
-              isSpecialized: modelInfo?.is_specialized,
-            };
-            return next;
-          });
-          setStreaming(false);
-
-          if (autoSpeakRef.current) {
-            speakTextRef.current?.(
-              cleanForSpeech(`I've generated and saved your document: ${docResult.filename}`),
-            );
-          }
-          return;
-        } catch (err) {
-          console.error("Document generation error:", err);
-          // Fall back to standard LLM chat if templating fails
-        }
-      }
-
-      // Check if user requests email triage / inbox inspection
-      if (
-        (lower.includes("inbox") ||
-          lower.includes("email") ||
-          lower.includes("emails") ||
-          lower.includes("mail")) &&
-        (lower.includes("check") ||
-          lower.includes("triage") ||
-          lower.includes("open") ||
-          lower.includes("read") ||
-          lower.includes("show") ||
-          lower.includes("urgent"))
-      ) {
-        try {
-          const list = await invoke("list_inbox_emails", { filter: null });
-          const urgentCount = list.filter((e) => e.triage_category === "Urgent").length;
-          const actionCount = list.filter((e) => e.triage_category === "Action Required").length;
-          const unreadCount = list.filter((e) => !e.is_read).length;
-
-          let emailListSummary =
-            `### ✉️ Sovereign Email Assistant (M7 Triage)\n\n` +
-            `You have **${list.length} messages** in your local inbox (${unreadCount} unread).\n` +
-            `- 🔴 **${urgentCount} Urgent** requiring immediate attention\n` +
-            `- 🟡 **${actionCount} Action Required** pending review/proposal\n\n` +
-            `**Rule R-5 Active:** Strictly no auto-send. Opening Sovereign Email Studio for review:\n\n` +
-            `#### Priority Inbox Overview:\n`;
-
-          list.slice(0, 4).forEach((e) => {
-            const badge =
-              e.triage_category === "Urgent"
-                ? "🔴 Urgent"
-                : e.triage_category === "Action Required"
-                  ? "🟡 Action"
-                  : "🔵 Info";
-            emailListSummary += `- **${badge}** \`P${e.priority_score}\` · **${e.sender_name}**: *${e.subject}*\n`;
-          });
-
-          setMessages((prev) => {
-            const next = [...prev];
-            next[next.length - 1] = {
-              role: "assistant",
-              content: emailListSummary,
-              persona: persona,
-              modelName: modelInfo?.file_name,
-              isSpecialized: modelInfo?.is_specialized,
-            };
-            return next;
-          });
-          setStreaming(false);
-          setShowEmailStudio(true);
-
-          if (autoSpeakRef.current) {
-            speakTextRef.current?.(
-              cleanForSpeech(
-                `You have ${urgentCount} urgent and ${actionCount} action items in your sovereign inbox.`,
-              ),
-            );
-          }
-          return;
-        } catch (err) {
-          console.error("Inbox triage error:", err);
-        }
-      }
-
       try {
         await invoke("send_message", { message: text });
       } catch (e) {
@@ -964,7 +844,7 @@ export default function App() {
         });
       }
     },
-    [input, streaming, stopSpeaking],
+    [input, streaming, stopSpeaking, persona, modelInfo],
   );
 
   const send = useCallback(() => sendMessage(input, false), [sendMessage, input]);
@@ -1267,31 +1147,26 @@ export default function App() {
             </div>
           </div>
 
-          <div className="active-role-indicator">
-            <span className="role-icon">{persona?.icon || "⚡"}</span>
-            <div className="role-info">
-              <span className="role-title">
-                {persona?.name || "General"} Mode
-                {modelInfo?.is_specialized ? (
-                  <span className="specialized-pill" title="Dedicated fine-tuned weights file active">
-                    Dedicated {persona?.name} Engine
-                  </span>
-                ) : (
-                  <span className="fallback-pill" title="Dedicated weights not downloaded yet. Using prompt-conditioned general model.">
-                    Prompt-Conditioned General Model
-                  </span>
-                )}
-              </span>
-              <span className="role-subtext">
-                {modelInfo?.file_name
-                  ? `Engine: ${modelInfo.file_name.replace(/\.gguf$/i, "")}`
-                  : (persona?.tagline || "Concise intelligence")}
-                {!modelInfo?.is_specialized && (persona?.id === "developer" || persona?.id === "researcher") && (
-                  <span className="missing-coder-notice"> · Dedicated {persona?.name} model missing from disk</span>
-                )}
-              </span>
-            </div>
+          {/* Clean 2-Mode Segmented Control */}
+          <div className="mode-segmented-control" role="group" aria-label="Engine Mode">
+            <button
+              type="button"
+              className={`mode-seg-btn ${persona?.id === "general" ? "active" : ""}`}
+              onClick={() => handleToggleMode("general")}
+              title="General Assistant model"
+            >
+              ⚡ General
+            </button>
+            <button
+              type="button"
+              className={`mode-seg-btn ${persona?.id !== "general" ? "active" : ""}`}
+              onClick={() => handleToggleMode(specialistPersona?.id || "developer")}
+              title={`Specialist: ${specialistPersona?.name || "Developer"}`}
+            >
+              {specialistPersona?.icon || "💻"} {specialistPersona?.name || "Developer"}
+            </button>
           </div>
+
           <div className="header-actions">
             <button
               type="button"
@@ -1303,37 +1178,12 @@ export default function App() {
             </button>
             <button
               type="button"
-              className="btn-doc-header"
-              onClick={() => setShowDocModal(true)}
-              title="Generate native Excel, Word, or PDF document"
-            >
-              📄 Documents
-            </button>
-            <button
-              type="button"
-              className="btn-email-header"
-              onClick={() => setShowEmailStudio(true)}
-              title="Sovereign Email Assistant (M7: Read, Triage, Draft)"
-            >
-              ✉️ Mail
-            </button>
-            {!modelInfo?.is_specialized && (persona?.id === "developer" || persona?.id === "researcher") && (
-              <button
-                type="button"
-                className="btn-download-special"
-                onClick={() => setShowOnboarding(true)}
-                title={`Download dedicated ${persona?.name} weights`}
-              >
-                📥 Download {persona?.name} Model
-              </button>
-            )}
-            <button
-              type="button"
-              className="btn-switch-role"
+              className="btn-header-settings"
               onClick={() => setShowSystem(true)}
-              title="Switch workload persona"
+              title="System & Hardware Settings"
+              aria-label="Settings"
             >
-              Role Settings
+              ⚙️
             </button>
           </div>
         </header>
@@ -1341,34 +1191,62 @@ export default function App() {
         <main className="chat" ref={chatRef}>
           {messages.length === 0 ? (
             <div className="hero">
-              <div className="orb" aria-hidden="true">
-                <div className="orb-ring" />
-                <div className="orb-ring slow" />
-                <div className="orb-logo">
-                  <Logo size={54} />
-                </div>
+              <div className="hero-brand-mark">
+                <Logo size={46} />
               </div>
-              <h1>How can I help?</h1>
+              <h1>How can I help you?</h1>
               <p className="hero-sub">
-                Everything runs on this machine. Nothing leaves it.
+                100% offline • Generates Excel, Word &amp; PDF • Single-resident RAM
               </p>
 
               <div className="suggestions">
-                {(PERSONA_SUGGESTIONS[persona?.id] || PERSONA_SUGGESTIONS.general).map((sg, idx) => (
-                  <button
-                    key={idx}
-                    className="suggestion"
-                    onClick={() => setInput(sg.prompt)}
-                    disabled={sg.requiresDocs && docCount === 0}
-                    title={sg.prompt}
-                  >
-                    <span className="sg-icon">{sg.icon}</span>
-                    <span className="sg-title">{sg.title}</span>
-                    <span className="sg-sub">
-                      {typeof sg.sub === "function" ? sg.sub(docCount) : sg.sub}
-                    </span>
-                  </button>
-                ))}
+                <button
+                  type="button"
+                  className="suggestion"
+                  onClick={() => setInput("Create an annual budget forecast spreadsheet with revenue projections, operational costs, and profit calculations in Excel (.xlsx).")}
+                >
+                  <span className="sg-icon">📊</span>
+                  <div className="sg-text">
+                    <span className="sg-title">Budget Model in Excel</span>
+                    <span className="sg-sub">Dynamic formulas, P&amp;L, auto-styles</span>
+                  </div>
+                </button>
+
+                <button
+                  type="button"
+                  className="suggestion"
+                  onClick={() => setInput("Draft a comprehensive project architecture proposal in a Word document (.docx) with executive summary and comparison tables.")}
+                >
+                  <span className="sg-icon">📄</span>
+                  <div className="sg-text">
+                    <span className="sg-title">Architecture Spec in Word</span>
+                    <span className="sg-sub">Formatted headings, tables &amp; callouts</span>
+                  </div>
+                </button>
+
+                <button
+                  type="button"
+                  className="suggestion"
+                  onClick={() => setInput("Generate an executive compliance audit report in PDF (.pdf) evaluating zero-egress data residency.")}
+                >
+                  <span className="sg-icon">📑</span>
+                  <div className="sg-text">
+                    <span className="sg-title">Compliance Audit in PDF</span>
+                    <span className="sg-sub">Vector styling, metrics &amp; sign-off</span>
+                  </div>
+                </button>
+
+                <button
+                  type="button"
+                  className="suggestion"
+                  onClick={() => setInput("Review and refactor this code snippet for optimal O(n) runtime performance and low memory allocations:")}
+                >
+                  <span className="sg-icon">💻</span>
+                  <div className="sg-text">
+                    <span className="sg-title">Refactor Code Performance</span>
+                    <span className="sg-sub">Memory safety &amp; O(n) efficiency</span>
+                  </div>
+                </button>
               </div>
             </div>
           ) : (
@@ -1384,25 +1262,9 @@ export default function App() {
                       ) : (
                         <div className="msg-orion-meta">
                           <span className="orion-brand-name">Orion</span>
-                          {m.isSpecialized ? (
-                            <span className="persona-chip-tag specialized" title="Dedicated fine-tuned domain weights used for this response">
-                              {m.persona?.icon || "💻"} {m.persona?.name || "Specialist"} · Dedicated Engine
-                            </span>
-                          ) : (
-                            <span className="persona-chip-tag general" title="General model used with prompt conditioning">
-                              ⚡ General Model {m.persona?.id !== "general" ? `(${m.persona?.name || "Developer"} Prompt)` : ""}
-                            </span>
-                          )}
-                          {m.modelName && (
-                            <span
-                              className={`model-source-tag ${m.isSpecialized ? "specialized" : "prompt-conditioned"}`}
-                              title={
-                                m.isSpecialized
-                                  ? "Generated using dedicated fine-tuned model weights"
-                                  : "Generated using prompt conditioning on the active base model"
-                              }
-                            >
-                              {m.modelName.replace(/\.gguf$/i, "")}
+                          {m.isSpecialized && (
+                            <span className="msg-specialist-indicator" title="Specialist Model Active">
+                              {m.persona?.icon || "💻"} {m.persona?.name || "Specialist"}
                             </span>
                           )}
                         </div>
@@ -1541,15 +1403,6 @@ export default function App() {
         )}
 
         <footer className="composer">
-          <button
-            type="button"
-            className="btn-open-doc-studio"
-            onClick={() => setShowDocModal(true)}
-            title="Generate native Excel, Word, or PDF document"
-            aria-label="Generate native document"
-          >
-            📄
-          </button>
           <VoiceButton
             onTranscript={onTranscript}
             speaking={speaking}
@@ -1570,7 +1423,7 @@ export default function App() {
                     ? "Loading the model…"
                     : engine.state === "starting"
                       ? "Starting the engine…"
-                      : "Ask anything…"
+                      : "Ask anything, or ask Orion to generate an Excel, Word, or PDF document…"
               }
             />
             {streaming ? (
@@ -1640,21 +1493,6 @@ export default function App() {
           lockStatus={lockStatus}
           onClose={() => setShowLockSettings(false)}
           onStatusChanged={refreshLockStatus}
-        />
-      )}
-
-      {showDocModal && (
-        <DocumentModal
-          isOpen={showDocModal}
-          onClose={() => setShowDocModal(false)}
-          onDocumentGenerated={handleDocumentGenerated}
-        />
-      )}
-
-      {showEmailStudio && (
-        <EmailStudio
-          isOpen={showEmailStudio}
-          onClose={() => setShowEmailStudio(false)}
         />
       )}
     </div>

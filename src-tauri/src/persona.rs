@@ -19,6 +19,62 @@ use crate::error::{OrionError, Result};
 pub const SETTING_KEY_PERSONA: &str = "active_persona";
 pub const SETTING_KEY_ONBOARDING: &str = "onboarding_completed";
 
+pub const DOCUMENT_TOOL_DIRECTIVE: &str = r#"Document Generation Engine:
+You can generate real Microsoft Excel (.xlsx), Word (.docx), and Adobe PDF (.pdf) files.
+When the user asks you to create, generate, or export an Excel sheet, Word doc, or PDF report based on your discussion:
+1. Provide a clear summary in your response explaining what was prepared.
+2. At the end of your response, output exactly one structured block:
+
+For Excel (.xlsx):
+```orion-doc:xlsx
+{
+  "filename": "filename.xlsx",
+  "title": "Sheet Title",
+  "sheetName": "Data",
+  "columns": [
+    {"header": "Item", "key": "item"},
+    {"header": "Amount", "key": "amount", "format": "currency", "total": "sum"}
+  ],
+  "rows": [
+    ["Item A", 1000]
+  ],
+  "showTotals": true
+}
+```
+
+For Word (.docx):
+```orion-doc:docx
+{
+  "filename": "document.docx",
+  "title": "Document Title",
+  "subtitle": "Subtitle",
+  "sections": [
+    {
+      "heading": "1. Section Name",
+      "paragraphs": ["Text..."],
+      "callout": "Key note"
+    }
+  ]
+}
+```
+
+For PDF (.pdf):
+```orion-doc:pdf
+{
+  "filename": "report.pdf",
+  "title": "Report Title",
+  "subtitle": "Subtitle",
+  "sections": [
+    {
+      "heading": "1. Executive Summary",
+      "paragraphs": ["Text..."],
+      "bulletPoints": ["Point 1", "Point 2"]
+    }
+  ]
+}
+```
+Orion will compile this into a genuine file on the user's disk with buttons to open and download."#;
+
 /// Enumeration of all available specialized workload personas.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -132,9 +188,9 @@ impl PersonaKind {
         }
     }
 
-    /// Integrate the persona directive into the active system prompt.
+    /// Integrate the persona directive and document tool capabilities into the active system prompt.
     pub fn enhance_prompt(&self, base_prompt: &str) -> String {
-        format!("{}\n\n{}", base_prompt, self.system_directive())
+        format!("{}\n\n{}\n\n{}", base_prompt, self.system_directive(), DOCUMENT_TOOL_DIRECTIVE)
     }
 
     pub fn info(&self) -> PersonaInfo {
