@@ -12,9 +12,11 @@ import CodeBlock from "./CodeBlock";
 import { LockScreen, LockSettingsModal } from "./LockScreen";
 import { ChatHistoryList } from "./ChatSidebar";
 import DocumentCard from "./DocumentCard";
+import EmailStudio from "./EmailStudio";
 import {
   IconMessageSquare,
   IconLibrary,
+  IconMail,
   IconPlus,
   IconPencil,
   IconFileSpreadsheet,
@@ -35,6 +37,7 @@ import {
 } from "./Icons";
 import {
   extractDocBlock,
+  enrichDocumentSpec,
   parseMarkdownTable,
   parseMarkdownSections,
   compileDocumentFromSpec,
@@ -152,6 +155,7 @@ export default function App() {
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [editTitleValue, setEditTitleValue] = useState("");
   const [specialistPersona, setSpecialistPersona] = useState({ id: "developer", name: "Developer", icon: "💻" });
+  const [showEmailStudio, setShowEmailStudio] = useState(false);
 
   const audioPlayerRef = useRef(null);
   const lastSourceRef = useRef("text");
@@ -162,10 +166,20 @@ export default function App() {
   }, [autoSpeak]);
 
   useEffect(() => {
+    const savedSpec = localStorage.getItem("orion_specialist_persona");
+    if (savedSpec) {
+      try {
+        setSpecialistPersona(JSON.parse(savedSpec));
+      } catch {
+        /* ignore parse err */
+      }
+    }
     invoke("list_personas")
       .then((list) => {
-        const nonGen = list?.find((p) => p.id !== "general");
-        if (nonGen) setSpecialistPersona(nonGen);
+        if (!savedSpec) {
+          const nonGen = list?.find((p) => p.id !== "general");
+          if (nonGen) setSpecialistPersona(nonGen);
+        }
       })
       .catch(() => {});
   }, []);
@@ -187,7 +201,12 @@ export default function App() {
     const extracted = extractDocBlock(rawReply);
     if (extracted) {
       try {
-        const doc = await compileDocumentFromSpec(extracted.type, extracted.spec);
+        // Automatically enrich spec with full conversational context to ensure zero omitted content
+        const enrichedSpec = (extracted.type === "pdf" || extracted.type === "docx")
+          ? enrichDocumentSpec(extracted.spec, rawReply)
+          : extracted.spec;
+
+        const doc = await compileDocumentFromSpec(extracted.type, enrichedSpec);
         const savedDoc = await invoke("save_generated_document", {
           filename: doc.filename,
           dataBase64: doc.base64,
@@ -214,31 +233,45 @@ export default function App() {
       }
     }
 
-    // 2. Conversational Intent fallback: User asked for Excel / Word / PDF
+    // 2. Conversational Intent fallback: User asked for Excel / Word / PDF or LLM generated structured content
     const query = (lastUserQuery || "").toLowerCase();
+    const replyLower = rawReply.toLowerCase();
     const isExcelReq =
       query.includes("excel") ||
       query.includes("spreadsheet") ||
       query.includes(".xlsx") ||
-      query.includes("sheet");
+      query.includes("sheet") ||
+      replyLower.includes(".xlsx");
     const isWordReq =
       query.includes("word doc") ||
       query.includes(".docx") ||
       query.includes("word document") ||
-      query.includes("proposal");
+      query.includes("proposal") ||
+      replyLower.includes(".docx");
     const isPdfReq =
       query.includes("pdf") ||
       query.includes("pdf report") ||
-      query.includes("export pdf");
+      query.includes("export pdf") ||
+      query.includes("generate pdf") ||
+      query.includes("create pdf") ||
+      replyLower.includes(".pdf") ||
+      replyLower.includes("pdf report");
 
     if (isExcelReq || isWordReq || isPdfReq) {
       try {
         if (isExcelReq) {
           const table = parseMarkdownTable(rawReply);
           if (table && table.rows.length > 0) {
+            const rawTitle = lastUserQuery
+              ? lastUserQuery.replace(/^(?:please\s+)?(?:generate|create|write|draft|export)\s+(?:a|an)?\s*(?:excel\s+)?(?:spreadsheet\s+on\s+|model\s+on\s+)?/i, "").slice(0, 45).trim()
+              : "Orion Data Export";
+            const cleanTitle = rawTitle.charAt(0).toUpperCase() + rawTitle.slice(1);
+            const fileSlug = cleanTitle.replace(/[^a-zA-Z0-9_-]/g, "_").replace(/_+/g, "_").slice(0, 32);
+            const filename = `${fileSlug || "Spreadsheet"}.xlsx`;
+
             const doc = await buildExcelDocument({
-              filename: "Orion_Spreadsheet.xlsx",
-              title: "Orion Spreadsheet Export",
+              filename,
+              title: cleanTitle,
               columns: table.columns,
               rows: table.rows,
               showTotals: true,
@@ -260,9 +293,16 @@ export default function App() {
         } else if (isWordReq) {
           const sections = parseMarkdownSections(rawReply);
           if (sections.length > 0) {
+            const title = sections[0]?.heading && sections[0].heading !== "Overview"
+              ? sections[0].heading
+              : "Orion Technical Document";
+            const fileSlug = title.replace(/[^a-zA-Z0-9_-]/g, "_").replace(/_+/g, "_").slice(0, 32);
+            const filename = `${fileSlug || "Document"}.docx`;
+
             const doc = await buildWordDocument({
-              filename: "Orion_Document.docx",
-              title: sections[0]?.heading || "Orion Document",
+              filename,
+              title,
+              subtitle: `Generated by Orion Sovereign Engine • ${new Date().toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}`,
               sections,
             });
             const savedDoc = await invoke("save_generated_document", {
@@ -281,17 +321,20 @@ export default function App() {
           }
         } else if (isPdfReq) {
           const sections = parseMarkdownSections(rawReply);
-          const table = parseMarkdownTable(rawReply);
-          if (table && sections.length > 0) {
-            sections[0].table = {
-              headers: table.columns.map((c) => c.header),
-              rows: table.rows,
-            };
-          }
           if (sections.length > 0) {
+            const rawTitle = sections[0]?.heading && sections[0].heading !== "Overview"
+              ? sections[0].heading
+              : lastUserQuery
+                ? lastUserQuery.replace(/^(?:please\s+)?(?:generate|create|write|draft|export)\s+(?:a|an)?\s*(?:pdf\s+)?(?:report\s+on\s+|document\s+on\s+)?/i, "").slice(0, 45).trim()
+                : "Orion Executive Report";
+            const cleanTitle = rawTitle.charAt(0).toUpperCase() + rawTitle.slice(1);
+            const fileSlug = cleanTitle.replace(/[^a-zA-Z0-9_-]/g, "_").replace(/_+/g, "_").slice(0, 32);
+            const filename = `${fileSlug || "Report"}.pdf`;
+
             const doc = await buildPdfDocument({
-              filename: "Orion_Report.pdf",
-              title: sections[0]?.heading || "Orion Report",
+              filename,
+              title: cleanTitle,
+              subtitle: `Generated by Orion Sovereign Engine • ${new Date().toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}`,
               sections,
             });
             const savedDoc = await invoke("save_generated_document", {
@@ -1022,6 +1065,16 @@ export default function App() {
               <span>Library</span>
               {docCount > 0 && <span className="tab-pill">{docCount}</span>}
             </button>
+            <button
+              type="button"
+              className="sidebar-tab-btn"
+              onClick={() => setShowEmailStudio(true)}
+              title="Sovereign Email Assistant (M7)"
+            >
+              <IconMail size={13} />
+              <span>Email</span>
+              <span className="tab-pill">M7</span>
+            </button>
           </div>
         )}
 
@@ -1206,6 +1259,15 @@ export default function App() {
           </div>
 
           <div className="header-actions">
+            <button
+              type="button"
+              className="btn-header-email"
+              onClick={() => setShowEmailStudio(true)}
+              title="Sovereign Email Assistant (M7)"
+            >
+              <IconMail size={13} />
+              <span>Email</span>
+            </button>
             <button
               type="button"
               className="btn-quick-new-chat"
@@ -1529,7 +1591,19 @@ export default function App() {
       {showSystem && (
         <SystemPanel
           onClose={() => setShowSystem(false)}
-          onPersonaChanged={(newP) => setPersona(newP)}
+          onPersonaChanged={(newP) => {
+            setPersona(newP);
+            if (newP && newP.id !== "general") {
+              setSpecialistPersona(newP);
+            }
+          }}
+        />
+      )}
+
+      {showEmailStudio && (
+        <EmailStudio
+          isOpen={showEmailStudio}
+          onClose={() => setShowEmailStudio(false)}
         />
       )}
 

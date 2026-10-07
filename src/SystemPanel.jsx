@@ -15,6 +15,12 @@ export default function SystemPanel({ onClose, onPersonaChanged }) {
   const [active, setActive] = useState(null);
   const [personas, setPersonas] = useState([]);
   const [activePersona, setActivePersona] = useState(null);
+  const [specialistPersona, setSpecialistPersona] = useState({
+    id: "developer",
+    name: "Software Developer",
+    icon: "💻",
+    tagline: "Architectural precision, idiomatic syntax, zero boilerplate",
+  });
   const [audits, setAudits] = useState([]);
   const [showAudits, setShowAudits] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -35,8 +41,23 @@ export default function SystemPanel({ onClose, onPersonaChanged }) {
         setRec(r);
         setModels(m);
         setActive(a);
-        setPersonas(plist);
+        setPersonas(plist || []);
         setActivePersona(actP);
+
+        // Load saved specialist preference from localStorage or active non-general persona
+        const savedSpec = localStorage.getItem("orion_specialist_persona");
+        if (savedSpec) {
+          try {
+            setSpecialistPersona(JSON.parse(savedSpec));
+          } catch {
+            /* ignore parse err */
+          }
+        } else if (actP && actP.id !== "general") {
+          setSpecialistPersona(actP);
+        } else if (plist && plist.length > 0) {
+          const firstNonGeneral = plist.find((item) => item.id !== "general");
+          if (firstNonGeneral) setSpecialistPersona(firstNonGeneral);
+        }
       } catch (e) {
         setError(String(e));
       }
@@ -103,28 +124,64 @@ export default function SystemPanel({ onClose, onPersonaChanged }) {
         )}
 
         <section>
-          <h3>Workload Persona</h3>
+          <h3>Workload Persona (Dual-Mode Architecture)</h3>
           <p className="muted">
-            Specializes Orion's reasoning depth, tone, and syntax for your immediate domain.
+            Orion strictly operates in two modes: General Assistant and your dedicated Specialist.
           </p>
-          <div className="persona-grid-compact">
-            {personas.map((p) => {
-              const isActive = activePersona?.id === p.id;
-              return (
-                <div
-                  key={p.id}
-                  className={`persona-card-compact ${isActive ? "active" : ""}`}
-                  onClick={() => choosePersona(p.id)}
-                >
-                  <div className="persona-compact-head">
-                    <span className="persona-icon">{p.icon}</span>
-                    <strong>{p.name}</strong>
-                    {isActive && <span className="active-pill">In use</span>}
-                  </div>
-                  <p className="persona-tagline-compact">{p.tagline}</p>
-                </div>
-              );
-            })}
+          <div className="persona-grid-compact two-modes-grid">
+            {/* Mode 1: General Assistant */}
+            <div
+              className={`persona-card-compact ${activePersona?.id === "general" ? "active" : ""}`}
+              onClick={() => choosePersona("general")}
+            >
+              <div className="persona-compact-head">
+                <span className="persona-icon">⚡</span>
+                <strong>General Assistant</strong>
+                {activePersona?.id === "general" && <span className="active-pill">In use</span>}
+              </div>
+              <p className="persona-tagline-compact">
+                Fast front-door router, daily tasks, balanced reasoning &amp; document tools
+              </p>
+            </div>
+
+            {/* Mode 2: Dedicated Specialist */}
+            <div
+              className={`persona-card-compact ${activePersona?.id !== "general" ? "active" : ""}`}
+              onClick={() => choosePersona(specialistPersona.id)}
+            >
+              <div className="persona-compact-head">
+                <span className="persona-icon">{specialistPersona.icon}</span>
+                <strong>{specialistPersona.name} (Specialist)</strong>
+                {activePersona?.id !== "general" && <span className="active-pill">In use</span>}
+              </div>
+              <p className="persona-tagline-compact">{specialistPersona.tagline}</p>
+            </div>
+          </div>
+
+          <div className="specialist-reconfigure-box">
+            <span className="specialist-reconfigure-label">Assigned Specialist Domain:</span>
+            <div className="specialist-pill-group">
+              {personas
+                .filter((p) => p.id !== "general")
+                .map((sp) => (
+                  <button
+                    key={sp.id}
+                    type="button"
+                    className={`specialist-pill-btn ${specialistPersona.id === sp.id ? "selected" : ""}`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setSpecialistPersona(sp);
+                      localStorage.setItem("orion_specialist_persona", JSON.stringify(sp));
+                      if (activePersona?.id !== "general") {
+                        choosePersona(sp.id);
+                      }
+                    }}
+                  >
+                    <span>{sp.icon}</span>
+                    <span>{sp.name}</span>
+                  </button>
+                ))}
+            </div>
           </div>
 
           <div className="persona-weights-guidance">

@@ -449,6 +449,26 @@ export async function buildPdfDocument({
       y += 6;
     }
 
+    if (sec.callout) {
+      if (y > pageHeight - 90) {
+        doc.addPage();
+        y = margin;
+      }
+      doc.setFillColor(240, 249, 255); // #F0F9FF
+      const calloutText = `Note: ${sec.callout}`;
+      const splitCallout = doc.splitTextToSize(calloutText, pageWidth - margin * 2 - 20);
+      const boxHeight = splitCallout.length * 13 + 14;
+      doc.roundedRect(margin, y, pageWidth - margin * 2, boxHeight, 4, 4, "F");
+      // Blue left border accent
+      doc.setFillColor(2, 132, 199);
+      doc.rect(margin, y, 3, boxHeight, "F");
+      doc.setTextColor(3, 105, 161);
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(9.5);
+      doc.text(splitCallout, margin + 12, y + 14);
+      y += boxHeight + 12;
+    }
+
     if (sec.table && sec.table.headers && sec.table.rows) {
       if (y > pageHeight - 120) {
         doc.addPage();
@@ -767,38 +787,153 @@ export function parseMarkdownTable(text) {
 }
 
 /**
- * Fallback parser that converts Markdown headings and paragraphs into Word/PDF sections.
+ * Advanced parser that converts Markdown content (headings, paragraphs, bullet points,
+ * inline data tables, blockquotes) into structured Word and PDF sections with zero missing content.
  */
 export function parseMarkdownSections(text) {
   if (!text) return [];
-  const lines = text.split("\n");
+  // Strip code blocks or orion-doc fences
+  const cleanText = text.replace(/```(?:orion-doc:)?[\s\S]*?```/g, "").trim();
+  const lines = cleanText.split("\n");
   const sections = [];
   let currentSection = null;
+  let inTable = false;
+  let tableHeaders = [];
+  let tableRows = [];
 
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (trimmed.startsWith("# ") || trimmed.startsWith("## ") || trimmed.startsWith("### ")) {
+  function commitTable() {
+    if (inTable && tableHeaders.length > 0 && tableRows.length > 0 && currentSection) {
+      currentSection.table = {
+        headers: [...tableHeaders],
+        rows: [...tableRows],
+      };
+    }
+    inTable = false;
+    tableHeaders = [];
+    tableRows = [];
+  }
+
+  for (let i = 0; i < lines.length; i++) {
+    const rawLine = lines[i];
+    const trimmed = rawLine.trim();
+
+    if (!trimmed) {
+      commitTable();
+      continue;
+    }
+
+    // Markdown table row detection
+    if (trimmed.startsWith("|") && trimmed.endsWith("|")) {
+      const cells = trimmed
+        .slice(1, -1)
+        .split("|")
+        .map((c) => c.trim());
+
+      // Separator row (e.g. |---|---|)
+      if (cells.every((c) => /^:?-+:?$/.test(c))) {
+        inTable = true;
+        continue;
+      }
+
+      if (!inTable) {
+        tableHeaders = cells;
+      } else {
+        tableRows.push(cells);
+      }
+      continue;
+    } else {
+      commitTable();
+    }
+
+    // Heading detection (#, ##, ###, #### or **Bold Title:**)
+    const mdHeadMatch = /^#{1,4}\s+(.+)$/.exec(trimmed);
+    const boldHeadMatch = /^\*\*([0-9]+\.?[^*]+|[A-Z][^*]{2,50}):?\*\*$/.exec(trimmed);
+
+    if (mdHeadMatch || boldHeadMatch) {
       if (currentSection) sections.push(currentSection);
+      const heading = mdHeadMatch ? mdHeadMatch[1].trim() : boldHeadMatch[1].trim();
       currentSection = {
-        heading: trimmed.replace(/^#+\s*/, ""),
+        heading,
         paragraphs: [],
         bulletPoints: [],
       };
-    } else if (trimmed.startsWith("- ") || trimmed.startsWith("* ")) {
-      if (!currentSection) {
-        currentSection = { heading: "Overview", paragraphs: [], bulletPoints: [] };
-      }
-      currentSection.bulletPoints.push(trimmed.replace(/^[-*]\s*/, ""));
-    } else if (trimmed.length > 0 && !trimmed.startsWith("|")) {
-      if (!currentSection) {
-        currentSection = { heading: "Overview", paragraphs: [], bulletPoints: [] };
-      }
-      currentSection.paragraphs.push(trimmed);
+      continue;
     }
+
+    // Bullet points (- , * , • , 1. , 2. )
+    if (/^[-*•]\s+/.test(trimmed) || /^[0-9]+\.\s+/.test(trimmed)) {
+      if (!currentSection) {
+        currentSection = { heading: "Overview", paragraphs: [], bulletPoints: [] };
+      }
+      const item = trimmed.replace(/^[-*•0-9.]+\s*/, "");
+      currentSection.bulletPoints.push(item);
+      continue;
+    }
+
+    // Blockquote / Callout
+    if (trimmed.startsWith(">")) {
+      if (!currentSection) {
+        currentSection = { heading: "Overview", paragraphs: [], bulletPoints: [] };
+      }
+      currentSection.callout = trimmed.replace(/^>\s*/, "");
+      continue;
+    }
+
+    // Regular paragraph
+    if (!currentSection) {
+      currentSection = { heading: "Overview", paragraphs: [], bulletPoints: [] };
+    }
+    currentSection.paragraphs.push(trimmed);
   }
 
+  commitTable();
   if (currentSection) sections.push(currentSection);
   return sections;
+}
+
+/**
+ * Automatically enriches and merges the parsed sections from the conversational
+ * text into the document specification to prevent any content truncation or omission.
+ */
+export function enrichDocumentSpec(spec, rawReply) {
+  const textSections = parseMarkdownSections(rawReply);
+  if (!spec) {
+    return {
+      title: textSections[0]?.heading || "Orion Report",
+      sections: textSections,
+    };
+  }
+
+  if (!spec.sections || spec.sections.length === 0) {
+    return {
+      ...spec,
+      title: spec.title || textSections[0]?.heading || "Orion Report",
+      sections: textSections,
+    };
+  }
+
+  // If the spec has only 1 section while the raw text has multiple rich sections
+  if (spec.sections.length === 1 && textSections.length > 1) {
+    return {
+      ...spec,
+      title: spec.title || textSections[0]?.heading || "Orion Report",
+      sections: textSections,
+    };
+  }
+
+  // Check if any section has placeholder text like ["Text..."]
+  const hasPlaceholders = spec.sections.some((s) =>
+    (s.paragraphs || []).some((p) => /^\s*(?:Text\.\.\.|\.\.\.|Placeholder|Body text here)\s*$/i.test(p))
+  );
+  if (hasPlaceholders && textSections.length > 0) {
+    return {
+      ...spec,
+      title: spec.title || textSections[0]?.heading || "Orion Report",
+      sections: textSections,
+    };
+  }
+
+  return spec;
 }
 
 /**
