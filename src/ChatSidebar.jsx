@@ -1,4 +1,12 @@
 import { useState, useMemo, useRef, useEffect } from "react";
+import {
+  IconPencil,
+  IconTrash,
+  IconAlertTriangle,
+  IconX,
+  IconPlus,
+  IconSearch,
+} from "./Icons";
 
 export function formatRelativeTime(dateString) {
   if (!dateString) return "";
@@ -114,6 +122,7 @@ export function ChatHistoryList({
       {/* Search Input */}
       {sessions.length > 3 && (
         <div className="chat-history-search-wrap">
+          <IconSearch size={13} className="chat-search-icon" />
           <input
             type="text"
             placeholder="Search chats..."
@@ -126,8 +135,9 @@ export function ChatHistoryList({
               type="button"
               className="chat-search-clear"
               onClick={() => setSearchQuery("")}
+              title="Clear search"
             >
-              ✕
+              <IconX size={12} />
             </button>
           )}
         </div>
@@ -143,7 +153,8 @@ export function ChatHistoryList({
               className="btn-create-first"
               onClick={onCreateSession}
             >
-              Start new chat
+              <IconPlus size={13} />
+              <span>Start new chat</span>
             </button>
           </div>
         ) : filteredSessions.length === 0 ? (
@@ -215,7 +226,7 @@ export function ChatHistoryList({
                             title="Rename"
                             aria-label="Rename chat"
                           >
-                            ✏️
+                            <IconPencil size={12} />
                           </button>
                           <button
                             type="button"
@@ -227,7 +238,7 @@ export function ChatHistoryList({
                             title="Delete"
                             aria-label="Delete chat"
                           >
-                            🗑️
+                            <IconTrash size={12} />
                           </button>
                         </div>
                       )}
@@ -253,7 +264,9 @@ export function ChatHistoryList({
             aria-modal="true"
           >
             <div className="delete-modal-header">
-              <span className="delete-warning-icon">⚠️</span>
+              <span className="delete-warning-icon">
+                <IconAlertTriangle size={20} />
+              </span>
               <h3>Delete Conversation?</h3>
             </div>
             <p className="delete-modal-body">
@@ -318,7 +331,7 @@ export default function ChatSidebar({
               onClick={onClose}
               title="Close sidebar"
             >
-              ✕
+              <IconX size={14} />
             </button>
           </div>
           <button
@@ -327,7 +340,7 @@ export default function ChatSidebar({
             onClick={onCreateSession}
             title="Create new conversation (Ctrl+N)"
           >
-            <span className="new-chat-icon">+</span>
+            <span className="new-chat-icon"><IconPlus size={14} /></span>
             <span className="new-chat-text">New Chat</span>
             <kbd className="new-chat-kbd">Ctrl+N</kbd>
           </button>

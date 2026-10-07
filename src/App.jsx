@@ -13,6 +13,27 @@ import { LockScreen, LockSettingsModal } from "./LockScreen";
 import { ChatHistoryList } from "./ChatSidebar";
 import DocumentCard from "./DocumentCard";
 import {
+  IconMessageSquare,
+  IconLibrary,
+  IconPlus,
+  IconPencil,
+  IconFileSpreadsheet,
+  IconFileText,
+  IconFilePdf,
+  IconLock,
+  IconShield,
+  IconSettings,
+  IconSend,
+  IconZap,
+  IconCode,
+  IconVolume2,
+  IconVolumeX,
+  IconCopy,
+  IconCheck,
+  IconRotateCw,
+  IconSquare,
+} from "./Icons";
+import {
   extractDocBlock,
   parseMarkdownTable,
   parseMarkdownSections,
@@ -976,7 +997,7 @@ export default function App() {
           onClick={handleCreateSession}
           title={sidebarOpen ? "New chat (Ctrl+N)" : "New chat"}
         >
-          <span className="btn-new-icon">+</span>
+          <span className="btn-new-icon"><IconPlus size={14} /></span>
           <span className="btn-new-text">New chat</span>
           {sidebarOpen && <kbd className="btn-new-kbd">Ctrl+N</kbd>}
         </button>
@@ -988,14 +1009,18 @@ export default function App() {
               className={`sidebar-tab-btn ${sidebarTab === "chats" ? "active" : ""}`}
               onClick={() => setSidebarTab("chats")}
             >
-              💬 Chats {sessions.length > 0 && <span className="tab-pill">{sessions.length}</span>}
+              <IconMessageSquare size={13} />
+              <span>Chats</span>
+              {sessions.length > 0 && <span className="tab-pill">{sessions.length}</span>}
             </button>
             <button
               type="button"
               className={`sidebar-tab-btn ${sidebarTab === "library" ? "active" : ""}`}
               onClick={() => setSidebarTab("library")}
             >
-              📚 Library {docCount > 0 && <span className="tab-pill">{docCount}</span>}
+              <IconLibrary size={13} />
+              <span>Library</span>
+              {docCount > 0 && <span className="tab-pill">{docCount}</span>}
             </button>
           </div>
         )}
@@ -1043,7 +1068,17 @@ export default function App() {
               onClick={() => setShowLockSettings(true)}
               title={lockStatus?.enabled ? "Master Passcode Configured" : "Enable Master Lock"}
             >
-              {lockStatus?.enabled ? "🔒 Lock" : "🛡 Lock"}
+              {lockStatus?.enabled ? (
+                <>
+                  <IconLock size={12} />
+                  <span>Lock</span>
+                </>
+              ) : (
+                <>
+                  <IconShield size={12} />
+                  <span>Lock</span>
+                </>
+              )}
             </button>
             {lockStatus?.enabled && (
               <button
@@ -1051,7 +1086,7 @@ export default function App() {
                 onClick={handleLockNow}
                 title="Lock Orion immediately"
               >
-                🔒
+                <IconLock size={12} />
               </button>
             )}
             <div
@@ -1082,7 +1117,8 @@ export default function App() {
                 title="Open conversations sidebar (Ctrl+B)"
                 aria-label="Toggle sidebar"
               >
-                💬 Chats
+                <IconMessageSquare size={13} />
+                <span>Chats</span>
               </button>
             )}
 
@@ -1117,7 +1153,7 @@ export default function App() {
                       setIsEditingTitle(false);
                     }}
                   >
-                    ✓
+                    <IconCheck size={13} />
                   </button>
                 </div>
               ) : (
@@ -1140,7 +1176,7 @@ export default function App() {
                       setIsEditingTitle(true);
                     }}
                   >
-                    ✏️
+                    <IconPencil size={11} />
                   </button>
                 </div>
               )}
@@ -1155,7 +1191,8 @@ export default function App() {
               onClick={() => handleToggleMode("general")}
               title="General Assistant model"
             >
-              ⚡ General
+              <IconZap size={13} />
+              <span>General</span>
             </button>
             <button
               type="button"
@@ -1163,7 +1200,8 @@ export default function App() {
               onClick={() => handleToggleMode(specialistPersona?.id || "developer")}
               title={`Specialist: ${specialistPersona?.name || "Developer"}`}
             >
-              {specialistPersona?.icon || "💻"} {specialistPersona?.name || "Developer"}
+              <span className="mode-spec-icon">{specialistPersona?.icon || "💻"}</span>
+              <span>{specialistPersona?.name || "Developer"}</span>
             </button>
           </div>
 
@@ -1174,7 +1212,8 @@ export default function App() {
               onClick={handleCreateSession}
               title="New conversation (Ctrl+N)"
             >
-              + New Chat
+              <IconPlus size={13} />
+              <span>New Chat</span>
             </button>
             <button
               type="button"
@@ -1183,7 +1222,7 @@ export default function App() {
               title="System & Hardware Settings"
               aria-label="Settings"
             >
-              ⚙️
+              <IconSettings size={14} />
             </button>
           </div>
         </header>
@@ -1205,7 +1244,7 @@ export default function App() {
                   className="suggestion"
                   onClick={() => setInput("Create an annual budget forecast spreadsheet with revenue projections, operational costs, and profit calculations in Excel (.xlsx).")}
                 >
-                  <span className="sg-icon">📊</span>
+                  <span className="sg-icon"><IconFileSpreadsheet size={18} /></span>
                   <div className="sg-text">
                     <span className="sg-title">Budget Model in Excel</span>
                     <span className="sg-sub">Dynamic formulas, P&amp;L, auto-styles</span>
@@ -1217,7 +1256,7 @@ export default function App() {
                   className="suggestion"
                   onClick={() => setInput("Draft a comprehensive project architecture proposal in a Word document (.docx) with executive summary and comparison tables.")}
                 >
-                  <span className="sg-icon">📄</span>
+                  <span className="sg-icon"><IconFileText size={18} /></span>
                   <div className="sg-text">
                     <span className="sg-title">Architecture Spec in Word</span>
                     <span className="sg-sub">Formatted headings, tables &amp; callouts</span>
@@ -1229,7 +1268,7 @@ export default function App() {
                   className="suggestion"
                   onClick={() => setInput("Generate an executive compliance audit report in PDF (.pdf) evaluating zero-egress data residency.")}
                 >
-                  <span className="sg-icon">📑</span>
+                  <span className="sg-icon"><IconFilePdf size={18} /></span>
                   <div className="sg-text">
                     <span className="sg-title">Compliance Audit in PDF</span>
                     <span className="sg-sub">Vector styling, metrics &amp; sign-off</span>
@@ -1241,7 +1280,7 @@ export default function App() {
                   className="suggestion"
                   onClick={() => setInput("Review and refactor this code snippet for optimal O(n) runtime performance and low memory allocations:")}
                 >
-                  <span className="sg-icon">💻</span>
+                  <span className="sg-icon"><IconCode size={18} /></span>
                   <div className="sg-text">
                     <span className="sg-title">Refactor Code Performance</span>
                     <span className="sg-sub">Memory safety &amp; O(n) efficiency</span>
@@ -1278,7 +1317,17 @@ export default function App() {
                             title="Copy response"
                             aria-label="Copy response"
                           >
-                            {copiedIndex === i ? "✓ Copied" : "📋 Copy"}
+                            {copiedIndex === i ? (
+                              <>
+                                <IconCheck size={12} />
+                                <span>Copied</span>
+                              </>
+                            ) : (
+                              <>
+                                <IconCopy size={12} />
+                                <span>Copy</span>
+                              </>
+                            )}
                           </button>
                           <button
                             type="button"
@@ -1297,7 +1346,17 @@ export default function App() {
                             }
                             aria-label="Read aloud"
                           >
-                            {isLastAssistant && speaking ? "⏹ Stop" : "🔊 Speak"}
+                            {isLastAssistant && speaking ? (
+                              <>
+                                <IconSquare size={11} />
+                                <span>Stop</span>
+                              </>
+                            ) : (
+                              <>
+                                <IconVolume2 size={12} />
+                                <span>Speak</span>
+                              </>
+                            )}
                           </button>
                           {isLastAssistant && !streaming && (
                             <button
@@ -1307,7 +1366,8 @@ export default function App() {
                               title="Regenerate this response"
                               aria-label="Regenerate response"
                             >
-                              🔄 Retry
+                              <IconRotateCw size={12} />
+                              <span>Retry</span>
                             </button>
                           )}
                         </div>
@@ -1333,7 +1393,7 @@ export default function App() {
 
               {swapping && (
                 <div className="swapping-pill">
-                  <span className="swap-spinner">🔄</span>
+                  <span className="swap-spinner"><IconRotateCw size={13} className="spin" /></span>
                   <span>Sequential Memory Handoff: Swapping to <strong>{swapping.to}</strong> model in RAM…</span>
                 </div>
               )}
@@ -1443,15 +1503,16 @@ export default function App() {
                   }
                   aria-label="Toggle spoken audio replies"
                 >
-                  {autoSpeak ? "🔊" : "🔇"}
+                  {autoSpeak ? <IconVolume2 size={15} /> : <IconVolumeX size={15} />}
                 </button>
                 <button
                   className="btn-send"
                   onClick={send}
                   disabled={!input.trim() || engine.state === "error"}
-                  title="Send"
+                  title="Send message (Enter)"
+                  aria-label="Send message"
                 >
-                  ↑
+                  <IconSend size={14} />
                 </button>
               </div>
             )}

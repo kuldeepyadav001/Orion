@@ -1,5 +1,13 @@
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import {
+  IconFileSpreadsheet,
+  IconFileText,
+  IconFilePdf,
+  IconExternalLink,
+  IconFolderOpen,
+  IconDownload,
+} from "./Icons";
 
 function formatBytes(bytes) {
   if (!bytes || bytes === 0) return "0 B";
@@ -21,28 +29,28 @@ export default function DocumentCard({ doc }) {
   const config = {
     xlsx: {
       label: "Excel Spreadsheet",
-      icon: "📊",
+      icon: <IconFileSpreadsheet size={22} className="doc-icon-svg excel" />,
       badgeClass: "badge-excel",
       bgClass: "card-excel",
       openTitle: "Open in Excel / LibreOffice",
     },
     docx: {
       label: "Word Document",
-      icon: "📄",
+      icon: <IconFileText size={22} className="doc-icon-svg word" />,
       badgeClass: "badge-word",
       bgClass: "card-word",
       openTitle: "Open in Microsoft Word",
     },
     pdf: {
       label: "PDF Report",
-      icon: "📑",
+      icon: <IconFilePdf size={22} className="doc-icon-svg pdf" />,
       badgeClass: "badge-pdf",
       bgClass: "card-pdf",
       openTitle: "Open in PDF Viewer",
     },
   }[ext] || {
     label: "Document",
-    icon: "📁",
+    icon: <IconFileText size={22} className="doc-icon-svg default" />,
     badgeClass: "badge-default",
     bgClass: "card-default",
     openTitle: "Open File",
@@ -135,7 +143,8 @@ export default function DocumentCard({ doc }) {
           disabled={opening}
           title={config.openTitle}
         >
-          {opening ? "Opening…" : "📂 Open File"}
+          <IconExternalLink size={13} />
+          <span>{opening ? "Opening…" : "Open File"}</span>
         </button>
         <button
           type="button"
@@ -144,7 +153,8 @@ export default function DocumentCard({ doc }) {
           disabled={showing}
           title="Show in File Explorer / Folder"
         >
-          {showing ? "Opening…" : "🔍 Show in Folder"}
+          <IconFolderOpen size={13} />
+          <span>{showing ? "Opening…" : "Show in Folder"}</span>
         </button>
         <button
           type="button"
@@ -152,7 +162,8 @@ export default function DocumentCard({ doc }) {
           onClick={handleDownload}
           title="Save / Download Copy"
         >
-          💾 Download Copy
+          <IconDownload size={13} />
+          <span>Save Copy As</span>
         </button>
       </div>
     </div>
