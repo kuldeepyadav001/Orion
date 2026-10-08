@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Markdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import SystemPanel from "./SystemPanel";
@@ -58,6 +57,7 @@ function cleanForSpeech(text) {
     .replace(/`([^`]+)`/g, "$1") // inline code backticks
     .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1") // links -> title
     .replace(/\[(?:chunk|citation):[^\]]+\]/g, "") // strip citations
+    .replace(/\[\d+\]/g, "") // strip numeric citation markers [1], [2]
     .replace(/^#+\s+/gm, "") // headings
     .replace(/[*_~]/g, "") // formatting
     .replace(/\s+/g, " ")
@@ -164,6 +164,97 @@ const markdownComponents = {
     return <hr className="chat-hr" />;
   },
 };
+
+/**
+ * Splits markdown content into alternating text blocks and markdown table blocks,
+ * allowing zero-dependency high-fidelity table rendering without remark-gfm.
+ */
+function splitMarkdownAndTables(content) {
+  if (!content) return [];
+  const lines = content.split("\n");
+  const chunks = [];
+  let currentText = [];
+  let currentTable = [];
+
+  const isTableRow = (line) => {
+    const trimmed = line.trim();
+    return trimmed.startsWith("|") && trimmed.endsWith("|") && trimmed.length > 2;
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (isTableRow(line)) {
+      if (currentText.length > 0) {
+        chunks.push({ type: "text", text: currentText.join("\n") });
+        currentText = [];
+      }
+      currentTable.push(line);
+    } else {
+      if (currentTable.length > 0) {
+        chunks.push({ type: "table", text: currentTable.join("\n") });
+        currentTable = [];
+      }
+      currentText.push(line);
+    }
+  }
+
+  if (currentTable.length > 0) {
+    chunks.push({ type: "table", text: currentTable.join("\n") });
+  }
+  if (currentText.length > 0) {
+    chunks.push({ type: "text", text: currentText.join("\n") });
+  }
+
+  return chunks;
+}
+
+function ChatContentRenderer({ content }) {
+  if (!content) return null;
+  const chunks = splitMarkdownAndTables(content);
+
+  return (
+    <>
+      {chunks.map((chunk, idx) => {
+        if (chunk.type === "table") {
+          const parsed = parseMarkdownTable(chunk.text);
+          if (parsed && parsed.headers.length > 0) {
+            return (
+              <div key={idx} className="chat-table-wrapper">
+                <table className="chat-table">
+                  <thead>
+                    <tr>
+                      {parsed.headers.map((h, i) => (
+                        <th key={i} className="chat-th">
+                          {h}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {parsed.rows.map((row, rIdx) => (
+                      <tr key={rIdx} className="chat-tr">
+                        {row.map((cell, cIdx) => (
+                          <td key={cIdx} className="chat-td">
+                            {cell}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            );
+          }
+        }
+        return (
+          <Markdown key={idx} components={markdownComponents}>
+            {chunk.text}
+          </Markdown>
+        );
+      })}
+    </>
+  );
+}
 
 /**
  * Orion M0 shell.
@@ -1633,9 +1724,7 @@ export default function App() {
                     <div className="bubble">
                       {m.role === "assistant" ? (
                         <>
-                          <Markdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
-                            {m.content}
-                          </Markdown>
+                          <ChatContentRenderer content={m.content} />
                           {streaming && isLastAssistant && <span className="streaming-cursor" />}
                           {m.document && <DocumentCard doc={m.document} />}
                         </>

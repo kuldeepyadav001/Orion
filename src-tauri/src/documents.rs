@@ -93,10 +93,9 @@ const _: () = assert!(MIN_COSINE > 0.6 && MIN_COSINE < 0.95);
 /// to count on its own.
 ///
 /// FTS5's bm25() has no fixed scale — it depends on corpus size and term
-/// frequency — so this is a floor against near-zero matches rather than a
-/// calibrated value. A question sharing one common word with a document
-/// should not drag that document into the prompt.
-const MIN_BM25: f32 = 0.5;
+/// frequency. 0.35 provides an effective floor against near-zero spurious matches
+/// while allowing legitimate matches in smaller or single-document libraries.
+const MIN_BM25: f32 = 0.35;
 
 // Asking for more context chunks than were retrieved would silently truncate,
 // making the prompt smaller than intended. Checked at compile time.
@@ -470,6 +469,22 @@ pub async fn ingest_file(
     })
 }
 
+/// Keywords and query patterns that explicitly signal intent to query or explore documents.
+pub fn has_document_intent(q: &str) -> bool {
+    let lower = q.to_lowercase();
+    let keywords = [
+        "document", "documents", "doc", "docs", "pdf", "file", "files",
+        "library", "upload", "uploaded", "attachment",
+        "summarize", "summarise", "summary", "overview", "review",
+        "takeaway", "takeaways", "paper", "report", "spreadsheet",
+        "contract", "agreement", "handbook", "policy", "notes",
+        "what does this say", "what does it say", "what is this about",
+        "what is in this", "explain this", "read this", "tell me about this",
+        "key points", "main points", "findings", "table", "section",
+    ];
+    keywords.iter().any(|&k| lower.contains(k))
+}
+
 /// Retrieve grounded context for a question.
 ///
 /// Returns `None` when the library is empty, so the caller can skip the
@@ -484,40 +499,54 @@ pub async fn retrieve(
     // would stall every other database user.
     let query_vec = embed.embed_query(question).await.unwrap_or_default();
 
-    let hits = {
+    let (hits, lead_fallback) = {
         let db = db.lock().await;
         let store = RagStore::new(db.conn());
         store.migrate()?;
         if store.chunk_count()? == 0 {
             return Ok(None);
         }
-        store.search(question, &query_vec, SEARCH_LIMIT)?
+        let search_hits = store.search(question, &query_vec, SEARCH_LIMIT)?;
+
+        // If normal search found hits, check if top hit meets threshold
+        let best_passes = search_hits.first().map_or(false, |best| {
+            best.top_cosine >= MIN_COSINE || best.top_bm25 >= MIN_BM25
+        });
+
+        if best_passes {
+            (search_hits, None)
+        } else {
+            // Check if question expresses document intent or mentions a document name
+            let has_intent = has_document_intent(question);
+            let docs = store.list_documents().unwrap_or_default();
+            let matched_doc = docs.iter().find(|d| {
+                let name_lower = d.name.to_lowercase();
+                let stem = std::path::Path::new(&name_lower)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or(&name_lower);
+                question.to_lowercase().contains(stem)
+            });
+
+            if has_intent || matched_doc.is_some() {
+                // If the user has uploaded documents and asks a document inquiry
+                // fetch the lead overview chunks of the targeted or most recent document.
+                let target_id = matched_doc.map(|d| d.id.as_str());
+                let lead = store.lead_chunks(target_id, CONTEXT_TOP_K)?;
+                (Vec::new(), Some(lead))
+            } else {
+                (Vec::new(), None)
+            }
+        }
     };
 
-    if hits.is_empty() {
-        return Ok(None);
+    if let Some(lead) = lead_fallback {
+        if !lead.is_empty() {
+            return Ok(Some(build_context(&lead, CONTEXT_TOP_K)));
+        }
     }
 
-    // Hits alone do not mean relevance.
-    //
-    // Reciprocal rank fusion scores by *position*, not similarity, which is
-    // what makes it robust across retrievers with incomparable scales. The
-    // cost is that it always returns something: with one document indexed,
-    // "what is 2 + 2" still ranks that document first, and the old code
-    // treated any non-empty result as grounds for switching to the grounded
-    // prompt. Every unrelated question got answered from the user's files.
-    //
-    // So gate on the retrievers' own absolute scores, which fusion discards.
-    let best = &hits[0];
-    let semantically_relevant = best.top_cosine >= MIN_COSINE;
-    let keyword_relevant = best.top_bm25 >= MIN_BM25;
-
-    if !semantically_relevant && !keyword_relevant {
-        tracing::debug!(
-            cosine = best.top_cosine,
-            bm25 = best.top_bm25,
-            "library searched but nothing was relevant; answering without sources"
-        );
+    if hits.is_empty() {
         return Ok(None);
     }
 

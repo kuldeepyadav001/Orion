@@ -186,12 +186,13 @@ impl<'a> RagStore<'a> {
             let rowid = self.conn.last_insert_rowid();
 
             // The FTS row is keyed to the chunk rowid so the two stay joined.
-            // We index `chunk.text` (which carries the heading prefix), not
-            // `body`, so a query matching a section title finds the section.
+            // We index document name and `chunk.text` (which carries the heading prefix),
+            // so a query matching filename or a section title finds the section.
+            let fts_text = format!("{} | {}", doc.name, chunk.text);
             self.conn
                 .execute(
                     "INSERT INTO chunks_fts (rowid, text) VALUES (?1, ?2)",
-                    params![rowid, chunk.text],
+                    params![rowid, fts_text],
                 )
                 .map_err(|e| OrionError::Db(format!("cannot index chunk text: {e}")))?;
         }
@@ -434,6 +435,78 @@ impl<'a> RagStore<'a> {
         } else {
             Ok(None)
         }
+    }
+
+    /// Retrieve the lead chunks (ordinal 0..limit) of documents.
+    /// If `document_id` is specified, returns chunks for that document;
+    /// otherwise returns the initial chunks of the most recently indexed document.
+    pub fn lead_chunks(&self, document_id: Option<&str>, limit: usize) -> Result<Vec<Hit>> {
+        let sql = match document_id {
+            Some(_) => {
+                "SELECT c.id, c.document_id, d.name, c.body, c.page, c.breadcrumb
+                 FROM chunks c
+                 JOIN documents d ON d.id = c.document_id
+                 WHERE c.document_id = ?1
+                 ORDER BY c.ordinal ASC
+                 LIMIT ?2"
+            }
+            None => {
+                "SELECT c.id, c.document_id, d.name, c.body, c.page, c.breadcrumb
+                 FROM chunks c
+                 JOIN documents d ON d.id = c.document_id
+                 WHERE d.id = (SELECT id FROM documents ORDER BY indexed_at DESC LIMIT 1)
+                 ORDER BY c.ordinal ASC
+                 LIMIT ?1"
+            }
+        };
+
+        let mut stmt = self
+            .conn
+            .prepare(sql)
+            .map_err(|e| OrionError::Db(format!("cannot prepare lead chunks query: {e}")))?;
+
+        let hits: Vec<Hit> = match document_id {
+            Some(did) => {
+                let rows = stmt
+                    .query_map(params![did, limit as i64], |r| {
+                        Ok(Hit {
+                            chunk_id: r.get(0)?,
+                            document_id: r.get(1)?,
+                            document_name: r.get(2)?,
+                            text: r.get(3)?,
+                            page: r.get::<_, Option<i64>>(4)?.map(|p| p as u32),
+                            breadcrumb: r.get(5)?,
+                            score: 1.0,
+                            top_bm25: 1.0,
+                            top_cosine: 1.0,
+                            sources: vec!["lead".into()],
+                        })
+                    })
+                    .map_err(|e| OrionError::Db(e.to_string()))?;
+                rows.filter_map(|r| r.ok()).collect()
+            }
+            None => {
+                let rows = stmt
+                    .query_map(params![limit as i64], |r| {
+                        Ok(Hit {
+                            chunk_id: r.get(0)?,
+                            document_id: r.get(1)?,
+                            document_name: r.get(2)?,
+                            text: r.get(3)?,
+                            page: r.get::<_, Option<i64>>(4)?.map(|p| p as u32),
+                            breadcrumb: r.get(5)?,
+                            score: 1.0,
+                            top_bm25: 1.0,
+                            top_cosine: 1.0,
+                            sources: vec!["lead".into()],
+                        })
+                    })
+                    .map_err(|e| OrionError::Db(e.to_string()))?;
+                rows.filter_map(|r| r.ok()).collect()
+            }
+        };
+
+        Ok(hits)
     }
 }
 

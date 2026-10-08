@@ -310,19 +310,34 @@ async fn send_message(
     let system_prompt = persona.enhance_prompt(base_prompt);
 
     let mut msgs = vec![ChatMessage::system(&system_prompt)];
-    msgs.extend(history.into_iter().map(|m| ChatMessage {
-        role: m.role,
-        content: m.content,
-    }));
 
     if let Some(ctx) = &grounded {
-        // Sources go in their own user turn immediately before the question,
-        // not merged into the system prompt. Keeping untrusted file content
-        // out of the system role is a layer of the injection defence: the
-        // model is told structurally that this is data, not instruction.
+        // Prior conversation history excluding the current user turn (which we format with the sources)
+        let prior_history = if !history.is_empty() {
+            &history[..history.len() - 1]
+        } else {
+            &[]
+        };
+
+        for m in prior_history {
+            msgs.push(ChatMessage {
+                role: m.role.clone(),
+                content: m.content.clone(),
+            });
+        }
+
+        // Format the active turn: injection-hardened source block followed directly by the user query.
+        // This ensures the model receives a unified turn with clear context and immediate question focus,
+        // rather than two consecutive user messages that confuse chat templates.
+        let prompt_with_sources = format!(
+            "Context from your document library:\n\n{}\n\nQuestion: {}",
+            ctx.sources_block,
+            message
+        );
+
         msgs.push(ChatMessage {
             role: "user".into(),
-            content: ctx.sources_block.clone(),
+            content: prompt_with_sources,
         });
 
         tracing::info!(
@@ -331,6 +346,10 @@ async fn send_message(
         );
         let _ = app.emit("chat://citations", ctx.citations.clone());
     } else {
+        msgs.extend(history.into_iter().map(|m| ChatMessage {
+            role: m.role,
+            content: m.content,
+        }));
         // Tell the UI explicitly that this answer used no documents, so it can
         // say so rather than leaving the user guessing whether the library was
         // consulted at all.
