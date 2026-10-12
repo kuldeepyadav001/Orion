@@ -8,7 +8,6 @@
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use crate::browser::ax::{parse_cdp_ax_tree, AxSnapshot};

@@ -7,6 +7,7 @@
 
 use std::path::Path;
 use std::sync::Arc;
+use futures_util::StreamExt;
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 
@@ -222,6 +223,6 @@ pub async fn sync_inbox_via_imap(
         }
     }
 
-    session.logout().await.map_err(|(e, _)| OrionError::Engine(e.to_string()))?;
+    session.logout().await.map_err(|e| OrionError::Engine(e.to_string()))?;
     Ok(ingested_count)
 }

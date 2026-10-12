@@ -26,6 +26,7 @@ pub mod email;
 pub mod browser;
 
 use std::sync::Arc;
+use rusqlite::params;
 
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager, State};
@@ -876,7 +877,7 @@ async fn sync_user_inbox(
     let _ = db.conn().execute(
         "INSERT INTO audit_log (id, timestamp, domain, capability, path_accessed, tier, outcome, reason)
          VALUES (?1, ?2, 'trusted', 'email_sync', ?3, 'T1', 'ALLOWED', ?4)",
-        params![
+        rusqlite::params![
             uuid::Uuid::new_v4().to_string(),
             chrono::Utc::now().to_rfc3339(),
             username,
@@ -905,7 +906,7 @@ async fn import_eml_emails(
     let _ = db.conn().execute(
         "INSERT INTO audit_log (id, timestamp, domain, capability, path_accessed, tier, outcome, reason)
          VALUES (?1, ?2, 'trusted', 'email_import_file', ?3, 'T1', 'ALLOWED', ?4)",
-        params![
+        rusqlite::params![
             uuid::Uuid::new_v4().to_string(),
             chrono::Utc::now().to_rfc3339(),
             format!("{imported} files"),
@@ -942,7 +943,7 @@ async fn browser_navigate(
     let _ = db.conn().execute(
         "INSERT INTO audit_log (id, timestamp, domain, capability, path_accessed, tier, outcome, reason)
          VALUES (?1, ?2, 'trusted', 'browser_navigate', ?3, 'T2', 'ALLOWED', ?4)",
-        params![
+        rusqlite::params![
             uuid::Uuid::new_v4().to_string(),
             chrono::Utc::now().to_rfc3339(),
             url,
@@ -964,7 +965,7 @@ async fn browser_close(state: State<'_, AppState>) -> Result<()> {
     let _ = db.conn().execute(
         "INSERT INTO audit_log (id, timestamp, domain, capability, path_accessed, tier, outcome, reason)
          VALUES (?1, ?2, 'trusted', 'browser_close', 'session', 'T0', 'ALLOWED', 'Closed sandboxed browser session')",
-        params![
+        rusqlite::params![
             uuid::Uuid::new_v4().to_string(),
             chrono::Utc::now().to_rfc3339(),
         ],
