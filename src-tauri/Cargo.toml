@@ -36,6 +36,12 @@ rand = "0.8"
 base64 = "0.22"
 sysinfo = "0.32"
 
+# Email processing and IMAP over TLS (Milestone 7)
+mailparse = "0.15"
+async-imap = { version = "0.9", default-features = false, features = ["runtime-tokio"] }
+tokio-native-tls = "0.3"
+native-tls = "0.2"
+
 # Microphone capture. Optional so the crate still builds where there is no
 # audio stack at all — CI containers and the dev sandbox have none, and a
 # hard dependency would make the whole project unbuildable there.

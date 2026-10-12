@@ -6,6 +6,8 @@
 //! 3. Multi-vector sanitization: zero-width chars, bidi overrides, hidden CSS, and scripts stripped.
 //! 4. Adversarial prompt injection detection & defensive triage.
 
+pub mod sync;
+
 use serde::{Deserialize, Serialize};
 
 /// Multi-vector email sanitization.

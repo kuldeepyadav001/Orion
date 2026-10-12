@@ -26,6 +26,15 @@ export default function EmailStudio({ isOpen, onClose }) {
   const [copyFeedback, setCopyFeedback] = useState(false);
   const [errorMsg, setErrorMsg] = useState(null);
 
+  // Live IMAP and .eml Import states
+  const [showAccountModal, setShowAccountModal] = useState(false);
+  const [imapHost, setImapHost] = useState("imap.gmail.com");
+  const [imapPort, setImapPort] = useState(993);
+  const [imapUser, setImapUser] = useState("");
+  const [imapPass, setImapPass] = useState("");
+  const [syncingLive, setSyncingLive] = useState(false);
+  const [syncStatusMsg, setSyncStatusMsg] = useState(null);
+
   const loadEmails = useCallback(async (activeFilter) => {
     setLoading(true);
     setErrorMsg(null);
@@ -139,6 +148,55 @@ export default function EmailStudio({ isOpen, onClose }) {
     }
   };
 
+  const handleImportEml = async () => {
+    setErrorMsg(null);
+    try {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const picked = await open({
+        multiple: true,
+        filters: [{ name: "Email Files", extensions: ["eml", "msg", "txt"] }],
+      });
+      if (!picked) return;
+      const paths = Array.isArray(picked) ? picked : [picked];
+      setLoading(true);
+      const count = await invoke("import_eml_emails", { paths });
+      setSyncStatusMsg(`Successfully quarantined & triaged ${count} .eml files.`);
+      setTimeout(() => setSyncStatusMsg(null), 4000);
+      await loadEmails(filter);
+    } catch (e) {
+      setErrorMsg(`Failed to import .eml files: ${e}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleLiveSync = async (e) => {
+    e?.preventDefault();
+    if (!imapHost || !imapUser || !imapPass) {
+      setErrorMsg("Please provide IMAP Host, Username, and App Password.");
+      return;
+    }
+    setSyncingLive(true);
+    setErrorMsg(null);
+    try {
+      const count = await invoke("sync_user_inbox", {
+        imapHost,
+        imapPort: Number(imapPort) || 993,
+        username: imapUser,
+        authToken: imapPass,
+        limit: 20,
+      });
+      setSyncStatusMsg(`Synchronized ${count} inbound messages securely over TLS.`);
+      setShowAccountModal(false);
+      setTimeout(() => setSyncStatusMsg(null), 4000);
+      await loadEmails(filter);
+    } catch (err) {
+      setErrorMsg(`IMAP Sync failed: ${err}`);
+    } finally {
+      setSyncingLive(false);
+    }
+  };
+
   if (!isOpen) return null;
 
   let parsedActionItems = [];
@@ -225,16 +283,41 @@ export default function EmailStudio({ isOpen, onClose }) {
               <span>Quarantined</span>
             </button>
           </div>
-          <button
-            type="button"
-            className="email-refresh-btn"
-            onClick={() => loadEmails(filter)}
-            title="Sync local inbox"
-          >
-            <IconRotateCw size={13} className={loading ? "spin" : ""} />
-            <span>Sync</span>
-          </button>
+          <div className="email-toolbar-group">
+            <button
+              type="button"
+              className="email-secondary-btn"
+              onClick={handleImportEml}
+              title="Import raw .eml files from disk"
+            >
+              <span>+ Import .eml</span>
+            </button>
+            <button
+              type="button"
+              className="email-secondary-btn"
+              onClick={() => setShowAccountModal(true)}
+              title="Configure live IMAP over TLS sync"
+            >
+              <span>Connect IMAP</span>
+            </button>
+            <button
+              type="button"
+              className="email-refresh-btn"
+              onClick={() => loadEmails(filter)}
+              title="Refresh local inbox"
+            >
+              <IconRotateCw size={13} className={loading ? "spin" : ""} />
+              <span>Refresh</span>
+            </button>
+          </div>
         </div>
+
+        {syncStatusMsg && (
+          <div className="email-status-pill-banner">
+            <IconCheck size={14} />
+            <span>{syncStatusMsg}</span>
+          </div>
+        )}
 
         {errorMsg && <div className="email-error-bar">{errorMsg}</div>}
 
@@ -483,6 +566,95 @@ export default function EmailStudio({ isOpen, onClose }) {
             )}
           </div>
         </div>
+
+        {/* Live IMAP Account Configuration Sub-Modal */}
+        {showAccountModal && (
+          <div className="email-submodal-backdrop" onClick={() => setShowAccountModal(false)}>
+            <div className="email-submodal-dialog" onClick={(e) => e.stopPropagation()}>
+              <div className="email-submodal-header">
+                <h4 className="email-submodal-title">Connect Live IMAP Mailbox</h4>
+                <button
+                  type="button"
+                  className="email-close-btn"
+                  onClick={() => setShowAccountModal(false)}
+                >
+                  <IconX size={14} />
+                </button>
+              </div>
+
+              <form onSubmit={handleLiveSync} className="email-form-grid">
+                <div className="email-form-row">
+                  <div className="email-form-group">
+                    <label className="email-form-label">IMAP Host</label>
+                    <input
+                      type="text"
+                      className="email-form-input"
+                      value={imapHost}
+                      onChange={(e) => setImapHost(e.target.value)}
+                      placeholder="imap.gmail.com"
+                      required
+                    />
+                  </div>
+                  <div className="email-form-group" style={{ maxWidth: "90px" }}>
+                    <label className="email-form-label">Port</label>
+                    <input
+                      type="number"
+                      className="email-form-input"
+                      value={imapPort}
+                      onChange={(e) => setImapPort(e.target.value)}
+                      required
+                    />
+                  </div>
+                </div>
+
+                <div className="email-form-group">
+                  <label className="email-form-label">Email Address / Username</label>
+                  <input
+                    type="email"
+                    className="email-form-input"
+                    value={imapUser}
+                    onChange={(e) => setImapUser(e.target.value)}
+                    placeholder="name@company.com"
+                    required
+                  />
+                </div>
+
+                <div className="email-form-group">
+                  <label className="email-form-label">App Password</label>
+                  <input
+                    type="password"
+                    className="email-form-input"
+                    value={imapPass}
+                    onChange={(e) => setImapPass(e.target.value)}
+                    placeholder="•••• •••• •••• ••••"
+                    required
+                  />
+                </div>
+
+                <div className="email-security-note">
+                  🔒 <strong>Zero Egress Guarantee:</strong> Credentials and messages are fetched over direct TLS to your mail server and quarantined in local SQLite. For Gmail/Outlook, generate an <strong>App Password</strong> in your security settings.
+                </div>
+
+                <div className="email-submodal-actions">
+                  <button
+                    type="button"
+                    className="email-secondary-btn"
+                    onClick={() => setShowAccountModal(false)}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    className="email-action-primary"
+                    disabled={syncingLive}
+                  >
+                    {syncingLive ? "Connecting..." : "Sync Live Inbox"}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

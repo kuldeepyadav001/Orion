@@ -838,6 +838,89 @@ async fn delete_inbox_email(
     db.delete_email(&id)
 }
 
+#[tauri::command]
+async fn sync_user_inbox(
+    imap_host: String,
+    imap_port: u16,
+    username: String,
+    auth_token: String,
+    limit: Option<usize>,
+    state: State<'_, AppState>,
+) -> Result<usize> {
+    let limit_val = limit.unwrap_or(20);
+    let count = crate::email::sync::sync_inbox_via_imap(
+        crate::email::sync::ImapConfig {
+            host: imap_host.clone(),
+            port: imap_port,
+            username: username.clone(),
+            auth_token,
+        },
+        "user_account",
+        state.db.clone(),
+        limit_val,
+    ).await?;
+
+    let db = state.db.lock().await;
+    let _ = db.upsert_email_account(
+        "user_account",
+        &username,
+        &username,
+        &imap_host,
+        imap_port,
+        imap_port == 993,
+    );
+
+    let _ = db.conn().execute(
+        "INSERT INTO audit_log (id, timestamp, domain, capability, path_accessed, tier, outcome, reason)
+         VALUES (?1, ?2, 'trusted', 'email_sync', ?3, 'T1', 'ALLOWED', ?4)",
+        params![
+            uuid::Uuid::new_v4().to_string(),
+            chrono::Utc::now().to_rfc3339(),
+            username,
+            format!("Synced {count} messages from {imap_host}"),
+        ],
+    );
+
+    Ok(count)
+}
+
+#[tauri::command]
+async fn import_eml_emails(
+    paths: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<usize> {
+    let mut imported = 0;
+    let db = state.db.lock().await;
+
+    for p in paths {
+        let path = std::path::PathBuf::from(&p);
+        if let Ok(_) = crate::email::sync::import_local_eml(&path, "local_archive", &db) {
+            imported += 1;
+        }
+    }
+
+    let _ = db.conn().execute(
+        "INSERT INTO audit_log (id, timestamp, domain, capability, path_accessed, tier, outcome, reason)
+         VALUES (?1, ?2, 'trusted', 'email_import_file', ?3, 'T1', 'ALLOWED', ?4)",
+        params![
+            uuid::Uuid::new_v4().to_string(),
+            chrono::Utc::now().to_rfc3339(),
+            format!("{imported} files"),
+            format!("Imported {imported} .eml files into sovereign quarantine"),
+        ],
+    );
+
+    Ok(imported)
+}
+
+#[tauri::command]
+async fn list_email_accounts(
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::db::StoredEmailAccount>> {
+    let db = state.db.lock().await;
+    db.list_email_accounts()
+}
+
 /// The measured (or simulated) hardware profile.
 #[tauri::command]
 async fn hardware_profile(state: State<'_, AppState>) -> Result<HardwareProfile> {
@@ -2289,7 +2372,10 @@ pub fn run() {
             triage_inbox_email,
             draft_email_response,
             mark_inbox_email_read,
-            delete_inbox_email
+            delete_inbox_email,
+            sync_user_inbox,
+            import_eml_emails,
+            list_email_accounts
         ])
         .build(tauri::generate_context!())
         .expect("error while building Orion")

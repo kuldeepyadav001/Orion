@@ -64,6 +64,18 @@ pub struct StoredEmailSummary {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoredEmailAccount {
+    pub id: String,
+    pub email_address: String,
+    pub display_name: String,
+    pub imap_host: String,
+    pub imap_port: u16,
+    pub use_tls: bool,
+    pub status: String,
+    pub last_synced_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredMessage {
     pub id: String,
     pub session_id: String,
@@ -703,6 +715,94 @@ impl Db {
             .execute("DELETE FROM emails WHERE id = ?1", params![id])
             .map_err(|e| OrionError::Db(format!("failed to delete email: {e}")))?;
         Ok(())
+    }
+
+    /// Insert or replace an inbound email.
+    pub fn insert_email(
+        &self,
+        id: &str,
+        account_id: &str,
+        message_id: &str,
+        sender: &str,
+        sender_name: &str,
+        recipients: &str,
+        subject: &str,
+        body_raw: &str,
+        body_sanitized: &str,
+        triage_category: &str,
+        priority_score: i32,
+        triage_reason: &str,
+        action_items: &str,
+        received_at: &str,
+    ) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
+        self.conn.execute(
+            r#"INSERT OR REPLACE INTO emails 
+               (id, account_id, message_id, sender, sender_name, recipients, subject, body_raw, body_sanitized, triage_category, priority_score, triage_reason, action_items, draft_reply, is_read, is_starred, received_at, created_at)
+               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, NULL, 0, 0, ?14, ?15)"#,
+            params![
+                id, account_id, message_id, sender, sender_name, recipients,
+                subject, body_raw, body_sanitized, triage_category, priority_score,
+                triage_reason, action_items, received_at, now
+            ],
+        ).map_err(|e| OrionError::Db(format!("failed to insert email: {e}")))?;
+        Ok(())
+    }
+
+    /// Save or update an email account configuration.
+    pub fn upsert_email_account(
+        &self,
+        id: &str,
+        email_address: &str,
+        display_name: &str,
+        imap_host: &str,
+        imap_port: u16,
+        use_tls: bool,
+    ) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
+        self.conn.execute(
+            r#"INSERT INTO email_accounts (id, email_address, display_name, imap_host, imap_port, use_tls, status, last_synced_at)
+               VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'connected', ?7)
+               ON CONFLICT(id) DO UPDATE SET
+               email_address = excluded.email_address,
+               display_name = excluded.display_name,
+               imap_host = excluded.imap_host,
+               imap_port = excluded.imap_port,
+               use_tls = excluded.use_tls,
+               last_synced_at = excluded.last_synced_at"#,
+            params![
+                id, email_address, display_name, imap_host, imap_port as i64,
+                if use_tls { 1 } else { 0 }, now
+            ],
+        ).map_err(|e| OrionError::Db(format!("failed to upsert email account: {e}")))?;
+        Ok(())
+    }
+
+    /// List all configured email accounts.
+    pub fn list_email_accounts(&self) -> Result<Vec<StoredEmailAccount>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, email_address, display_name, imap_host, imap_port, use_tls, status, last_synced_at FROM email_accounts"
+        ).map_err(|e| OrionError::Db(e.to_string()))?;
+
+        let rows = stmt.query_map([], |r| {
+            let tls_int: i64 = r.get(5)?;
+            Ok(StoredEmailAccount {
+                id: r.get(0)?,
+                email_address: r.get(1)?,
+                display_name: r.get(2)?,
+                imap_host: r.get(3)?,
+                imap_port: r.get::<_, i64>(4)? as u16,
+                use_tls: tls_int != 0,
+                status: r.get(6)?,
+                last_synced_at: r.get(7)?,
+            })
+        }).map_err(|e| OrionError::Db(e.to_string()))?;
+
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(|e| OrionError::Db(e.to_string()))?);
+        }
+        Ok(out)
     }
 
     /// Seed default realistic enterprise emails if inbox is empty.

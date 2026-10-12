@@ -334,16 +334,21 @@ opt-in warning screen.**
 | M | Milestone | Proves | Evidence |
 |---|---|---|---|
 | **M0** | Tauri + llama-server + SQLite + streaming chat | the shell works | fresh machine, offline chat |
-| **M1** | Hardware profiler + model manager | your tiering idea | 8/16/32 GB VMs each pick correctly |
-| **M2** | Documents: multi-format, structure-aware chunking, hybrid search, citations | the product | **30-question eval set, scored** |
-| **M3** | Everywhere: tray, hotkey, file drop, context menu | reach | cold-start <1 s |
-| **M4** | Voice in/out + wake word | C5 | measured round-trip per tier |
-| **M5** | **Capability broker + read-only tools, propose-only** | safety *before* power | red-team: injected PDF cannot fire a tool |
-| **M6** | **Release v1** — Linux + Windows, signed, actions opt-in | shippable | install on a machine that never had it |
-| **M7** | Email read/triage/draft | C6 | injected email cannot act |
-| **M8** | Browser control (own profile) | C8 | allowlist enforced |
-| **M9** | Desktop control + scoped writes with undo | C7/C9 | undo restores every change |
-| **M10** | T2/T3 sandboxed execution | full Jarvis | adversarial suite passes |
+| **M1** | C++ Inference Engine & Hardware Profiler | sub-second startup & tiering | 8/16/32 GB VMs each pick correctly, memory ceiling <= 2.0 GB |
+| **M2** | Hybrid RAG Engine (FTS5 BM25 + dense BGE-small vectors + lead chunk fallback) | grounded retrieval | **30-question eval set, scored** |
+| **M3** | Desktop HUD & Presence (Ctrl+Shift+0 daemon, tray overlay) | reach | cold-start <1 s |
+| **M4** | Voice Loop (Whisper edge STT + neural Piper TTS) | duplex speech loop | measured round-trip per tier |
+| **M5** | **Capability Broker + 4-tier sandbox (T0–T3)** | safety *before* power | red-team: injected PDF cannot fire a tool |
+| **M6** | **Windows Auto-Installer & Personas** | shippable distribution | install on a machine that never had it |
+| **M7** | **Sovereign Email Assistant (Read, Triage, Draft & IMAP/EML sync)** | sovereign triage | injected email quarantined, strictly no auto-send (Rule R-5) |
+| **M8** | Sandboxed Browser Automation (Playwright headless AX tree) | C8 web actions | domain allowlist enforced, zero vision token overhead |
+| **M9** | OS UI Automation (Win32 UIA / AT-SPI desktop control with undo) | C7/C9 app actions | undo restores every change |
+| **M10** | Kernel Hardening (AppContainer isolation, zero-egress firewall) | full enterprise defense | adversarial suite passes |
+
+### Platform Co-Engineering Additions (Implemented across M1–M7)
+- **Multi-Session Chat Management (Storage-First):** SQLite schema v3 pagination, persistent chat sessions, inline renaming, chronological groups.
+- **Native Document Compilation Engine:** True binary document generation directly from conversational context for Microsoft Excel (`.xlsx` with formulas and styling), Word (`.docx`), and Adobe PDF (`.pdf`).
+- **Salted PIN Lock & React ErrorBoundary:** SHA-256 salted PIN screen lock, 8-minute inactivity timer, and top-level React diagnostic `ErrorBoundary`.
 
 **M5 before M7–M10 is non-negotiable.** The boundary gets built before anything can write.
 

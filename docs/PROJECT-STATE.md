@@ -1,9 +1,9 @@
 # ORION — PROJECT STATE & STRATEGIC MASTER RECORD
 
-**Last updated:** 2026-09-23
-**Current state:** `BUILDING`
-**Current phase:** M4 (Voice Pipeline & Full Talking Loop Verified) → Advancing to M5 (Capability Broker)
-**Repo:** `https://github.com/kuldeepyadav001/Orion.git` (`main` @ `55df816`)
+**Last updated:** 2026-10-12
+**Current state:** `BUILDING & DEPLOYING`
+**Current phase:** M7 (Sovereign Email Assistant & Real Ingestion Pipeline) → Advancing to M8 (Sandboxed Browser Automation)
+**Repo:** `https://github.com/kuldeepyadav001/Orion.git` (`main`)
 
 ---
 
@@ -14,9 +14,9 @@ Orion is not a standard hobby project or demo. It is the foundation of a **Priva
 ### 1.1 The Core Thesis
 > *"The customer is not buying an LLM. They are buying **Private AI Infrastructure = Models + UI + Agent Runtime + Local Knowledge + Permissions + Security + Governance + Deployment**."*
 
-The model itself is replaceable open-weight compute (Qwen, Mistral, Gemma, Phi). The product moat is:
+The model itself is replaceable open-weight compute (Qwen, Mistral, Gemma, DeepSeek, Phi). The product moat is:
 - Reliable, frictionless one-installer local deployment.
-- Hardware-aware dynamic model & compute routing.
+- Hardware-aware dynamic model & compute routing on standard 8 GB laptops (<= 2.0 GB RAM ceiling).
 - Two-domain security boundary (untrusted content can never trigger actions).
 - Verifiable zero-cloud-egress and optional air-gapped isolation.
 - Enterprise governance, audit logging, and undo journals.
@@ -41,27 +41,34 @@ The model itself is replaceable open-weight compute (Qwen, Mistral, Gemma, Phi).
 Once Orion reaches M10 and ships as a hardened single-agent local product, its local engine and capability broker will serve as an inference/execution backend for the broader Production Multi-Agent Engineering System. Specialized local models will collaborate across routing, extraction, coding, and review within the verified permission boundaries.
 
 ### 1.5 Architecture Enhancements: Inactivity Sleep & Dual-Model Routing
-- **Auto-Hibernate Policy:** Inactivity watchdog timer unloads `llama-server` from RAM after a period of user inactivity (e.g., 10 minutes), freeing 3.5 GB–9 GB of memory back to the OS. State cleanly reverts to `Standby` and wakes transparently on next user prompt.
+- **Auto-Hibernate Policy:** Inactivity watchdog timer unloads `llama-server` from RAM after a period of user inactivity (exactly 8 minutes default), freeing memory back to the OS. State cleanly reverts to `Standby` and wakes transparently on next user prompt.
 - **Installer Workload Persona:** Setup wizard prompts users for their domain focus (Developer/Coder, Researcher/Analyst, Creative/Animation, or General Assistant), configuring an appropriate specialized model.
 - **Two-Tier Model Orchestration:** Lightweight Generalist model serves as the Front-of-House router handling voice input and quick conversation. When complex domain tasks are recognized, the Generalist enhances/structures the prompt, offloads from RAM, and brings the Specialist model into memory for deep execution.
 
 ---
 
-## 2. VERIFIED MILESTONE PROGRESS (M0 — M4)
+## 2. CANONICAL MILESTONE MASTER ROADMAP (M0 — M10)
 
-| Milestone | Capability | Status | Verified Evidence |
+The foundational product roadmap established for Orion consists of 10 core engineering milestones plus specialized platform additions:
+
+| Milestone | Capability | Status | Architectural Invariants & Verified Deliverables |
 |---|---|---|---|
-| **M0** | App Shell, Tauri v2, SQLite, llama-server sidecar | ✅ **VERIFIED** | Streaming chat, migration ladder (5 migrations), ephemeral loopback auth, lazy engine startup, JobObject child cleanup. |
-| **M1** | Hardware Profiler & Tiered Model Manager | ✅ **VERIFIED** | Dual-bounding RAM profiler (T0–T4), forced-tier override (`ORION_FORCE_PROFILE`), Apache/MIT redistribution gate, user `.gguf` fallback. |
-| **M2** | Document Intelligence & RAG Pipeline | ✅ **VERIFIED** | Structure-aware chunking (heading trails + pages), hardened extractors (PDF, DOCX, XLSX, MD, CSV), bge-small embedder, hybrid BM25+vector RRF search, 30-question eval suite. |
-| **M3** | System Presence & OS Integration | ✅ **VERIFIED** | System tray + menu with lifecycle ownership, `Win+O` global hotkey with 4-state window logic, file drag-and-drop intake, single-instance lock. |
-| **M4** | Voice Input/Output Pipeline (STT + TTS) | ✅ **VERIFIED** | `whisper-cli` one-shot transcription with Silero VAD, 96 KB pre-roll ring buffer, multi-format `cpal` audio capture, hands-free conversational auto-send, Piper neural TTS + WebView2 Web Speech fallback, 8-min RAM watchdog. |
-| **M5** | **Capability Broker & Security Boundary** | ✅ **VERIFIED** | Two-domain isolation, T0–T3 permission tiers, symlink resolution (`RESOLVE_BENEATH`), audit log & undo journal, red-team injection tests (458 passed, 0 failed). |
-| **M6** | **Release v1 Packaging & Onboarding** | ⏳ **IMPLEMENTED** | First-run onboarding wizard, 4 workload personas (Developer, Researcher, Creative, General), NSIS Windows installer, release build pipeline. |
-| **M7** | Email Assistant (Read/Triage/Draft) | ⏳ Queued | IMAP with OS keychain, untrusted text quarantine, strictly no auto-send. |
-| **M8** | Browser Automation | ⏳ Queued | Playwright Accessibility (AX) tree snapshots, dedicated browser profile, domain allowlist. |
-| **M9** | Desktop Control & Scoped Writes | ⏳ Queued | Windows UIA / Linux AT-SPI accessibility tree automation, undo-journal backed file operations. |
-| **M10** | Sandboxed Execution & GA Release | ⏳ Queued | OS-level sandboxes (AppContainer / Bubblewrap), fat offline bundle (~3.2 GB) + slim installer (~50 MB). |
+| **M0** | **App Shell & Core Engine** | ✅ **VERIFIED** | Tauri v2, SQLite, embedded llama-server sidecar, streaming chat, 5-step migration ladder, ephemeral loopback auth, lazy engine startup, JobObject child process cleanup. |
+| **M1** | **C++ Inference Engine** | ✅ **VERIFIED** | Embedded llama-server, SSE token streaming, sub-second startup, hardware profiler with dual-bounding RAM tiers (T0–T4), forced-tier override, Apache/MIT redistribution gate. |
+| **M2** | **Hybrid RAG Engine** | ✅ **VERIFIED** | Structure-aware chunking (heading trails + pages), hardened extractors (PDF, DOCX, XLSX, MD, CSV), BGE-small / MiniLM dense vector search + SQLite FTS5 BM25 + Reciprocal Rank Fusion, 30-question eval suite, intent-aware lead chunk retrieval. |
+| **M3** | **Desktop HUD & Presence** | ✅ **VERIFIED** | Global `Ctrl+Shift+0` daemon (`Win+O` fallback), instant tray overlay, 4-state window toggle logic, file drag-and-drop intake, single-instance process lock. |
+| **M4** | **Voice Duplex Loop** | ✅ **VERIFIED** | `whisper-cli` edge STT with Silero VAD, 96 KB pre-roll ring buffer, multi-format `cpal` audio capture, hands-free conversational auto-send, Piper neural TTS + Web Speech fallback, 8-min RAM watchdog. |
+| **M5** | **Capability Broker** | ✅ **VERIFIED** | 4-tier permission matrix (T0 read-only, T1 propose/draft, T2 gated action, T3 privileged), two-domain isolation (`Domain::Trusted` vs `Domain::Untrusted`), symlink jail (`RESOLVE_BENEATH`), immutable SQLite WAL audit log & undo journal. |
+| **M6** | **Auto-Installer & Personas** | ✅ **VERIFIED** | Windows NSIS packaging, streaming background assets, sequential model distribution, 2-mode segmented switcher (General vs Selected Specialist), zero dual-model RAM bloat. |
+| **M7** | **Sovereign Email Assistant** | 🚀 **COMPLETED** | Offline IMAP/SMTP triage, multi-vector sanitization (strips zero-width chars, bidi overrides, hidden CSS), adversarial prompt-injection quarantine, real IMAP over TLS sync, Rule R-5 compliance (strictly no auto-send). |
+| **M8** | **Sandboxed Browser** | ⏳ **NEXT UP** | Playwright headless Accessibility (AX) DOM tree automation, dedicated profile, strict domain allowlist, zero-vision coordinate clicking. |
+| **M9** | **OS UI Automation** | ⏳ Queued | Win32 / UI Automation (UIA) cross-app desktop control, Linux AT-SPI accessibility tree, undo-journal backed file operations. |
+| **M10** | **Kernel Hardening** | ⏳ Queued | Windows AppContainer isolation, memory protection, kernel zero-egress firewall filter certification, enterprise single-binary release. |
+
+### 2.1 Integrated Platform Additions (Co-Engineered with M1–M7)
+- **Permanent SQLite Multi-Session Chat Engine:** Storage-first architecture replacing in-memory RAM loading with SQLite Schema v3; pagination of active turns; persistent session switching, renaming, and audit logs.
+- **Native Document Compilation Engine:** True binary document generation directly from conversational context for Microsoft Excel (`.xlsx` with formulas, headers, styles), Microsoft Word (`.docx` with typography, tables, callouts), and Adobe PDF (`.pdf` with executive layouts).
+- **Salted PIN Lock & Security Shield:** SHA-256 salted PIN screen lock, 8-minute inactivity timer, and top-level React diagnostic `ErrorBoundary` for zero-black-screen resilience.
 
 ---
 
