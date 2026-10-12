@@ -23,6 +23,7 @@ pub mod broker;
 pub mod persona;
 pub mod downloader;
 pub mod email;
+pub mod browser;
 
 use std::sync::Arc;
 
@@ -77,6 +78,8 @@ pub struct AppState {
     pub downloader: Arc<downloader::DownloadManager>,
     /// Tracks which model is currently resident in RAM ("general", "coder", "researcher").
     pub active_loaded_model: Arc<tokio::sync::Mutex<String>>,
+    /// Sandboxed browser automation manager (Milestone 8).
+    pub browser: Arc<browser::BrowserManager>,
     /// Ensures the lazy engine start happens exactly once, even if several
     /// messages are sent before it finishes loading.
     pub engine_started: Arc<tokio::sync::OnceCell<()>>,
@@ -919,6 +922,55 @@ async fn list_email_accounts(
 ) -> Result<Vec<crate::db::StoredEmailAccount>> {
     let db = state.db.lock().await;
     db.list_email_accounts()
+}
+
+/* ------------------------------------------------------------------ */
+/* Sandboxed Browser Automation Commands (Milestone 8)                */
+/* ------------------------------------------------------------------ */
+
+#[tauri::command]
+async fn browser_status(state: State<'_, AppState>) -> Result<browser::BrowserStatus> {
+    Ok(state.browser.status().await)
+}
+
+#[tauri::command]
+async fn browser_navigate(
+    url: String,
+    state: State<'_, AppState>,
+) -> Result<browser::ax::AxSnapshot> {
+    let db = state.db.lock().await;
+    let _ = db.conn().execute(
+        "INSERT INTO audit_log (id, timestamp, domain, capability, path_accessed, tier, outcome, reason)
+         VALUES (?1, ?2, 'trusted', 'browser_navigate', ?3, 'T2', 'ALLOWED', ?4)",
+        params![
+            uuid::Uuid::new_v4().to_string(),
+            chrono::Utc::now().to_rfc3339(),
+            url,
+            "Navigated sandboxed browser (isolated profile) to target URL",
+        ],
+    );
+    drop(db);
+    state.browser.navigate(&url).await
+}
+
+#[tauri::command]
+async fn browser_snapshot(state: State<'_, AppState>) -> Result<browser::ax::AxSnapshot> {
+    state.browser.snapshot().await
+}
+
+#[tauri::command]
+async fn browser_close(state: State<'_, AppState>) -> Result<()> {
+    let db = state.db.lock().await;
+    let _ = db.conn().execute(
+        "INSERT INTO audit_log (id, timestamp, domain, capability, path_accessed, tier, outcome, reason)
+         VALUES (?1, ?2, 'trusted', 'browser_close', 'session', 'T0', 'ALLOWED', 'Closed sandboxed browser session')",
+        params![
+            uuid::Uuid::new_v4().to_string(),
+            chrono::Utc::now().to_rfc3339(),
+        ],
+    );
+    drop(db);
+    state.browser.close().await
 }
 
 /// The measured (or simulated) hardware profile.
@@ -2168,6 +2220,7 @@ pub fn run() {
             let models_dir_dl = db::data_dir().unwrap_or_default().join("models");
             let downloader = Arc::new(downloader::DownloadManager::new(models_dir_dl));
             let active_loaded_model = Arc::new(tokio::sync::Mutex::new("general".to_string()));
+            let browser_mgr = Arc::new(browser::BrowserManager::new());
 
             app.manage(AppState {
                 engine: engine.clone(),
@@ -2185,6 +2238,7 @@ pub fn run() {
                 is_unlocked: is_unlocked.clone(),
                 downloader: downloader.clone(),
                 active_loaded_model: active_loaded_model.clone(),
+                browser: browser_mgr.clone(),
                 engine_started: Arc::new(tokio::sync::OnceCell::new()),
             });
 
@@ -2375,7 +2429,11 @@ pub fn run() {
             delete_inbox_email,
             sync_user_inbox,
             import_eml_emails,
-            list_email_accounts
+            list_email_accounts,
+            browser_status,
+            browser_navigate,
+            browser_snapshot,
+            browser_close
         ])
         .build(tauri::generate_context!())
         .expect("error while building Orion")

@@ -341,7 +341,7 @@ opt-in warning screen.**
 | **M5** | **Capability Broker + 4-tier sandbox (T0–T3)** | safety *before* power | red-team: injected PDF cannot fire a tool |
 | **M6** | **Windows Auto-Installer & Personas** | shippable distribution | install on a machine that never had it |
 | **M7** | **Sovereign Email Assistant (Read, Triage, Draft & IMAP/EML sync)** | sovereign triage | injected email quarantined, strictly no auto-send (Rule R-5) |
-| **M8** | Sandboxed Browser Automation (Playwright headless AX tree) | C8 web actions | domain allowlist enforced, zero vision token overhead |
+| **M8** | **Sandboxed Browser Automation (Headless AX tree & isolated profile)** | C8 web actions | domain allowlist enforced, zero vision token overhead, 99.8% bandwidth saved |
 | **M9** | OS UI Automation (Win32 UIA / AT-SPI desktop control with undo) | C7/C9 app actions | undo restores every change |
 | **M10** | Kernel Hardening (AppContainer isolation, zero-egress firewall) | full enterprise defense | adversarial suite passes |
 

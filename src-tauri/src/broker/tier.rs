@@ -90,6 +90,17 @@ pub enum ActionKind {
     AccessCredentials { target: String },
     /// Access to OS system root or system binaries.
     AccessSystemPath { target: String },
+
+    /// Navigate headless sandboxed browser to a URL (M8).
+    BrowserNavigate { url: String },
+    /// Extract accessibility DOM snapshot or text from active browser page (M8).
+    BrowserSnapshot,
+    /// Click an element in the browser accessibility tree by ref (M8).
+    BrowserClick { element_ref: String },
+    /// Type text into an input in the browser accessibility tree (M8).
+    BrowserType { element_ref: String, text: String },
+    /// Close the headless browser session (M8).
+    BrowserClose,
 }
 
 impl ActionKind {
@@ -112,19 +123,29 @@ impl ActionKind {
             Self::ModifyOrionConfig { target }
             | Self::AccessCredentials { target }
             | Self::AccessSystemPath { target } => target.clone(),
+            Self::BrowserNavigate { url } => format!("navigate: {url}"),
+            Self::BrowserSnapshot => "browser_snapshot".to_string(),
+            Self::BrowserClick { element_ref } => format!("click: {element_ref}"),
+            Self::BrowserType { element_ref, text } => format!("type: {element_ref} ('{text}')"),
+            Self::BrowserClose => "browser_close".to_string(),
         }
     }
 
     /// Default baseline tier classification.
     pub fn default_tier(&self) -> CapabilityTier {
         match self {
-            Self::ReadFile { .. } | Self::ListDirectory { .. } | Self::LibraryStats => {
-                CapabilityTier::T0Read
-            }
+            Self::ReadFile { .. }
+            | Self::ListDirectory { .. }
+            | Self::LibraryStats
+            | Self::BrowserSnapshot
+            | Self::BrowserClose => CapabilityTier::T0Read,
             Self::WriteDraft { .. } => CapabilityTier::T1Reversible,
-            Self::OverwriteFile { .. } | Self::DeleteFile { .. } | Self::RenameFile { .. } => {
-                CapabilityTier::T2Destructive
-            }
+            Self::OverwriteFile { .. }
+            | Self::DeleteFile { .. }
+            | Self::RenameFile { .. }
+            | Self::BrowserNavigate { .. }
+            | Self::BrowserClick { .. }
+            | Self::BrowserType { .. } => CapabilityTier::T2Destructive,
             Self::ExecuteCommand { .. } | Self::NetworkRequest { .. } => {
                 CapabilityTier::T3System
             }
@@ -151,6 +172,15 @@ impl ActionKind {
             }
             Self::NetworkRequest { url, method } => {
                 format!("Send outbound {method} request to '{url}'?")
+            }
+            Self::BrowserNavigate { url } => {
+                format!("Allow sandboxed browser to navigate to '{url}'?")
+            }
+            Self::BrowserClick { element_ref } => {
+                format!("Allow browser to click element '{element_ref}'?")
+            }
+            Self::BrowserType { element_ref, text } => {
+                format!("Allow browser to enter '{text}' into '{element_ref}'?")
             }
             _ => format!("Authorize action on '{}'?", self.target_summary()),
         }

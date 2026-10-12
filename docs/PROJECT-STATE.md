@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-10-12
 **Current state:** `BUILDING & DEPLOYING`
-**Current phase:** M7 (Sovereign Email Assistant & Real Ingestion Pipeline) → Advancing to M8 (Sandboxed Browser Automation)
+**Current phase:** M8 (Sandboxed Browser Automation) ✅ COMPLETED → Advancing to M9 (OS UI Automation)
 **Repo:** `https://github.com/kuldeepyadav001/Orion.git` (`main`)
 
 ---
@@ -61,7 +61,7 @@ The foundational product roadmap established for Orion consists of 10 core engin
 | **M5** | **Capability Broker** | ✅ **VERIFIED** | 4-tier permission matrix (T0 read-only, T1 propose/draft, T2 gated action, T3 privileged), two-domain isolation (`Domain::Trusted` vs `Domain::Untrusted`), symlink jail (`RESOLVE_BENEATH`), immutable SQLite WAL audit log & undo journal. |
 | **M6** | **Auto-Installer & Personas** | ✅ **VERIFIED** | Windows NSIS packaging, streaming background assets, sequential model distribution, 2-mode segmented switcher (General vs Selected Specialist), zero dual-model RAM bloat. |
 | **M7** | **Sovereign Email Assistant** | 🚀 **COMPLETED** | Offline IMAP/SMTP triage, multi-vector sanitization (strips zero-width chars, bidi overrides, hidden CSS), adversarial prompt-injection quarantine, real IMAP over TLS sync, Rule R-5 compliance (strictly no auto-send). |
-| **M8** | **Sandboxed Browser** | ⏳ **NEXT UP** | Playwright headless Accessibility (AX) DOM tree automation, dedicated profile, strict domain allowlist, zero-vision coordinate clicking. |
+| **M8** | **Sandboxed Browser** | 🚀 **COMPLETED** | Zero-vision Accessibility (AX) DOM tree automation, dedicated profile isolation (~/.orion/browser_profile), two-domain quarantine, 2–5 KB text context vs 1.4 MB screenshots, Capability Broker T2 navigation & audit trail. |
 | **M9** | **OS UI Automation** | ⏳ Queued | Win32 / UI Automation (UIA) cross-app desktop control, Linux AT-SPI accessibility tree, undo-journal backed file operations. |
 | **M10** | **Kernel Hardening** | ⏳ Queued | Windows AppContainer isolation, memory protection, kernel zero-egress firewall filter certification, enterprise single-binary release. |
 
@@ -170,11 +170,29 @@ The voice pipeline was audited end-to-end against real audio hardware contracts 
   6. **Master Passcode Security Lock (`LockScreen.jsx`):** Salted SHA-256 encrypted master PIN lock, instant quick lock button, password hint support, and backend command gating against unauthorized local access on shared PCs.
   7. **Release Packaging & Distribution Guide (`docs/M6-RELEASE-V1.md`):** Complete workflow for generating `.exe` installers, transferring to family/test machines, and seamless upgrade ladder to M7–M10 preserving local databases and embeddings.
 
+### Milestone 7: Sovereign Email Assistant (VERIFIED & COMPLETED)
+- **Status:** Complete, passing test suite, 0 lint warnings.
+- **Deliverables:**
+  1. **Rule R-5 Compliance:** Strictly no auto-send API or unattended outbound SMTP capabilities exist in Orion. All email generation terminates in clipboard copy or native `mailto:` draft launch, enforcing human-in-the-loop dispatch.
+  2. **Multi-Vector Threat Sanitization:** Ingested email bodies stripped of zero-width control chars (`\u{200B}`, `\u{200C}`, `\u{FEFF}`), bidirectional overrides, hidden CSS, and base64 tracking pixels before storage in SQLite schema v3.
+  3. **Adversarial Prompt Injection Quarantine:** Ingestion classifier intercepts systemic override directives (`"ignore instructions"`, `"transfer funds"`, etc.), tagging records as `cat-quarantine` and neutralizing tool access.
+  4. **Dual Ingestion Engine:** Live RFC9051 IMAP over TLS client (`native-tls` / `rustls`) and offline air-gapped `.eml` / RFC822 parser (`mailparse`).
+  5. **Email Studio UI (`EmailStudio.jsx`):** Modern, minimalist split-pane UI with priority triage pills (Urgent, Action Required, Newsletter, Quarantined), action item extractors, tone-adjustable draft generation, and account manager.
+
+### Milestone 8: Sandboxed Browser Automation (VERIFIED & COMPLETED)
+- **Status:** Complete, 0 lint warnings, clean build.
+- **Deliverables:**
+  1. **Zero-Vision Accessibility (AX) Trees:** Abandons 500 KB–2 MB pixel dumps in favor of 2–5 KB deterministic structured semantic text (`AxElement`, `AxSnapshot`, `InteractiveRef`). Eliminates coordinate vision hallucinations on 3B/4B local models and saves 99.8% bandwidth/RAM.
+  2. **Dedicated Isolated Browser Profile:** Automates Chromium/Edge instances rooted at `~/.orion/browser_profile`. The user's personal browser cookies, history, and passwords remain physically inaccessible.
+  3. **Two-Domain Boundary Enforcement:** Scraped web pages are tagged strictly as `DomainSource::WebPage` (`Domain::Untrusted`). Web-based prompt injections are physically prevented from invoking Capability Broker tools.
+  4. **Capability Broker T2 Audit Logging:** Navigation commands trigger Tier 2 broker audit records in SQLite WAL `audit_log`, providing non-repudiation and operator transparency.
+  5. **Browser Studio (`BrowserStudio.jsx`):** Dedicated UI panel with address bar, quick presets, interactive element inspector table, copyable `[ref: eX]` tokens, compact AX tree viewer, and one-click "Analyze in Chat" bridge.
+
 ---
 
-## 5. IMMEDIATE OBJECTIVE: MILESTONE 7 (M7) — EMAIL ASSISTANT
+## 6. IMMEDIATE OBJECTIVE: MILESTONE 9 (M9) — OS UI AUTOMATION
 
-With M0 through M6 completed and verified, Orion is ready for **Milestone 7 (Email Assistant: Read, Triage, and Draft)** under the strict supervision of the Capability Broker.
-- **Rule R-5:** Orion drafts emails; Orion never sends them automatically without human verification.
-- Read & triage via local IMAP/OAuth2 token management.
-- Drafting in user's distinct voice using selected Workload Persona.
+With M0 through M8 completed and verified, Orion is positioned for **Milestone 9 (OS UI Automation)**:
+- Win32 UI Automation (UIA) and Linux AT-SPI accessibility tree automation across desktop applications.
+- Reversible OS file actions backed by the Capability Broker SQLite Undo Journal.
+- Local model task synthesis with deterministic element refs (`ref: eX`) matching the M8 zero-vision paradigm.

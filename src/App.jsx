@@ -13,10 +13,12 @@ import { LockScreen, LockSettingsModal } from "./LockScreen";
 import { ChatHistoryList } from "./ChatSidebar";
 import DocumentCard from "./DocumentCard";
 import EmailStudio from "./EmailStudio";
+import BrowserStudio from "./BrowserStudio";
 import {
   IconMessageSquare,
   IconLibrary,
   IconMail,
+  IconGlobe,
   IconPlus,
   IconPencil,
   IconFileSpreadsheet,
@@ -298,6 +300,7 @@ export default function App() {
   const [editTitleValue, setEditTitleValue] = useState("");
   const [specialistPersona, setSpecialistPersona] = useState({ id: "developer", name: "Developer", icon: "💻" });
   const [showEmailStudio, setShowEmailStudio] = useState(false);
+  const [showBrowserStudio, setShowBrowserStudio] = useState(false);
 
   const audioPlayerRef = useRef(null);
   const lastSourceRef = useRef("text");
@@ -1506,6 +1509,15 @@ export default function App() {
           <div className="header-actions">
             <button
               type="button"
+              className="btn-header-browser"
+              onClick={() => setShowBrowserStudio(true)}
+              title="Sandboxed Browser Automation (M8)"
+            >
+              <IconGlobe size={13} />
+              <span>Browser</span>
+            </button>
+            <button
+              type="button"
               className="btn-header-email"
               onClick={() => setShowEmailStudio(true)}
               title="Sovereign Email Assistant (M7)"
@@ -1896,6 +1908,16 @@ export default function App() {
         <EmailStudio
           isOpen={showEmailStudio}
           onClose={() => setShowEmailStudio(false)}
+        />
+      )}
+
+      {showBrowserStudio && (
+        <BrowserStudio
+          isOpen={showBrowserStudio}
+          onClose={() => setShowBrowserStudio(false)}
+          onInjectContextToChat={(promptText) => {
+            setInput(promptText);
+          }}
         />
       )}
 
