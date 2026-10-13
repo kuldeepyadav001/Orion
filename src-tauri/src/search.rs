@@ -7,7 +7,7 @@
 //! 3. Grounded Factual Context: Injects clean search snippets directly into local LLM prompt.
 
 use serde::{Deserialize, Serialize};
-use crate::error::{OrionError, Result};
+use crate::error::Result;
 
 /// A single structured web search finding.
 #[derive(Debug, Clone, Serialize, Deserialize)]

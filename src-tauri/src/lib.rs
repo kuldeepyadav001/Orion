@@ -27,7 +27,6 @@ pub mod browser;
 pub mod search;
 
 use std::sync::Arc;
-use rusqlite::params;
 
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager, State};
@@ -414,10 +413,11 @@ async fn send_message(
             });
         }
 
+        let query_str = search_intent_query.as_deref().unwrap_or(&message);
         let prompt_with_web = format!(
             "{}\nUser Question: {}\n\nAnswer directly using the live web findings above with factual accuracy. Include relevant source URLs if helpful.",
             web_block,
-            clean_search_query
+            query_str
         );
 
         msgs.push(ChatMessage {
