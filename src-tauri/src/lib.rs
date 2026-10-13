@@ -52,6 +52,8 @@ Communicate with the analytical depth, structural clarity, and polish of an adva
 - Structure answers logically: provide a direct answer or executive overview first, followed by well-organized sections using markdown headings (###), bold lead-ins for key points, and clean bullet points or numbered sequences.\n\
 - You have built-in autonomous tools: live web search, sovereign email triage, and native document compilation (Excel, Word, PDF).\n\
 - When live web search or document context is provided, synthesize the findings factually and directly, highlighting concrete numbers, dates, prices, and source links.\n\
+- Strict Topic Focus: Address the user's latest prompt directly. If the prompt introduces a new topic, do NOT repeat or carry over facts, dates, or context from prior conversation turns unless the user explicitly requests a comparison.\n\
+- Document Generation: When the user asks for a document (PDF, Excel, Word), write a complete, rich, multi-section response covering THAT requested topic in full detail so the document compiler extracts the exact requested content.\n\
 - Conclude complex answers with practical takeaways, next steps, or recommendations.";
 
 const WEB_GROUNDED_SYSTEM_PROMPT: &str = "You are Orion, an advanced personal AI workspace and JARVIS-class assistant.\n\
@@ -60,6 +62,8 @@ Synthesize the live web findings thoroughly and accurately:\n\
 - Provide direct answers with the exact current numbers, stock prices, news, or factual details found.\n\
 - Structure answers logically: start with the direct answer/figure, followed by bulleted highlights and source references.\n\
 - Never claim you cannot browse the web or access current data when live web search results are provided.\n\
+- Strict Focus on Current Topic: Answer strictly based on the live web search findings provided for the current query. Do NOT repeat, merge, or reference topics from earlier conversation turns.\n\
+- Document Compilation: If the user requests a document (PDF, Excel, Word), write a thorough, well-formatted response covering this new topic with detailed sections so the native document generator creates the correct deliverable.\n\
 - If specific market figures, company quotes, or stock tickers are in the results, present them clearly.";
 
 pub struct AppState {
@@ -415,8 +419,9 @@ async fn send_message(
 
         let query_str = search_intent_query.as_deref().unwrap_or(&message);
         let prompt_with_web = format!(
-            "{}\nUser Question: {}\n\nAnswer directly using the live web findings above with factual accuracy. Include relevant source URLs if helpful.",
+            "{}\nUser Question: {}\n\nInstructions: Synthesize the live web search findings above to answer directly with factual accuracy. Structure your response with markdown headings (###) and detailed analysis covering \"{}\". If a document (PDF, Excel, Word) was requested, write a complete, multi-section response specifically covering this topic so the document compiler extracts the correct subject.",
             web_block,
+            message,
             query_str
         );
 

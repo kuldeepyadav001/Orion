@@ -17,6 +17,75 @@ pub struct SearchResult {
     pub snippet: String,
 }
 
+/// Strips conversational noise, artifact formatting instructions ("and make pdf"),
+/// and document commands from search queries so engines receive clean information targets.
+pub fn clean_query_noise(query: &str) -> String {
+    let mut q = query.trim().to_string();
+    let lower = q.to_lowercase();
+
+    let action_suffixes = [
+        " and make a pdf",
+        " and make pdf",
+        " and make a pfd",
+        " and make pfd",
+        " and create a pdf",
+        " and create pdf",
+        " and generate a pdf",
+        " and generate pdf",
+        " and export to pdf",
+        " and export as pdf",
+        " and make an excel sheet",
+        " and make an excel",
+        " and make excel sheet",
+        " and make excel",
+        " and create excel",
+        " and export to excel",
+        " and make a word doc",
+        " and make a word document",
+        " and make word document",
+        " and make word doc",
+        " and make docx",
+        " and create a docx",
+        " and create docx",
+        " and write a report",
+        " and write report",
+        " and summarize",
+        " make a pdf",
+        " make pdf",
+        " make a pfd",
+        " make pfd",
+        " in a pdf report",
+        " in a pdf",
+        " in pdf format",
+        " in pdf",
+        " as a pdf",
+        " as pdf",
+        " to a pdf",
+        " to pdf",
+        " in an excel sheet",
+        " in excel",
+        " as an excel sheet",
+        " as excel",
+        " in a table",
+        " in table format",
+        " as a table",
+        " please",
+    ];
+
+    for &suffix in &action_suffixes {
+        if lower.ends_with(suffix) {
+            let cut_len = q.len().saturating_sub(suffix.len());
+            q = q[..cut_len].trim().to_string();
+            break;
+        }
+    }
+
+    q.replace("prics", "price")
+        .replace("serch", "search")
+        .trim()
+        .to_string()
+}
+
 /// Detects if a user message has web search intent, returning the normalized search query.
 pub fn detect_search_intent(message: &str) -> Option<String> {
     let raw = message.trim();
@@ -27,7 +96,8 @@ pub fn detect_search_intent(message: &str) -> Option<String> {
     // 1. Explicit UI tag
     if raw.starts_with("[web_search]") {
         let q = raw.trim_start_matches("[web_search]").trim();
-        return if q.is_empty() { None } else { Some(q.to_string()) };
+        let cleaned = clean_query_noise(q);
+        return if cleaned.is_empty() { None } else { Some(cleaned) };
     }
 
     let lower = raw.to_lowercase();
@@ -56,8 +126,10 @@ pub fn detect_search_intent(message: &str) -> Option<String> {
         if lower.starts_with(prefix) {
             let q = raw[prefix.len()..].trim();
             if !q.is_empty() {
-                let normalized = q.replace("prics", "price");
-                return Some(normalized);
+                let cleaned = clean_query_noise(q);
+                if !cleaned.is_empty() {
+                    return Some(cleaned);
+                }
             }
         }
     }
@@ -85,8 +157,10 @@ pub fn detect_search_intent(message: &str) -> Option<String> {
 
     for &kw in &real_time_keywords {
         if lower.contains(kw) {
-            let normalized = raw.replace("prics", "price").replace("serch", "search");
-            return Some(normalized);
+            let cleaned = clean_query_noise(raw);
+            if !cleaned.is_empty() {
+                return Some(cleaned);
+            }
         }
     }
 
@@ -124,7 +198,24 @@ pub async fn perform_web_search(query: &str, limit: usize) -> Result<Vec<SearchR
         }
     }
 
-    // 2. Fallback: Wikipedia OpenSearch API (reliable encyclopedic search)
+    // 2. Secondary: DuckDuckGo Lite fallback (ultra-lightweight HTML endpoint)
+    let lite_res = client
+        .post("https://lite.duckduckgo.com/lite/")
+        .form(&params)
+        .send()
+        .await;
+
+    if let Ok(resp) = lite_res {
+        if resp.status().is_success() {
+            let html = resp.text().await.unwrap_or_default();
+            let parsed = parse_ddg_html(&html, limit);
+            if !parsed.is_empty() {
+                return Ok(parsed);
+            }
+        }
+    }
+
+    // 3. Fallback: Wikipedia OpenSearch API (reliable encyclopedic search)
     let wiki_url = format!(
         "https://en.wikipedia.org/w/api.php?action=opensearch&search={}&limit={}&namespace=0&format=json",
         percent_encode(clean_query),
@@ -162,26 +253,34 @@ pub async fn perform_web_search(query: &str, limit: usize) -> Result<Vec<SearchR
     Ok(Vec::new())
 }
 
-/// Parses DuckDuckGo HTML results by pairing link anchors by URL.
+/// Parses DuckDuckGo HTML results with rank preservation and clean snippet pairing.
 fn parse_ddg_html(html: &str, limit: usize) -> Vec<SearchResult> {
-    use std::collections::HashMap;
-
-    let mut link_map: HashMap<String, Vec<String>> = HashMap::new();
+    let mut results = Vec::new();
     let lower = html.to_lowercase();
     let mut cursor = 0;
 
-    while let Some(start_a) = lower[cursor..].find("<a") {
-        let abs_start = cursor + start_a;
-        let tag_end = match lower[abs_start..].find('>') {
-            Some(gt) => abs_start + gt + 1,
+    // 1. Scan for semantic result__title headings
+    while let Some(h2_start) = lower[cursor..].find("result__title") {
+        let abs_h2 = cursor + h2_start;
+        let after_h2 = &lower[abs_h2..];
+        let a_pos = match after_h2.find("<a") {
+            Some(pos) => abs_h2 + pos,
+            None => {
+                cursor = abs_h2 + 13;
+                continue;
+            }
+        };
+
+        let tag_end = match lower[a_pos..].find('>') {
+            Some(gt) => a_pos + gt + 1,
             None => break,
         };
 
-        let tag_head = &html[abs_start..tag_end];
-        let href = extract_attribute(tag_head, "href");
+        let tag_head = &html[a_pos..tag_end];
+        let mut href = extract_attribute(tag_head, "href").unwrap_or_default();
 
         let close_tag = "</a>";
-        let (inner_text, next_cursor) = match lower[tag_end..].find(close_tag) {
+        let (raw_title, a_close_pos) = match lower[tag_end..].find(close_tag) {
             Some(end_idx) => {
                 let inner = &html[tag_end..tag_end + end_idx];
                 (strip_html(inner), tag_end + end_idx + close_tag.len())
@@ -189,45 +288,98 @@ fn parse_ddg_html(html: &str, limit: usize) -> Vec<SearchResult> {
             None => (String::new(), tag_end),
         };
 
-        cursor = next_cursor;
+        cursor = a_close_pos;
 
-        if let Some(mut target_url) = href {
-            // Unescape DuckDuckGo redirect if present
-            if target_url.contains("uddg=") {
-                if let Some(pos) = target_url.find("uddg=") {
-                    let sub = &target_url[pos + 5..];
-                    let raw_url = sub.split('&').next().unwrap_or(sub);
-                    target_url = percent_decode(raw_url);
-                }
+        // Unescape DuckDuckGo redirect if present
+        if href.contains("uddg=") {
+            if let Some(pos) = href.find("uddg=") {
+                let sub = &href[pos + 5..];
+                let raw_url = sub.split('&').next().unwrap_or(sub);
+                href = percent_decode(raw_url);
             }
+        }
 
-            if target_url.starts_with("http://") || target_url.starts_with("https://") {
-                if !target_url.contains("duckduckgo.com") && !inner_text.trim().is_empty() {
-                    link_map.entry(target_url).or_default().push(inner_text);
+        // Extract corresponding snippet before the next result title
+        let mut snippet = String::new();
+        if let Some(snip_marker) = lower[cursor..].find("result__snippet") {
+            let next_title = lower[cursor..].find("result__title").unwrap_or(usize::MAX);
+            if snip_marker < next_title {
+                let abs_snip = cursor + snip_marker;
+                if let Some(snip_tag_end) = lower[abs_snip..].find('>') {
+                    let content_start = abs_snip + snip_tag_end + 1;
+                    if let Some(snip_close) = lower[content_start..].find("</a>") {
+                        let inner = &html[content_start..content_start + snip_close];
+                        snippet = strip_html(inner);
+                        cursor = content_start + snip_close + 4;
+                    }
                 }
             }
         }
-    }
 
-    let mut results = Vec::new();
-    for (url, texts) in link_map {
-        if texts.is_empty() {
-            continue;
-        }
-
-        let title = texts[0].clone();
-        let snippet = if texts.len() > 1 {
-            texts[1].clone()
-        } else {
-            texts[0].clone()
-        };
-
-        if title.len() > 5 {
-            results.push(SearchResult { title, url, snippet });
+        if (href.starts_with("http://") || href.starts_with("https://"))
+            && !href.contains("duckduckgo.com")
+            && raw_title.len() > 3
+        {
+            results.push(SearchResult {
+                title: raw_title,
+                url: href,
+                snippet,
+            });
         }
 
         if results.len() >= limit {
             break;
+        }
+    }
+
+    // 2. Secondary fallback for alternative layouts or Lite endpoints
+    if results.is_empty() {
+        let mut cursor = 0;
+        while let Some(start_a) = lower[cursor..].find("<a") {
+            let abs_start = cursor + start_a;
+            let tag_end = match lower[abs_start..].find('>') {
+                Some(gt) => abs_start + gt + 1,
+                None => break,
+            };
+
+            let tag_head = &html[abs_start..tag_end];
+            let href = extract_attribute(tag_head, "href");
+
+            let close_tag = "</a>";
+            let (inner_text, next_cursor) = match lower[tag_end..].find(close_tag) {
+                Some(end_idx) => {
+                    let inner = &html[tag_end..tag_end + end_idx];
+                    (strip_html(inner), tag_end + end_idx + close_tag.len())
+                }
+                None => (String::new(), tag_end),
+            };
+
+            cursor = next_cursor;
+
+            if let Some(mut target_url) = href {
+                if target_url.contains("uddg=") {
+                    if let Some(pos) = target_url.find("uddg=") {
+                        let sub = &target_url[pos + 5..];
+                        let raw_url = sub.split('&').next().unwrap_or(sub);
+                        target_url = percent_decode(raw_url);
+                    }
+                }
+
+                if (target_url.starts_with("http://") || target_url.starts_with("https://"))
+                    && !target_url.contains("duckduckgo.com")
+                    && inner_text.len() > 10
+                {
+                    results.push(SearchResult {
+                        title: inner_text.clone(),
+                        url: target_url,
+                        snippet: inner_text,
+                    });
+                }
+            }
+
+            if results.len() >= limit {
+                break;
+            }
         }
     }
 
@@ -236,11 +388,13 @@ fn parse_ddg_html(html: &str, limit: usize) -> Vec<SearchResult> {
 
 fn extract_attribute(tag_head: &str, attr: &str) -> Option<String> {
     let lower = tag_head.to_lowercase();
-    let pat = format!("{attr}=\"");
-    if let Some(pos) = lower.find(&pat) {
-        let after = &tag_head[pos + pat.len()..];
-        if let Some(quote_end) = after.find('"') {
-            return Some(after[..quote_end].to_string());
+    for quote in ['"', '\''] {
+        let pat = format!("{attr}={quote}");
+        if let Some(pos) = lower.find(&pat) {
+            let after = &tag_head[pos + pat.len()..];
+            if let Some(quote_end) = after.find(quote) {
+                return Some(after[..quote_end].to_string());
+            }
         }
     }
     None

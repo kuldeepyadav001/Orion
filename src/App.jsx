@@ -1722,6 +1722,20 @@ export default function App() {
                   <div className="card-desc">Compile native binary Excel (.xlsx), Word (.docx) &amp; styled PDFs</div>
                 </div>
               </div>
+
+              {/* Suggestions on new chats only */}
+              <div className="hero-starter-chips">
+                {(FOLLOWUP_CHIPS[persona?.id] || FOLLOWUP_CHIPS.general).map((chip, idx) => (
+                  <button
+                    key={idx}
+                    type="button"
+                    className="hero-starter-chip"
+                    onClick={() => sendMessage(chip, false)}
+                  >
+                    <span className="chip-spark">✦</span> {chip}
+                  </button>
+                ))}
+              </div>
             </div>
           ) : (
             <div className="thread">
@@ -1951,21 +1965,6 @@ export default function App() {
             </div>
           )}
         </main>
-
-        {messages.length > 0 && !streaming && (
-          <div className="followup-chips">
-            {(FOLLOWUP_CHIPS[persona?.id] || FOLLOWUP_CHIPS.general).map((chip, idx) => (
-              <button
-                key={idx}
-                type="button"
-                className="followup-chip"
-                onClick={() => sendMessage(chip, false)}
-              >
-                <span className="chip-spark">✦</span> {chip}
-              </button>
-            ))}
-          </div>
-        )}
 
         <footer className="composer-capsule-wrap">
           {webSearchingQuery && (

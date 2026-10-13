@@ -5732,6 +5732,36 @@ kbd {
   line-height: 1.45;
 }
 
+.hero-starter-chips {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  max-width: 720px;
+  margin: 16px auto 0;
+}
+
+.hero-starter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: #94a3b8;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.hero-starter-chip:hover {
+  background: rgba(124, 92, 255, 0.12);
+  border-color: rgba(124, 92, 255, 0.35);
+  color: #f1f5f9;
+  transform: translateY(-1px);
+}
+
 /* --- Floating Command Capsule --- */
 .composer-capsule-wrap {
   position: relative;
