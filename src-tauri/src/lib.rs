@@ -24,6 +24,7 @@ pub mod persona;
 pub mod downloader;
 pub mod email;
 pub mod browser;
+pub mod search;
 
 use std::sync::Arc;
 use rusqlite::params;
@@ -287,12 +288,52 @@ async fn send_message(
         db.recent_messages(&session_id, HISTORY_LIMIT)?
     };
 
+    // Autonomous Web Search Hook:
+    // If user clicked the Web Search toggle ([web_search]) or said "search google for / google / search web for",
+    // execute a fast, lightweight HTTP search (250-400 ms, 0 MB extra RAM) to ground the answer in real-time facts.
+    let msg_lower = message.to_lowercase();
+    let is_web_search = message.starts_with("[web_search]")
+        || msg_lower.starts_with("search google for ")
+        || msg_lower.starts_with("search the web for ")
+        || msg_lower.starts_with("search web for ")
+        || msg_lower.starts_with("google ");
+
+    let clean_search_query = if message.starts_with("[web_search]") {
+        message.trim_start_matches("[web_search]").trim().to_string()
+    } else if msg_lower.starts_with("search google for ") {
+        message[18..].trim().to_string()
+    } else if msg_lower.starts_with("search the web for ") {
+        message[19..].trim().to_string()
+    } else if msg_lower.starts_with("search web for ") {
+        message[15..].trim().to_string()
+    } else if msg_lower.starts_with("google ") {
+        message[7..].trim().to_string()
+    } else {
+        message.clone()
+    };
+
+    let web_context = if is_web_search && !clean_search_query.is_empty() {
+        let _ = app.emit("chat://web_searching", serde_json::json!({ "query": clean_search_query }));
+        match search::perform_web_search(&clean_search_query, 4).await {
+            Ok(results) if !results.is_empty() => {
+                let mut ctx_block = format!("Live Web Search Results for: \"{clean_search_query}\"\n\n");
+                for (idx, r) in results.iter().enumerate() {
+                    ctx_block.push_str(&format!(
+                        "{}. Source: {}\n   URL: {}\n   Snippet: {}\n\n",
+                        idx + 1, r.title, r.url, r.snippet
+                    ));
+                }
+                Some(ctx_block)
+            }
+            _ => None,
+        }
+    } else {
+        None
+    };
+
     // Consult the document library before generating. With relevant hits this
     // becomes a grounded answer with citations; without them it is an
     // ordinary chat and the library is never mentioned.
-    //
-    // Retrieval failure must not block a reply: a broken index should cost
-    // citations, not the ability to talk to the assistant.
     let grounded = match documents::retrieve(&message, &state.db, &state.embed).await {
         Ok(ctx) => ctx.filter(|c| !c.empty),
         Err(e) => {
@@ -306,7 +347,7 @@ async fn send_message(
         persona::get_active_persona(&db).unwrap_or(persona::PersonaKind::General)
     };
 
-    let base_prompt = if grounded.is_some() {
+    let base_prompt = if grounded.is_some() || web_context.is_some() {
         rag::context::GROUNDED_SYSTEM_PROMPT
     } else {
         SYSTEM_PROMPT
@@ -316,7 +357,6 @@ async fn send_message(
     let mut msgs = vec![ChatMessage::system(&system_prompt)];
 
     if let Some(ctx) = &grounded {
-        // Prior conversation history excluding the current user turn (which we format with the sources)
         let prior_history = if !history.is_empty() {
             &history[..history.len() - 1]
         } else {
@@ -330,9 +370,6 @@ async fn send_message(
             });
         }
 
-        // Format the active turn: injection-hardened source block followed directly by the user query.
-        // This ensures the model receives a unified turn with clear context and immediate question focus,
-        // rather than two consecutive user messages that confuse chat templates.
         let prompt_with_sources = format!(
             "Context from your document library:\n\n{}\n\nQuestion: {}",
             ctx.sources_block,
@@ -349,14 +386,40 @@ async fn send_message(
             "answering with document context"
         );
         let _ = app.emit("chat://citations", ctx.citations.clone());
+    } else if let Some(web_block) = &web_context {
+        let prior_history = if !history.is_empty() {
+            &history[..history.len() - 1]
+        } else {
+            &[]
+        };
+
+        for m in prior_history {
+            msgs.push(ChatMessage {
+                role: m.role.clone(),
+                content: m.content.clone(),
+            });
+        }
+
+        let prompt_with_web = format!(
+            "{}\nUser Question: {}\n\nAnswer directly using the live web findings above with factual accuracy. Include relevant source URLs if helpful.",
+            web_block,
+            clean_search_query
+        );
+
+        msgs.push(ChatMessage {
+            role: "user".into(),
+            content: prompt_with_web,
+        });
+
+        let _ = app.emit("chat://web_results", serde_json::json!({
+            "query": clean_search_query,
+            "active": true
+        }));
     } else {
         msgs.extend(history.into_iter().map(|m| ChatMessage {
             role: m.role,
             content: m.content,
         }));
-        // Tell the UI explicitly that this answer used no documents, so it can
-        // say so rather than leaving the user guessing whether the library was
-        // consulted at all.
         let _ = app.emit("chat://citations", Vec::<rag::context::Citation>::new());
     }
 
@@ -972,6 +1035,21 @@ async fn browser_close(state: State<'_, AppState>) -> Result<()> {
     );
     drop(db);
     state.browser.close().await
+}
+
+/* ------------------------------------------------------------------ */
+/* Ultra-Lightweight Autonomous Web Search (Milestone 8)               */
+/* ------------------------------------------------------------------ */
+
+#[tauri::command]
+async fn web_search(query: String, limit: Option<usize>) -> Result<Vec<search::SearchResult>> {
+    search::perform_web_search(&query, limit.unwrap_or(5)).await
+}
+
+#[tauri::command]
+async fn browse_and_summarize(url: String, state: State<'_, AppState>) -> Result<String> {
+    let snap = state.browser.navigate(&url).await?;
+    Ok(snap.semantic_tree_text)
 }
 
 /// The measured (or simulated) hardware profile.
@@ -2434,7 +2512,9 @@ pub fn run() {
             browser_status,
             browser_navigate,
             browser_snapshot,
-            browser_close
+            browser_close,
+            web_search,
+            browse_and_summarize
         ])
         .build(tauri::generate_context!())
         .expect("error while building Orion")

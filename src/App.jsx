@@ -14,11 +14,13 @@ import { ChatHistoryList } from "./ChatSidebar";
 import DocumentCard from "./DocumentCard";
 import EmailStudio from "./EmailStudio";
 import BrowserStudio from "./BrowserStudio";
+import AiOrb from "./AiOrb";
 import {
   IconMessageSquare,
   IconLibrary,
   IconMail,
   IconGlobe,
+  IconPaperclip,
   IconPlus,
   IconPencil,
   IconFileSpreadsheet,
@@ -29,7 +31,6 @@ import {
   IconSettings,
   IconSend,
   IconZap,
-  IconCode,
   IconVolume2,
   IconVolumeX,
   IconCopy,
@@ -301,6 +302,8 @@ export default function App() {
   const [specialistPersona, setSpecialistPersona] = useState({ id: "developer", name: "Developer", icon: "💻" });
   const [showEmailStudio, setShowEmailStudio] = useState(false);
   const [showBrowserStudio, setShowBrowserStudio] = useState(false);
+  const [webSearchEnabled, setWebSearchEnabled] = useState(false);
+  const [webSearchingQuery, setWebSearchingQuery] = useState(null);
 
   const audioPlayerRef = useRef(null);
   const lastSourceRef = useRef("text");
@@ -692,6 +695,26 @@ export default function App() {
       unlistenSwapped?.();
     };
   }, [refreshModelInfo]);
+
+  // Listen for live web search status
+  useEffect(() => {
+    let unSearch;
+    let unResults;
+    listen("chat://web_searching", (e) => {
+      setWebSearchingQuery(e.payload?.query || "Searching web...");
+    }).then((un) => {
+      unSearch = un;
+    });
+    listen("chat://web_results", () => {
+      setWebSearchingQuery(null);
+    }).then((un) => {
+      unResults = un;
+    });
+    return () => {
+      unSearch?.();
+      unResults?.();
+    };
+  }, []);
 
   const refreshLockStatus = useCallback(async () => {
     try {
@@ -1135,9 +1158,12 @@ export default function App() {
       lastUserQueryRef.current = text;
       setInput("");
       pending.current = "";
+
+      const activeSearch = webSearchEnabled;
+
       setMessages((prev) => [
         ...prev,
-        { role: "user", content: text },
+        { role: "user", content: text, isWebSearch: activeSearch },
         {
           role: "assistant",
           content: "",
@@ -1151,7 +1177,11 @@ export default function App() {
       setStreaming(true);
 
       try {
-        await invoke("send_message", { message: text });
+        const payloadMessage =
+          activeSearch && !text.startsWith("[web_search]")
+            ? `[web_search] ${text}`
+            : text;
+        await invoke("send_message", { message: payloadMessage });
       } catch (e) {
         pending.current = "";
         setStreaming(false);
@@ -1166,7 +1196,7 @@ export default function App() {
         });
       }
     },
-    [input, streaming, stopSpeaking, persona, modelInfo],
+    [input, streaming, stopSpeaking, persona, modelInfo, webSearchEnabled],
   );
 
   const send = useCallback(() => sendMessage(input, false), [sendMessage, input]);
@@ -1548,63 +1578,109 @@ export default function App() {
 
         <main className="chat" ref={chatRef}>
           {messages.length === 0 ? (
-            <div className="hero">
-              <div className="hero-brand-mark">
-                <Logo size={46} />
+            <div className="hero-landing">
+              <div className="hero-orb-wrap">
+                <AiOrb
+                  state={
+                    speaking
+                      ? "speaking"
+                      : streaming || webSearchingQuery
+                      ? "thinking"
+                      : "idle"
+                  }
+                  size={120}
+                  onClick={() => taRef.current?.focus()}
+                />
               </div>
-              <h1>How can I help you?</h1>
-              <p className="hero-sub">
-                100% offline • Generates Excel, Word &amp; PDF • Single-resident RAM
+
+              <h1 className="hero-greeting">How can I help today?</h1>
+              <p className="hero-subtext">
+                Live Web Intelligence • Sovereign Email • Native Documents • Voice Assistant
               </p>
 
-              <div className="suggestions">
+              {/* Quick Pills above Input */}
+              <div className="hero-quick-row">
                 <button
                   type="button"
-                  className="suggestion"
-                  onClick={() => setInput("Create an annual budget forecast spreadsheet with revenue projections, operational costs, and profit calculations in Excel (.xlsx).")}
+                  className={`hero-pill ${webSearchEnabled ? "active-pill" : ""}`}
+                  onClick={() => setWebSearchEnabled((prev) => !prev)}
                 >
-                  <span className="sg-icon"><IconFileSpreadsheet size={18} /></span>
-                  <div className="sg-text">
-                    <span className="sg-title">Budget Model in Excel</span>
-                    <span className="sg-sub">Dynamic formulas, P&amp;L, auto-styles</span>
-                  </div>
+                  <IconGlobe size={13} />
+                  <span>{webSearchEnabled ? "Live Web Search: Active" : "Web Search"}</span>
                 </button>
 
                 <button
                   type="button"
-                  className="suggestion"
-                  onClick={() => setInput("Draft a comprehensive project architecture proposal in a Word document (.docx) with executive summary and comparison tables.")}
+                  className="hero-pill"
+                  onClick={() => setShowEmailStudio(true)}
                 >
-                  <span className="sg-icon"><IconFileText size={18} /></span>
-                  <div className="sg-text">
-                    <span className="sg-title">Architecture Spec in Word</span>
-                    <span className="sg-sub">Formatted headings, tables &amp; callouts</span>
-                  </div>
+                  <IconMail size={13} />
+                  <span>Check Inbox</span>
                 </button>
 
                 <button
                   type="button"
-                  className="suggestion"
-                  onClick={() => setInput("Generate an executive compliance audit report in PDF (.pdf) evaluating zero-egress data residency.")}
+                  className="hero-pill"
+                  onClick={() => setShowBrowserStudio(true)}
                 >
-                  <span className="sg-icon"><IconFilePdf size={18} /></span>
-                  <div className="sg-text">
-                    <span className="sg-title">Compliance Audit in PDF</span>
-                    <span className="sg-sub">Vector styling, metrics &amp; sign-off</span>
-                  </div>
+                  <IconGlobe size={13} />
+                  <span>Browser Sandbox</span>
                 </button>
 
                 <button
                   type="button"
-                  className="suggestion"
-                  onClick={() => setInput("Review and refactor this code snippet for optimal O(n) runtime performance and low memory allocations:")}
+                  className="hero-pill"
+                  onClick={() => {
+                    setInput("Create a complete quarterly financial forecast model in an Excel spreadsheet (.xlsx) with P&L formulas, revenue growth projections, and executive formatting.");
+                    taRef.current?.focus();
+                  }}
                 >
-                  <span className="sg-icon"><IconCode size={18} /></span>
-                  <div className="sg-text">
-                    <span className="sg-title">Refactor Code Performance</span>
-                    <span className="sg-sub">Memory safety &amp; O(n) efficiency</span>
-                  </div>
+                  <IconFileSpreadsheet size={13} />
+                  <span>Excel Model</span>
                 </button>
+              </div>
+
+              {/* 3 Sleek Capability Glass Cards matching Zyricon and LIX */}
+              <div className="hero-card-grid">
+                <div
+                  className="hero-glass-card"
+                  onClick={() => {
+                    setWebSearchEnabled(true);
+                    setInput("What are the latest technology and AI breakthroughs this week?");
+                    taRef.current?.focus();
+                  }}
+                >
+                  <div className="card-top-icon icon-cyan">
+                    <IconGlobe size={18} />
+                  </div>
+                  <div className="card-title">Live Web Search</div>
+                  <div className="card-desc">Access real-time internet data, current events &amp; factual research</div>
+                </div>
+
+                <div
+                  className="hero-glass-card"
+                  onClick={() => setShowEmailStudio(true)}
+                >
+                  <div className="card-top-icon icon-purple">
+                    <IconMail size={18} />
+                  </div>
+                  <div className="card-title">Sovereign Email</div>
+                  <div className="card-desc">Private offline inbox, clean message reader &amp; instant AI reply assistant</div>
+                </div>
+
+                <div
+                  className="hero-glass-card"
+                  onClick={() => {
+                    setInput("Draft a comprehensive project architecture proposal in a Word document (.docx) with executive summary and structured comparison tables.");
+                    taRef.current?.focus();
+                  }}
+                >
+                  <div className="card-top-icon icon-blue">
+                    <IconFileText size={18} />
+                  </div>
+                  <div className="card-title">Document Studio</div>
+                  <div className="card-desc">Compile native binary Excel (.xlsx), Word (.docx) &amp; styled PDFs</div>
+                </div>
               </div>
             </div>
           ) : (
@@ -1616,7 +1692,15 @@ export default function App() {
                   <div key={i} className={`msg ${m.role}`}>
                     <div className="msg-role">
                       {m.role === "user" ? (
-                        <span className="msg-user-title">You</span>
+                        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                          <span className="msg-user-title">You</span>
+                          {m.isWebSearch && (
+                            <span className="msg-web-badge" title="Grounded with live web search">
+                              <IconGlobe size={11} />
+                              <span>Live Web Search</span>
+                            </span>
+                          )}
+                        </div>
                       ) : (
                         <div className="msg-orion-meta">
                           <span className="orion-brand-name">Orion</span>
@@ -1822,71 +1906,109 @@ export default function App() {
           </div>
         )}
 
-        <footer className="composer">
-          <VoiceButton
-            onTranscript={onTranscript}
-            speaking={speaking}
-            onStopSpeaking={stopSpeaking}
-          />
-          <div className="composer-inner">
-            <textarea
-              ref={taRef}
-              rows={1}
-              value={input}
-              onChange={onInput}
-              onKeyDown={onKeyDown}
-              disabled={engine.state === "error"}
-              placeholder={
-                engine.state === "error"
-                  ? "Engine unavailable — see System"
-                  : engine.state === "loading"
+        <footer className="composer-capsule-wrap">
+          {webSearchingQuery && (
+            <div className="web-search-live-banner">
+              <IconGlobe size={13} className="spin text-cyan" />
+              <span>Accessing live internet data for: <strong>{webSearchingQuery}</strong>…</span>
+            </div>
+          )}
+
+          <div className="composer-capsule">
+            <div className="composer-input-row">
+              <textarea
+                ref={taRef}
+                rows={1}
+                value={input}
+                onChange={onInput}
+                onKeyDown={onKeyDown}
+                disabled={engine.state === "error"}
+                placeholder={
+                  webSearchEnabled
+                    ? "Ask Orion with live web search enabled..."
+                    : engine.state === "error"
+                    ? "Engine unavailable — see System"
+                    : engine.state === "loading"
                     ? "Loading the model…"
                     : engine.state === "starting"
-                      ? "Starting the engine…"
-                      : "Ask anything, or ask Orion to generate an Excel, Word, or PDF document…"
-              }
-            />
-            {streaming ? (
-              <button
-                type="button"
-                className="btn-stop"
-                onClick={stop}
-                title="Stop generation (Esc)"
-                aria-label="Stop generation"
-              >
-                <IconSquare size={12} />
-              </button>
-            ) : (
-              <div className="composer-actions">
+                    ? "Starting the engine…"
+                    : "Ask anything, search web, or draft documents..."
+                }
+              />
+            </div>
+
+            <div className="composer-toolbar-row">
+              <div className="capsule-tools-left">
+                {/* Web Search Toggle Button */}
                 <button
                   type="button"
-                  className={`btn-speak-toggle ${autoSpeak ? "active" : ""}`}
-                  onClick={() => setAutoSpeak((v) => !v)}
-                  title={
-                    autoSpeak
-                      ? "Spoken replies: ON (click to mute)"
-                      : "Spoken replies: OFF (click to unmute)"
-                  }
-                  aria-label="Toggle spoken audio replies"
+                  className={`capsule-tool-btn ${webSearchEnabled ? "active-web" : ""}`}
+                  onClick={() => setWebSearchEnabled((v) => !v)}
+                  title={webSearchEnabled ? "Live Web Search is Active (click to disable)" : "Enable Live Web Search"}
                 >
-                  {autoSpeak ? <IconVolume2 size={15} /> : <IconVolumeX size={15} />}
+                  <IconGlobe size={13} />
+                  <span>{webSearchEnabled ? "Web: Active" : "Web Search"}</span>
                 </button>
+
+                {/* Attach / RAG Library Button */}
                 <button
-                  className="btn-send"
-                  onClick={send}
-                  disabled={!input.trim() || engine.state === "error"}
-                  title="Send message (Enter)"
-                  aria-label="Send message"
+                  type="button"
+                  className="capsule-tool-btn"
+                  onClick={() => setSidebarTab("library")}
+                  title="Document Library & Knowledge"
                 >
-                  <IconSend size={14} />
+                  <IconPaperclip size={13} />
+                  <span>Attach</span>
+                </button>
+
+                {/* Auto-Speak Toggle */}
+                <button
+                  type="button"
+                  className={`capsule-tool-btn ${autoSpeak ? "active-speak" : ""}`}
+                  onClick={() => setAutoSpeak((v) => !v)}
+                  title={autoSpeak ? "Spoken replies: ON (click to mute)" : "Spoken replies: OFF (click to unmute)"}
+                >
+                  {autoSpeak ? <IconVolume2 size={13} /> : <IconVolumeX size={13} />}
                 </button>
               </div>
-            )}
+
+              <div className="capsule-tools-right">
+                <VoiceButton
+                  onTranscript={onTranscript}
+                  speaking={speaking}
+                  onStopSpeaking={stopSpeaking}
+                />
+
+                {streaming ? (
+                  <button
+                    type="button"
+                    className="capsule-send-btn stop"
+                    onClick={stop}
+                    title="Stop generation (Esc)"
+                    aria-label="Stop generation"
+                  >
+                    <IconSquare size={12} />
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="capsule-send-btn"
+                    onClick={send}
+                    disabled={!input.trim() || engine.state === "error"}
+                    title="Send message (Enter)"
+                    aria-label="Send message"
+                  >
+                    <IconSend size={13} />
+                  </button>
+                )}
+              </div>
+            </div>
           </div>
+
           <div className="footnote">
             {docCount > 0
-              ? `${docCount} document${docCount === 1 ? "" : "s"} indexed · answers are cited`
-              : "Runs entirely offline"}
+              ? `${docCount} document${docCount === 1 ? "" : "s"} indexed · answers cited`
+              : "Orion Sovereign Workspace · 100% Private"}
             {hotkey && <> · press <kbd>{hotkey}</kbd> from anywhere</>}
           </div>
         </footer>
