@@ -166,6 +166,34 @@ const markdownComponents = {
   hr() {
     return <hr className="chat-hr" />;
   },
+  a(props) {
+    const { href, children } = props;
+    const handleClick = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (!href) return;
+      if (window.__TAURI_INTERNALS__) {
+        invoke("open_document", { path: href }).catch(() => {
+          window.open(href, "_blank");
+        });
+      } else {
+        window.open(href, "_blank", "noopener,noreferrer");
+      }
+    };
+    return (
+      <a
+        href={href}
+        onClick={handleClick}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="chat-link"
+        title={`Open ${href}`}
+      >
+        {children}
+        <span style={{ fontSize: "10px", marginLeft: "2px", opacity: 0.7 }}>↗</span>
+      </a>
+    );
+  },
 };
 
 /**
@@ -275,11 +303,12 @@ export default function App() {
   const [showSystem, setShowSystem] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [citations, setCitations] = useState([]);
+  const [webResults, setWebResults] = useState(null);
   // null = no answer yet this turn; false = answered without documents.
   // Distinguishing these matters: "no sources shown" previously looked
   // identical whether the library was consulted and missed, or never
   // consulted at all. The latter was a real bug that shipped unnoticed.
-  const [grounded, setGrounded] = useState(null);
+  const [_grounded, setGrounded] = useState(null);
   const [library, setLibrary] = useState({ documents: 0, chunks: 0 });
   const [hotkey, setHotkey] = useState("");
   const [speaking, setSpeaking] = useState(false);
@@ -609,6 +638,7 @@ export default function App() {
           }))
         );
         setCitations([]);
+        setWebResults(null);
         setGrounded(null);
         setInput("");
         refreshSessions();
@@ -627,6 +657,7 @@ export default function App() {
       setActiveSessionTitle(newSession.title);
       setMessages([]);
       setCitations([]);
+      setWebResults(null);
       setGrounded(null);
       setInput("");
       refreshSessions();
@@ -705,8 +736,16 @@ export default function App() {
     }).then((un) => {
       unSearch = un;
     });
-    listen("chat://web_results", () => {
+    listen("chat://web_results", (e) => {
       setWebSearchingQuery(null);
+      if (e.payload?.results && Array.isArray(e.payload.results) && e.payload.results.length > 0) {
+        setWebResults({
+          query: e.payload.query || "Live Web Search",
+          results: e.payload.results,
+        });
+      } else {
+        setWebResults(null);
+      }
     }).then((un) => {
       unResults = un;
     });
@@ -1173,6 +1212,7 @@ export default function App() {
         },
       ]);
       setCitations([]);
+      setWebResults(null);
       setGrounded(null);
       setStreaming(true);
 
@@ -1859,13 +1899,6 @@ export default function App() {
                 </div>
               )}
 
-              {grounded === false && docCount > 0 && (
-                <div className="ungrounded">
-                  Answered without your documents — nothing in the library
-                  matched this question.
-                </div>
-              )}
-
               {citations.length > 0 && (
                 <div className="citations">
                   <div className="citations-head">
@@ -1885,6 +1918,34 @@ export default function App() {
                       </li>
                     ))}
                   </ol>
+                </div>
+              )}
+
+              {webResults && webResults.results?.length > 0 && (
+                <div className="web-results-chips">
+                  <div className="web-results-head">
+                    <IconGlobe size={13} />
+                    <span>Live Web Sources ({webResults.query})</span>
+                  </div>
+                  <div className="web-source-list">
+                    {webResults.results.map((res, i) => (
+                      <a
+                        key={i}
+                        href={res.url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="web-source-pill"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          invoke("open_document", { path: res.url }).catch(console.error);
+                        }}
+                        title={res.snippet}
+                      >
+                        <span className="source-index">{i + 1}</span>
+                        <span className="source-title">{res.title || res.url}</span>
+                      </a>
+                    ))}
+                  </div>
                 </div>
               )}
             </div>

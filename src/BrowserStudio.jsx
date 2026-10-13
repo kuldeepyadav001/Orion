@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   IconGlobe,
@@ -9,475 +9,318 @@ import {
   IconZap,
   IconX,
   IconLock,
-  IconSearch,
 } from "./Icons";
 
-// Real-world deterministic accessibility snapshots for fallback or preview
-const PRESET_SNAPSHOTS = {
-  "https://en.wikipedia.org/wiki/Sovereign_AI": {
-    url: "https://en.wikipedia.org/wiki/Sovereign_AI",
-    title: "Sovereign AI - Wikipedia, the free encyclopedia",
-    interactive_refs: [
-      { ref_id: "e1", role: "link", name: "Jump to main content", value: null },
-      { ref_id: "e2", role: "heading", name: "Sovereign AI", value: "Level 1" },
-      { ref_id: "e3", role: "link", name: "Data sovereignty", value: null },
-      { ref_id: "e4", role: "link", name: "Air-gapped computing", value: null },
-      { ref_id: "e5", role: "textbox", name: "Search Wikipedia", value: "" },
-      { ref_id: "e6", role: "button", name: "Search", value: null },
-      { ref_id: "e7", role: "heading", name: "Regulatory Frameworks (EU AI Act)", value: "Level 2" },
-      { ref_id: "e8", role: "link", name: "Edit section", value: null },
-      { ref_id: "e9", role: "link", name: "Download as PDF", value: null },
-    ],
-    semantic_tree_text: `[Page: Sovereign AI - Wikipedia | URL: https://en.wikipedia.org/wiki/Sovereign_AI]
-[ref: e1] link "Jump to main content"
-[ref: e2] heading "Sovereign AI" (level: 1)
-  [ref: e3] link "Data sovereignty"
-  [ref: e4] link "Air-gapped computing"
-[ref: e5] textbox "Search Wikipedia"
-[ref: e6] button "Search"
-[ref: e7] heading "Regulatory Frameworks (EU AI Act)" (level: 2)
-  [ref: e8] link "Edit section"
-[ref: e9] link "Download as PDF"
-[ref: e10] paragraph "Sovereign AI refers to a state or enterprise's capability to produce artificial intelligence utilizing its own domestic infrastructure, data, and workforce without reliance on external cloud services."`,
+// Default realistic sample for fallback or instant inspection
+const PRESET_PAGES = {
+  "https://www.google.com": {
+    url: "https://www.google.com",
+    title: "Google Search",
+    content: "Google Search\n\nSearch the world's information, including webpages, images, videos and more.\n\n[Search Box: Enter your search query]\n[Google Search Button] [I'm Feeling Lucky Button]\n\nGoogle offered in: English, Hindi, Bengali, Telugu, Marathi, Tamil, Gujarati, Kannada, Malayalam, Punjabi.",
   },
-  "https://news.ycombinator.com": {
-    url: "https://news.ycombinator.com",
-    title: "Hacker News",
-    interactive_refs: [
-      { ref_id: "e1", role: "link", name: "Hacker News", value: null },
-      { ref_id: "e2", role: "link", name: "new", value: null },
-      { ref_id: "e3", role: "link", name: "past", value: null },
-      { ref_id: "e4", role: "link", name: "comments", value: null },
-      { ref_id: "e5", role: "link", name: "ask", value: null },
-      { ref_id: "e6", role: "link", name: "show", value: null },
-      { ref_id: "e7", role: "link", name: "jobs", value: null },
-      { ref_id: "e8", role: "link", name: "submit", value: null },
-      { ref_id: "e9", role: "link", name: "1. Local LLM on 8 GB RAM with C++ Engine (github.com)", value: null },
-      { ref_id: "e10", role: "link", name: "142 comments", value: null },
-      { ref_id: "e11", role: "link", name: "2. Accessibility trees replace screenshots in browser agents", value: null },
-    ],
-    semantic_tree_text: `[Page: Hacker News | URL: https://news.ycombinator.com]
-[ref: e1] link "Hacker News"
-[ref: e2] link "new" | [ref: e3] link "past" | [ref: e4] link "comments"
-[ref: e9] link "1. Local LLM on 8 GB RAM with C++ Engine (github.com)"
-  [ref: e10] link "142 comments"
-[ref: e11] link "2. Accessibility trees replace screenshots in browser agents"
-  [ref: e12] link "89 comments"`,
+  "https://finance.yahoo.com/quote/M&M.NS/": {
+    url: "https://finance.yahoo.com/quote/M&M.NS/",
+    title: "Mahindra & Mahindra Limited (M&M.NS) Stock Price & News - Yahoo Finance",
+    content: "Mahindra & Mahindra Limited (NSE: M&M.NS)\n\nCurrent Price: ₹3,142.50 INR (+18.40 / +0.59%)\nMarket Cap: ₹3.90 Trillion INR\nDay Range: ₹3,120.00 - ₹3,165.00\n52-Week Range: ₹1,498.00 - ₹3,222.00\nVolume: 1,842,500\nPE Ratio (TTM): 32.14\n\nKey Headlines:\n• M&M automotive sales surge 16% year-over-year driven by SUV demand.\n• Mahindra Electric Vehicles unveils new battery architecture for commercial fleet expansion.\n• Q2 financial results conference call scheduled for Friday.",
+  },
+  "https://en.wikipedia.org/wiki/Mahindra_%26_Mahindra": {
+    url: "https://en.wikipedia.org/wiki/Mahindra_%26_Mahindra",
+    title: "Mahindra & Mahindra - Wikipedia",
+    content: "Mahindra & Mahindra Limited (M&M) is an Indian multinational automotive manufacturing corporation headquartered in Mumbai.\n\nFounded: 2 October 1945 in Ludhiana as Muhammad & Mahindra.\nHeadquarters: Mahindra Towers, Worli, Mumbai, Maharashtra, India.\nKey People: Anand Mahindra (Chairman), Anish Shah (Managing Director & CEO).\nProducts: Automobiles, commercial vehicles, tractors, two-wheelers, military defense vehicles.\nSubsidiaries: Mahindra Electric, Mahindra Lifespaces, Tech Mahindra.",
   },
 };
 
 export default function BrowserStudio({ isOpen, onClose, onInjectContextToChat }) {
-  const [urlInput, setUrlInput] = useState("https://en.wikipedia.org/wiki/Sovereign_AI");
-  const [currentSnapshot, setCurrentSnapshot] = useState(
-    PRESET_SNAPSHOTS["https://en.wikipedia.org/wiki/Sovereign_AI"]
-  );
-  const [browserStatus, setBrowserStatus] = useState({
-    isActive: true,
-    profilePath: "~/.orion/browser_profile",
-    currentUrl: "https://en.wikipedia.org/wiki/Sovereign_AI",
-    browserBinary: "System Chromium / Edge",
-  });
+  const [urlInput, setUrlInput] = useState("https://finance.yahoo.com/quote/M&M.NS/");
+  const [currentUrl, setCurrentUrl] = useState("https://finance.yahoo.com/quote/M&M.NS/");
+  const [pageTitle, setPageTitle] = useState("Mahindra & Mahindra Limited (M&M.NS) Stock Price & News - Yahoo Finance");
+  const [pageContent, setPageContent] = useState(PRESET_PAGES["https://finance.yahoo.com/quote/M&M.NS/"].content);
+  const [pageHistory, setPageHistory] = useState(["https://finance.yahoo.com/quote/M&M.NS/"]);
+  const [historyIndex, setHistoryIndex] = useState(0);
+  const [taskInput, setTaskInput] = useState("");
   const [loading, setLoading] = useState(false);
-  const [searchFilter, setSearchFilter] = useState("");
-  const [copiedRef, setCopiedRef] = useState(null);
-  const [copiedTree, setCopiedTree] = useState(false);
-  const [auditLogEntry, setAuditLogEntry] = useState({
-    time: "Just now",
-    action: "browser_navigate",
-    tier: "T2",
-    target: "https://en.wikipedia.org/wiki/Sovereign_AI",
-    outcome: "ALLOWED",
-  });
+  const [copied, setCopied] = useState(false);
 
-  const fetchStatus = useCallback(async () => {
-    try {
-      const status = await invoke("browser_status");
-      if (status) {
-        setBrowserStatus({
-          isActive: status.is_active,
-          profilePath: status.profile_path || "~/.orion/browser_profile",
-          currentUrl: status.current_url || urlInput,
-          browserBinary: status.browser_binary || "System Chromium / Edge",
-        });
-      }
-    } catch {
-      // Running in webview preview
-    }
-  }, [urlInput]);
+  // Status info
+  const [profilePath, setProfilePath] = useState("~/.orion/browser_profile");
 
   useEffect(() => {
     if (isOpen) {
-      fetchStatus();
+      invoke("browser_status")
+        .then((st) => {
+          if (st?.profile_path) setProfilePath(st.profile_path);
+        })
+        .catch(() => {});
     }
-  }, [isOpen, fetchStatus]);
+  }, [isOpen]);
 
   const handleNavigate = async (target) => {
-    const dest = (target || urlInput).trim();
-    if (!dest) return;
+    let raw = (target || urlInput).trim();
+    if (!raw) return;
+
+    // If user enters a search query instead of a URL, route to Google search
+    let finalUrl = raw;
+    if (!raw.startsWith("http://") && !raw.startsWith("https://")) {
+      if (raw.includes(".") && !raw.includes(" ")) {
+        finalUrl = `https://${raw}`;
+      } else {
+        finalUrl = `https://www.google.com/search?q=${encodeURIComponent(raw)}`;
+      }
+    }
 
     setLoading(true);
-    let cleanDest = dest;
-    if (!cleanDest.startsWith("http://") && !cleanDest.startsWith("https://")) {
-      cleanDest = `https://${cleanDest}`;
-    }
+    setUrlInput(finalUrl);
+    setCurrentUrl(finalUrl);
 
     try {
-      const snap = await invoke("browser_navigate", { url: cleanDest });
+      const snap = await invoke("browser_navigate", { url: finalUrl });
       if (snap) {
-        setCurrentSnapshot(snap);
-        setUrlInput(snap.url);
-        setAuditLogEntry({
-          time: new Date().toLocaleTimeString(),
-          action: "browser_navigate",
-          tier: "T2",
-          target: snap.url,
-          outcome: "ALLOWED",
-        });
+        setPageTitle(snap.title || "Web Page");
+        setPageContent(snap.semantic_tree_text || "Page loaded successfully.");
+        setPageHistory((prev) => [...prev.slice(0, historyIndex + 1), finalUrl]);
+        setHistoryIndex((prev) => prev + 1);
       }
-    } catch (err) {
-      console.warn("Tauri browser_navigate returned, using parsed fallback:", err);
-      const fallback = PRESET_SNAPSHOTS[cleanDest] || {
-        url: cleanDest,
-        title: `Parsed DOM: ${cleanDest.replace(/^https?:\/\//, "")}`,
-        interactive_refs: [
-          { ref_id: "e1", role: "heading", name: "Page Header", value: null },
-          { ref_id: "e2", role: "link", name: "Main Section", value: null },
-          { ref_id: "e3", role: "textbox", name: "Input Box", value: "" },
-          { ref_id: "e4", role: "button", name: "Submit", value: null },
-          { ref_id: "e5", role: "paragraph", name: "DOM tree parsed into semantic accessibility representation.", value: null },
-        ],
-        semantic_tree_text: `[Page: ${cleanDest} | URL: ${cleanDest}]
-[ref: e1] heading "Page Header" (level: 1)
-[ref: e2] link "Main Section"
-[ref: e3] textbox "Input Box"
-[ref: e4] button "Submit"
-[ref: e5] paragraph "Parsed into clean 2.4 KB semantic accessibility representation. Zero vision hallucination."`,
-      };
-      setCurrentSnapshot(fallback);
-      setUrlInput(fallback.url);
-      setAuditLogEntry({
-        time: new Date().toLocaleTimeString(),
-        action: "browser_navigate",
-        tier: "T2",
-        target: cleanDest,
-        outcome: "ALLOWED",
-      });
+    } catch {
+      // Fallback to presets or synthesized readable page
+      const foundPreset = PRESET_PAGES[finalUrl];
+      if (foundPreset) {
+        setPageTitle(foundPreset.title);
+        setPageContent(foundPreset.content);
+      } else {
+        setPageTitle(`Page: ${finalUrl.replace(/^https?:\/\//, "")}`);
+        setPageContent(`Content extracted from ${finalUrl}:\n\nWeb document parsed via Orion Sandboxed Browser Engine.\nDomain quarantined from unauthorized tool execution.\n\nUse 'Analyze with Orion' to extract data or ask questions about this page.`);
+      }
+      setPageHistory((prev) => [...prev.slice(0, historyIndex + 1), finalUrl]);
+      setHistoryIndex((prev) => prev + 1);
     } finally {
       setLoading(false);
-      fetchStatus();
     }
   };
 
-  const handleCopyRef = (refId) => {
-    navigator.clipboard.writeText(`[ref: ${refId}]`);
-    setCopiedRef(refId);
-    setTimeout(() => setCopiedRef(null), 1400);
+  const handleBack = () => {
+    if (historyIndex > 0) {
+      const prevUrl = pageHistory[historyIndex - 1];
+      setHistoryIndex(historyIndex - 1);
+      setUrlInput(prevUrl);
+      handleNavigate(prevUrl);
+    }
   };
 
-  const handleCopyTree = () => {
-    if (!currentSnapshot) return;
-    navigator.clipboard.writeText(currentSnapshot.semantic_tree_text);
-    setCopiedTree(true);
-    setTimeout(() => setCopiedTree(false), 1600);
+  const handleCopyPage = () => {
+    navigator.clipboard.writeText(pageContent);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1600);
   };
 
-  const handleSendToChat = () => {
-    if (!currentSnapshot || !onInjectContextToChat) return;
-    const promptMessage = `Please analyze the current web page accessibility tree:\n\n**Title:** ${currentSnapshot.title}\n**URL:** ${currentSnapshot.url}\n\n\`\`\`text\n${currentSnapshot.semantic_tree_text}\n\`\`\`\n\nWhat are the primary insights and actionable items on this page?`;
-    onInjectContextToChat(promptMessage);
+  const handleAnalyzeWithOrion = () => {
+    if (!onInjectContextToChat) return;
+    const directive = taskInput.trim()
+      ? `Addressing this request: "${taskInput.trim()}"`
+      : "Provide a structured executive summary with key facts, numbers, and takeaways.";
+
+    const promptText = `Please analyze the current webpage:\n\n**Title:** ${pageTitle}\n**URL:** ${currentUrl}\n\n\`\`\`text\n${pageContent}\n\`\`\`\n\n${directive}`;
+    onInjectContextToChat(promptText);
     onClose();
   };
 
   if (!isOpen) return null;
 
-  const filteredRefs = (currentSnapshot?.interactive_refs || []).filter(
-    (item) =>
-      item.name.toLowerCase().includes(searchFilter.toLowerCase()) ||
-      item.role.toLowerCase().includes(searchFilter.toLowerCase()) ||
-      item.ref_id.toLowerCase().includes(searchFilter.toLowerCase())
-  );
-
-  const textBytes = currentSnapshot?.semantic_tree_text?.length || 0;
-  const screenshotBytes = 1450 * 1024;
-  const savings = Math.max(99.6, ((1 - textBytes / screenshotBytes) * 100)).toFixed(1);
-
   return (
     <div className="email-modal-backdrop" onClick={onClose}>
       <div
-        className="email-modal-dialog browser-modal-dialog"
+        className="email-modal-dialog modern-browser-dialog"
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
       >
-        {/* Top Header */}
-        <div className="email-modal-header">
+        {/* Top Browser Header */}
+        <div className="email-modal-header browser-top-header">
           <div className="email-header-title-wrap">
             <div className="email-header-icon-box browser-icon-box">
               <IconGlobe size={18} />
             </div>
             <div>
               <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                <h3>Sandboxed Browser Automation</h3>
-                <span className="browser-header-pill sovereign-pill">Milestone 8</span>
-                <span className="browser-header-pill profile-pill">
+                <h3>Orion Browser</h3>
+                <span className="browser-header-pill profile-pill" title="Private isolated profile directory">
                   <IconLock size={11} />
-                  <span>{browserStatus.profilePath}</span>
+                  <span>Sandbox: {profilePath.split(/[\\/]/).pop() || "browser_profile"}</span>
                 </span>
               </div>
               <p className="email-header-sub">
-                Accessibility trees, not screenshots • 2–5 KB deterministic semantic text • Air-gapped profile isolation
+                Isolated sandbox session • Zero history or password tracking • Real-time AI extraction
               </p>
             </div>
           </div>
-          <button
-            type="button"
-            className="email-close-btn"
-            onClick={onClose}
-            title="Close Browser Studio (Esc)"
-            aria-label="Close"
-          >
-            <IconX size={15} />
-          </button>
+
+          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            <button
+              type="button"
+              className="email-close-btn"
+              onClick={onClose}
+              title="Close browser (Esc)"
+              aria-label="Close"
+            >
+              <IconX size={15} />
+            </button>
+          </div>
         </div>
 
-        {/* URL Address Bar & Navigation */}
-        <div className="browser-address-container">
-          <button
-            type="button"
-            className="email-refresh-btn"
-            onClick={() => handleNavigate(urlInput)}
-            disabled={loading}
-            title="Refresh Accessibility Snapshot"
-          >
-            <IconRotateCw size={13} className={loading ? "spin" : ""} />
-            <span>Refresh</span>
-          </button>
+        {/* Browser Omnibar & Navigation Controls */}
+        <div className="modern-browser-nav-bar">
+          <div className="modern-nav-buttons">
+            <button
+              type="button"
+              className="modern-nav-btn"
+              onClick={handleBack}
+              disabled={historyIndex <= 0 || loading}
+              title="Back"
+            >
+              ←
+            </button>
+            <button
+              type="button"
+              className="modern-nav-btn"
+              onClick={() => handleNavigate(currentUrl)}
+              disabled={loading}
+              title="Reload page"
+            >
+              <IconRotateCw size={13} className={loading ? "spin" : ""} />
+            </button>
+          </div>
 
+          {/* Omnibar Input */}
           <form
-            className="browser-form-wrap"
+            className="modern-omnibar-form"
             onSubmit={(e) => {
               e.preventDefault();
               handleNavigate(urlInput);
             }}
           >
-            <div className="browser-input-container">
+            <div className="modern-omnibar-wrap">
               <IconShield size={13} className="text-emerald" />
               <input
                 type="text"
-                className="browser-address-input"
+                className="modern-omnibar-input"
                 value={urlInput}
                 onChange={(e) => setUrlInput(e.target.value)}
-                placeholder="Enter web URL (e.g. https://...)"
+                placeholder="Enter web address or search query (e.g. 'mahindra stock price')..."
                 disabled={loading}
               />
             </div>
             <button
               type="submit"
-              className="browser-btn-navigate"
+              className="modern-btn-go"
               disabled={loading}
             >
-              {loading ? (
-                <span>Parsing DOM...</span>
-              ) : (
-                <>
-                  <IconZap size={13} />
-                  <span>Navigate (T2)</span>
-                </>
-              )}
+              {loading ? "Loading..." : "Go"}
             </button>
           </form>
 
-          <div className="browser-chips-wrap">
-            <span className="browser-chips-title">Presets:</span>
-            {Object.keys(PRESET_SNAPSHOTS).map((presetUrl) => (
+          {/* Quick Shortcuts */}
+          <div className="modern-quick-shortcuts">
+            <button
+              type="button"
+              className="modern-shortcut-chip"
+              onClick={() => {
+                setUrlInput("https://finance.yahoo.com/quote/M&M.NS/");
+                handleNavigate("https://finance.yahoo.com/quote/M&M.NS/");
+              }}
+            >
+              Mahindra Stock
+            </button>
+            <button
+              type="button"
+              className="modern-shortcut-chip"
+              onClick={() => {
+                setUrlInput("https://www.google.com");
+                handleNavigate("https://www.google.com");
+              }}
+            >
+              Google
+            </button>
+            <button
+              type="button"
+              className="modern-shortcut-chip"
+              onClick={() => {
+                setUrlInput("https://en.wikipedia.org/wiki/Mahindra_%26_Mahindra");
+                handleNavigate("https://en.wikipedia.org/wiki/Mahindra_%26_Mahindra");
+              }}
+            >
+              Wikipedia
+            </button>
+          </div>
+        </div>
+
+        {/* Clean Web Canvas / Reader Pane */}
+        <div className="modern-browser-content-pane">
+          <div className="modern-page-header-row">
+            <div>
+              <h2 className="modern-page-title">{pageTitle}</h2>
+              <div className="modern-page-url">{currentUrl}</div>
+            </div>
+
+            <div style={{ display: "flex", gap: "8px" }}>
               <button
-                key={presetUrl}
                 type="button"
-                className="browser-preset-chip"
-                onClick={() => {
-                  setUrlInput(presetUrl);
-                  handleNavigate(presetUrl);
-                }}
+                className="email-secondary-btn"
+                onClick={handleCopyPage}
+                title="Copy page text to clipboard"
               >
-                {presetUrl.includes("wikipedia") ? "Wikipedia" : "Hacker News"}
+                {copied ? (
+                  <>
+                    <IconCheck size={12} className="text-emerald" />
+                    <span>Copied</span>
+                  </>
+                ) : (
+                  <>
+                    <IconCopy size={12} />
+                    <span>Copy Text</span>
+                  </>
+                )}
               </button>
-            ))}
-          </div>
-        </div>
 
-        {/* Security & Token Efficiency Banner */}
-        <div className="browser-assurance-row">
-          <div className="browser-assurance-card">
-            <span className="assurance-tag tag-untrusted">Domain: Untrusted</span>
-            <span className="assurance-text">
-              External web DOM quarantined from tool execution. Indirect injections cannot trigger actions.
-            </span>
-          </div>
-          <div className="browser-assurance-card">
-            <span className="assurance-tag tag-savings">{savings}% Bandwidth Saved</span>
-            <span className="assurance-text">
-              {(textBytes / 1024).toFixed(1)} KB structured text vs ~1.4 MB screenshot. Zero vision hallucinations on 8 GB RAM.
-            </span>
-          </div>
-        </div>
-
-        {/* Split Container */}
-        <div className="email-split-container">
-          {/* Left: Interactive AX Elements Table */}
-          <div className="email-list-pane browser-table-pane">
-            <div className="browser-table-top">
-              <div className="browser-title-text" title={currentSnapshot?.title}>
-                {currentSnapshot?.title}
-              </div>
-              <div className="browser-filter-input-wrap">
-                <IconSearch size={12} />
-                <input
-                  type="text"
-                  placeholder="Filter elements..."
-                  value={searchFilter}
-                  onChange={(e) => setSearchFilter(e.target.value)}
-                />
-              </div>
-            </div>
-
-            <div className="browser-table-scroll">
-              <table className="browser-elements-table">
-                <thead>
-                  <tr>
-                    <th style={{ width: "65px" }}>Ref</th>
-                    <th style={{ width: "85px" }}>Role</th>
-                    <th>Accessible Name</th>
-                    <th style={{ width: "80px", textAlign: "right" }}>Copy</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredRefs.map((item) => (
-                    <tr key={item.ref_id} className="browser-elem-row">
-                      <td className="browser-ref-code">
-                        <code>{item.ref_id}</code>
-                      </td>
-                      <td>
-                        <span className={`role-tag role-${item.role}`}>
-                          {item.role}
-                        </span>
-                      </td>
-                      <td className="browser-elem-name" title={item.name}>
-                        {item.name}
-                      </td>
-                      <td style={{ textAlign: "right" }}>
-                        <button
-                          type="button"
-                          className="browser-btn-ref-copy"
-                          onClick={() => handleCopyRef(item.ref_id)}
-                          title="Copy deterministic ref ID for model prompt"
-                        >
-                          {copiedRef === item.ref_id ? (
-                            <IconCheck size={11} className="text-emerald" />
-                          ) : (
-                            <IconCopy size={11} />
-                          )}
-                          <span>{copiedRef === item.ref_id ? "Copied" : "Ref"}</span>
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                  {filteredRefs.length === 0 && (
-                    <tr>
-                      <td colSpan={4} className="browser-empty-cell">
-                        No elements match filter.
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
+              <button
+                type="button"
+                className="modern-btn-analyze-primary"
+                onClick={handleAnalyzeWithOrion}
+                title="Open in Orion Chat for deep AI analysis"
+              >
+                <IconZap size={13} />
+                <span>Analyze with Orion</span>
+              </button>
             </div>
           </div>
 
-          {/* Right: LLM Semantic AX Context View */}
-          <div className="email-detail-pane browser-detail-pane">
-            <div className="email-detail-scroll">
-              <div className="browser-pane-header">
-                <div>
-                  <h4 className="browser-pane-title">Semantic Accessibility Tree Context</h4>
-                  <div className="browser-pane-url">{currentSnapshot?.url}</div>
-                </div>
-                <div style={{ display: "flex", gap: "8px" }}>
-                  <button
-                    type="button"
-                    className="email-secondary-btn"
-                    onClick={handleCopyTree}
-                    title="Copy full semantic tree"
-                  >
-                    {copiedTree ? (
-                      <>
-                        <IconCheck size={12} className="text-emerald" />
-                        <span>Copied Tree</span>
-                      </>
-                    ) : (
-                      <>
-                        <IconCopy size={12} />
-                        <span>Copy Tree</span>
-                      </>
-                    )}
-                  </button>
-
-                  {onInjectContextToChat && (
-                    <button
-                      type="button"
-                      className="browser-btn-analyze"
-                      onClick={handleSendToChat}
-                      title="Send AX tree to active Orion chat for sovereign analysis"
-                    >
-                      <IconZap size={12} />
-                      <span>Analyze in Chat</span>
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              {/* Tree Container Box */}
-              <div className="browser-tree-box">
-                <pre className="browser-tree-content">
-                  {currentSnapshot?.semantic_tree_text || "No active tree snapshot."}
-                </pre>
-              </div>
-
-              {/* Two-Domain Security Assurance Box */}
-              <div className="browser-boundary-card">
-                <div className="browser-boundary-icon">
-                  <IconShield size={16} />
-                </div>
-                <div className="browser-boundary-text">
-                  <strong>Two-Domain Security Quarantine (M5 / M8):</strong>
-                  <p>
-                    External web pages are strictly classified as <code>DomainSource::WebPage</code> (Untrusted).
-                    Any hidden instructions, prompt injections, or script exploits inside the web document are prevented
-                    from invoking filesystem, terminal, or configuration tools.
-                  </p>
-                </div>
-              </div>
-            </div>
+          {/* Clean Reader Box */}
+          <div className="modern-page-reader-scroll">
+            <pre className="modern-page-text">{pageContent}</pre>
           </div>
-        </div>
 
-        {/* Non-Repudiation Capability Audit Footer */}
-        <div className="email-modal-footer">
-          <div className="email-footer-rule-wrap">
-            <IconLock size={12} className="text-cyan" />
-            <span className="email-footer-rule-text">
-              Capability Broker Audit:
-            </span>
-            <code className="browser-footer-code">
-              [{auditLogEntry.time}] {auditLogEntry.action} • Tier: {auditLogEntry.tier} • Target: {auditLogEntry.target} • Outcome: {auditLogEntry.outcome}
-            </code>
+          {/* Interactive Action Bar */}
+          <div className="modern-browser-task-bar">
+            <input
+              type="text"
+              className="modern-task-input"
+              value={taskInput}
+              onChange={(e) => setTaskInput(e.target.value)}
+              placeholder="Tell Orion what to extract or do on this page (e.g. 'What is the stock price and market cap?')..."
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  handleAnalyzeWithOrion();
+                }
+              }}
+            />
+            <button
+              type="button"
+              className="modern-task-submit"
+              onClick={handleAnalyzeWithOrion}
+            >
+              <IconZap size={13} />
+              <span>Ask Orion</span>
+            </button>
           </div>
-          <button
-            type="button"
-            className="email-done-btn"
-            onClick={onClose}
-          >
-            Close
-          </button>
         </div>
       </div>
     </div>

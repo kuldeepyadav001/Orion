@@ -47,14 +47,21 @@ use profiler::{HardwareProfile, Tier, TierRecommendation};
 /// on an 8 GB machine the KV cache for a long history is a real memory cost.
 const HISTORY_LIMIT: usize = 20;
 
-const SYSTEM_PROMPT: &str = "You are Orion, an advanced sovereign AI intelligence running entirely on the user's computer with zero cloud egress.\n\
+const SYSTEM_PROMPT: &str = "You are Orion, an advanced personal AI workspace and JARVIS-class assistant running locally on the user's computer.\n\
 Communicate with the analytical depth, structural clarity, and polish of an advanced conversational GPT model:\n\
 - Provide insightful, comprehensive, and well-organized responses.\n\
 - Structure answers logically: provide a direct answer or executive overview first, followed by well-organized sections using markdown headings (###), bold lead-ins for key points, and clean bullet points or numbered sequences.\n\
-- When discussing technical architectures, algorithms, or code, provide complete, working implementations with explanations of design patterns, trade-offs, and edge cases.\n\
-- Use markdown comparison tables (| Column | Column |) when evaluating alternatives, benchmarks, or structured data.\n\
-- Conclude complex answers with practical takeaways, next steps, or recommendations.\n\
-- If you do not know something, state the factual limitation plainly rather than fabricating data.";
+- You have built-in autonomous tools: live web search, sovereign email triage, and native document compilation (Excel, Word, PDF).\n\
+- When live web search or document context is provided, synthesize the findings factually and directly, highlighting concrete numbers, dates, prices, and source links.\n\
+- Conclude complex answers with practical takeaways, next steps, or recommendations.";
+
+const WEB_GROUNDED_SYSTEM_PROMPT: &str = "You are Orion, an advanced personal AI workspace and JARVIS-class assistant.\n\
+Live real-time web search findings have been retrieved for this request and are provided directly above the user's question.\n\
+Synthesize the live web findings thoroughly and accurately:\n\
+- Provide direct answers with the exact current numbers, stock prices, news, or factual details found.\n\
+- Structure answers logically: start with the direct answer/figure, followed by bulleted highlights and source references.\n\
+- Never claim you cannot browse the web or access current data when live web search results are provided.\n\
+- If specific market figures, company quotes, or stock tickers are in the results, present them clearly.";
 
 pub struct AppState {
     pub engine: Arc<Engine>,
@@ -289,38 +296,32 @@ async fn send_message(
     };
 
     // Autonomous Web Search Hook:
-    // If user clicked the Web Search toggle ([web_search]) or said "search google for / google / search web for",
-    // execute a fast, lightweight HTTP search (250-400 ms, 0 MB extra RAM) to ground the answer in real-time facts.
-    let msg_lower = message.to_lowercase();
-    let is_web_search = message.starts_with("[web_search]")
-        || msg_lower.starts_with("search google for ")
-        || msg_lower.starts_with("search the web for ")
-        || msg_lower.starts_with("search web for ")
-        || msg_lower.starts_with("google ");
+    // Detect natural search intent ("search ...", "serch ...", "stock price ...", "weather ...", "[web_search]")
+    let search_intent_query = search::detect_search_intent(&message);
 
-    let clean_search_query = if message.starts_with("[web_search]") {
-        message.trim_start_matches("[web_search]").trim().to_string()
-    } else if msg_lower.starts_with("search google for ") {
-        message[18..].trim().to_string()
-    } else if msg_lower.starts_with("search the web for ") {
-        message[19..].trim().to_string()
-    } else if msg_lower.starts_with("search web for ") {
-        message[15..].trim().to_string()
-    } else if msg_lower.starts_with("google ") {
-        message[7..].trim().to_string()
-    } else {
-        message.clone()
-    };
-
-    let web_context = if is_web_search && !clean_search_query.is_empty() {
-        let _ = app.emit("chat://web_searching", serde_json::json!({ "query": clean_search_query }));
-        match search::perform_web_search(&clean_search_query, 4).await {
+    let web_context = if let Some(ref clean_search_query) = search_intent_query {
+        let _ = app.emit(
+            "chat://web_searching",
+            serde_json::json!({ "query": clean_search_query }),
+        );
+        match search::perform_web_search(clean_search_query, 5).await {
             Ok(results) if !results.is_empty() => {
-                let mut ctx_block = format!("Live Web Search Results for: \"{clean_search_query}\"\n\n");
+                let _ = app.emit(
+                    "chat://web_results",
+                    serde_json::json!({
+                        "query": clean_search_query,
+                        "results": results,
+                    }),
+                );
+                let mut ctx_block =
+                    format!("Live Web Search Results for: \"{clean_search_query}\"\n\n");
                 for (idx, r) in results.iter().enumerate() {
                     ctx_block.push_str(&format!(
                         "{}. Source: {}\n   URL: {}\n   Snippet: {}\n\n",
-                        idx + 1, r.title, r.url, r.snippet
+                        idx + 1,
+                        r.title,
+                        r.url,
+                        r.snippet
                     ));
                 }
                 Some(ctx_block)
@@ -331,14 +332,16 @@ async fn send_message(
         None
     };
 
-    // Consult the document library before generating. With relevant hits this
-    // becomes a grounded answer with citations; without them it is an
-    // ordinary chat and the library is never mentioned.
-    let grounded = match documents::retrieve(&message, &state.db, &state.embed).await {
-        Ok(ctx) => ctx.filter(|c| !c.empty),
-        Err(e) => {
-            tracing::warn!(error = %e, "document retrieval failed; answering without sources");
-            None
+    // If web search was executed, skip local document library retrieval to save latency.
+    let grounded = if web_context.is_some() {
+        None
+    } else {
+        match documents::retrieve(&message, &state.db, &state.embed).await {
+            Ok(ctx) => ctx.filter(|c| !c.empty),
+            Err(e) => {
+                tracing::warn!(error = %e, "document retrieval failed; answering without sources");
+                None
+            }
         }
     };
 
@@ -347,14 +350,25 @@ async fn send_message(
         persona::get_active_persona(&db).unwrap_or(persona::PersonaKind::General)
     };
 
-    let base_prompt = if grounded.is_some() || web_context.is_some() {
+    let base_prompt = if web_context.is_some() {
+        WEB_GROUNDED_SYSTEM_PROMPT
+    } else if grounded.is_some() {
         rag::context::GROUNDED_SYSTEM_PROMPT
     } else {
         SYSTEM_PROMPT
     };
     let system_prompt = persona.enhance_prompt(base_prompt);
 
-    let mut msgs = vec![ChatMessage::system(&system_prompt)];
+    // Inject real-time system clock so Orion always knows the exact current date & time
+    let now = chrono::Local::now();
+    let clock_context = format!(
+        "[CURRENT REAL-TIME CONTEXT]\nToday's exact real-world date is: {} ({}).\nCurrent Year: {}.\nAlways use this exact date when asked about today's date, current day, or recent events.",
+        now.format("%A, %B %d, %Y"),
+        now.format("%I:%M %p"),
+        now.format("%Y")
+    );
+    let full_system_prompt = format!("{system_prompt}\n\n{clock_context}");
+    let mut msgs = vec![ChatMessage::system(&full_system_prompt)];
 
     if let Some(ctx) = &grounded {
         let prior_history = if !history.is_empty() {
@@ -410,17 +424,16 @@ async fn send_message(
             role: "user".into(),
             content: prompt_with_web,
         });
-
-        let _ = app.emit("chat://web_results", serde_json::json!({
-            "query": clean_search_query,
-            "active": true
-        }));
     } else {
         msgs.extend(history.into_iter().map(|m| ChatMessage {
             role: m.role,
             content: m.content,
         }));
         let _ = app.emit("chat://citations", Vec::<rag::context::Citation>::new());
+        let _ = app.emit("chat://web_results", serde_json::json!({
+            "query": "",
+            "results": []
+        }));
     }
 
     let engine = state.engine.clone();
@@ -717,9 +730,12 @@ async fn list_generated_documents() -> Result<Vec<GeneratedDocumentMeta>> {
 
 #[tauri::command]
 async fn open_document(path: String) -> Result<()> {
-    let p = std::path::Path::new(&path);
-    if !p.exists() {
-        return Err(OrionError::Config(format!("File does not exist: {path}")));
+    let is_url = path.starts_with("http://") || path.starts_with("https://");
+    if !is_url {
+        let p = std::path::Path::new(&path);
+        if !p.exists() {
+            return Err(OrionError::Config(format!("File does not exist: {path}")));
+        }
     }
 
     #[cfg(target_os = "windows")]
@@ -727,7 +743,7 @@ async fn open_document(path: String) -> Result<()> {
         std::process::Command::new("cmd")
             .args(["/C", "start", "", &path])
             .spawn()
-            .map_err(|e| OrionError::Config(format!("failed to open file on Windows: {e}")))?;
+            .map_err(|e| OrionError::Config(format!("failed to open target on Windows: {e}")))?;
     }
 
     #[cfg(target_os = "macos")]
@@ -735,7 +751,7 @@ async fn open_document(path: String) -> Result<()> {
         std::process::Command::new("open")
             .arg(&path)
             .spawn()
-            .map_err(|e| OrionError::Config(format!("failed to open file on macOS: {e}")))?;
+            .map_err(|e| OrionError::Config(format!("failed to open target on macOS: {e}")))?;
     }
 
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
@@ -743,7 +759,7 @@ async fn open_document(path: String) -> Result<()> {
         std::process::Command::new("xdg-open")
             .arg(&path)
             .spawn()
-            .map_err(|e| OrionError::Config(format!("failed to open file on Linux: {e}")))?;
+            .map_err(|e| OrionError::Config(format!("failed to open target on Linux: {e}")))?;
     }
 
     Ok(())
@@ -2063,6 +2079,12 @@ async fn start_engine(
             cfg.ctx_size.to_string(),
             "--threads".into(),
             threads.to_string(),
+            "--batch-size".into(),
+            "512".into(),
+            "--ubatch-size".into(),
+            "128".into(),
+            "-ngl".into(),
+            "99".into(),
         ])
         .spawn();
 

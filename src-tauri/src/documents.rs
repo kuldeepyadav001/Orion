@@ -494,9 +494,20 @@ pub async fn retrieve(
     db: &Arc<Mutex<Db>>,
     embed: &Arc<EmbedService>,
 ) -> Result<Option<GroundedContext>> {
-    // Embed first, outside the database lock: the HTTP round trip is orders
-    // of magnitude slower than the query, and holding the lock across it
-    // would stall every other database user.
+    // Check if the store has any chunks first before doing expensive embedding HTTP requests.
+    // If the library is empty, return immediately with zero latency.
+    let has_chunks = {
+        let db = db.lock().await;
+        let store = RagStore::new(db.conn());
+        let _ = store.migrate();
+        store.chunk_count().unwrap_or(0) > 0
+    };
+
+    if !has_chunks {
+        return Ok(None);
+    }
+
+    // Embed outside the database lock
     let query_vec = embed.embed_query(question).await.unwrap_or_default();
 
     let (hits, lead_fallback) = {

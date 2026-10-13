@@ -17,6 +17,82 @@ pub struct SearchResult {
     pub snippet: String,
 }
 
+/// Detects if a user message has web search intent, returning the normalized search query.
+pub fn detect_search_intent(message: &str) -> Option<String> {
+    let raw = message.trim();
+    if raw.is_empty() {
+        return None;
+    }
+
+    // 1. Explicit UI tag
+    if raw.starts_with("[web_search]") {
+        let q = raw.trim_start_matches("[web_search]").trim();
+        return if q.is_empty() { None } else { Some(q.to_string()) };
+    }
+
+    let lower = raw.to_lowercase();
+
+    // 2. Direct search command prefixes (handling common misspellings like 'serch')
+    let prefixes = [
+        "search google for ",
+        "search the web for ",
+        "search web for ",
+        "search internet for ",
+        "search for ",
+        "search ",
+        "serch google for ",
+        "serch the web for ",
+        "serch web for ",
+        "serch for ",
+        "serch ",
+        "google ",
+        "look up ",
+        "lookup ",
+        "find online ",
+        "browse ",
+    ];
+
+    for &prefix in &prefixes {
+        if lower.starts_with(prefix) {
+            let q = raw[prefix.len()..].trim();
+            if !q.is_empty() {
+                let normalized = q.replace("prics", "price");
+                return Some(normalized);
+            }
+        }
+    }
+
+    // 3. Real-time / live information keywords
+    let real_time_keywords = [
+        "stock price",
+        "stock prics",
+        "share price",
+        "market cap",
+        "weather in",
+        "weather of",
+        "weather today",
+        "latest news",
+        "today news",
+        "todays news",
+        "who is",
+        "who won",
+        "match score",
+        "live score",
+        "cricket score",
+        "current price of",
+        "price of",
+    ];
+
+    for &kw in &real_time_keywords {
+        if lower.contains(kw) {
+            let normalized = raw.replace("prics", "price").replace("serch", "search");
+            return Some(normalized);
+        }
+    }
+
+    None
+}
+
 /// Executes a fast, lightweight web search with zero browser RAM footprint.
 pub async fn perform_web_search(query: &str, limit: usize) -> Result<Vec<SearchResult>> {
     let clean_query = query.trim();
