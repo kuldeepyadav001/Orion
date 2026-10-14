@@ -101,6 +101,17 @@ pub enum ActionKind {
     BrowserType { element_ref: String, text: String },
     /// Close the headless browser session (M8).
     BrowserClose,
+
+    /// Capture active OS desktop windows and UI accessibility tree (M9).
+    DesktopSnapshot,
+    /// Launch an OS application or utility (M9).
+    DesktopLaunchApp { app_name: String },
+    /// Click an element in the OS accessibility tree or desktop coordinates (M9).
+    DesktopClick { element_ref: String, x: Option<i32>, y: Option<i32> },
+    /// Type text into an OS UI element or active window (M9).
+    DesktopType { text: String },
+    /// Send an OS keyboard shortcut or hotkey sequence (M9).
+    DesktopHotkey { keys: Vec<String> },
 }
 
 impl ActionKind {
@@ -128,6 +139,17 @@ impl ActionKind {
             Self::BrowserClick { element_ref } => format!("click: {element_ref}"),
             Self::BrowserType { element_ref, text } => format!("type: {element_ref} ('{text}')"),
             Self::BrowserClose => "browser_close".to_string(),
+            Self::DesktopSnapshot => "desktop_snapshot".to_string(),
+            Self::DesktopLaunchApp { app_name } => format!("launch: {app_name}"),
+            Self::DesktopClick { element_ref, x, y } => {
+                if let (Some(cx), Some(cy)) = (x, y) {
+                    format!("click: {element_ref} at ({cx}, {cy})")
+                } else {
+                    format!("click: {element_ref}")
+                }
+            }
+            Self::DesktopType { text } => format!("type: '{text}'"),
+            Self::DesktopHotkey { keys } => format!("hotkey: {}", keys.join("+")),
         }
     }
 
@@ -138,14 +160,19 @@ impl ActionKind {
             | Self::ListDirectory { .. }
             | Self::LibraryStats
             | Self::BrowserSnapshot
-            | Self::BrowserClose => CapabilityTier::T0Read,
+            | Self::BrowserClose
+            | Self::DesktopSnapshot => CapabilityTier::T0Read,
             Self::WriteDraft { .. } => CapabilityTier::T1Reversible,
             Self::OverwriteFile { .. }
             | Self::DeleteFile { .. }
             | Self::RenameFile { .. }
             | Self::BrowserNavigate { .. }
             | Self::BrowserClick { .. }
-            | Self::BrowserType { .. } => CapabilityTier::T2Destructive,
+            | Self::BrowserType { .. }
+            | Self::DesktopLaunchApp { .. }
+            | Self::DesktopClick { .. }
+            | Self::DesktopType { .. }
+            | Self::DesktopHotkey { .. } => CapabilityTier::T2Destructive,
             Self::ExecuteCommand { .. } | Self::NetworkRequest { .. } => {
                 CapabilityTier::T3System
             }
@@ -181,6 +208,18 @@ impl ActionKind {
             }
             Self::BrowserType { element_ref, text } => {
                 format!("Allow browser to enter '{text}' into '{element_ref}'?")
+            }
+            Self::DesktopLaunchApp { app_name } => {
+                format!("Allow launching application '{app_name}' on desktop?")
+            }
+            Self::DesktopClick { element_ref, .. } => {
+                format!("Allow mouse click on desktop element '{element_ref}'?")
+            }
+            Self::DesktopType { text } => {
+                format!("Allow entering text into the active desktop window?")
+            }
+            Self::DesktopHotkey { keys } => {
+                format!("Allow sending hotkey [{}] to the active desktop window?", keys.join("+"))
             }
             _ => format!("Authorize action on '{}'?", self.target_summary()),
         }

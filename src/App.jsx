@@ -14,12 +14,14 @@ import { ChatHistoryList } from "./ChatSidebar";
 import DocumentCard from "./DocumentCard";
 import EmailStudio from "./EmailStudio";
 import BrowserStudio from "./BrowserStudio";
+import DesktopAutomationStudio from "./DesktopAutomationStudio";
 import AiOrb from "./AiOrb";
 import {
   IconMessageSquare,
   IconLibrary,
   IconMail,
   IconGlobe,
+  IconMonitor,
   IconPaperclip,
   IconPlus,
   IconPencil,
@@ -331,6 +333,7 @@ export default function App() {
   const [specialistPersona, setSpecialistPersona] = useState({ id: "developer", name: "Developer", icon: "💻" });
   const [showEmailStudio, setShowEmailStudio] = useState(false);
   const [showBrowserStudio, setShowBrowserStudio] = useState(false);
+  const [showDesktopStudio, setShowDesktopStudio] = useState(false);
   const [webSearchEnabled, setWebSearchEnabled] = useState(false);
   const [webSearchingQuery, setWebSearchingQuery] = useState(null);
 
@@ -1580,6 +1583,15 @@ export default function App() {
             <button
               type="button"
               className="btn-header-browser"
+              onClick={() => setShowDesktopStudio(true)}
+              title="OS Desktop Automation Studio (M9)"
+            >
+              <IconMonitor size={13} />
+              <span>OS Agent</span>
+            </button>
+            <button
+              type="button"
+              className="btn-header-browser"
               onClick={() => setShowBrowserStudio(true)}
               title="Sandboxed Browser Automation (M8)"
             >
@@ -1665,6 +1677,15 @@ export default function App() {
                 >
                   <IconGlobe size={13} />
                   <span>Browser Sandbox</span>
+                </button>
+
+                <button
+                  type="button"
+                  className="hero-pill"
+                  onClick={() => setShowDesktopStudio(true)}
+                >
+                  <IconMonitor size={13} />
+                  <span>Desktop Agent</span>
                 </button>
 
                 <button
@@ -2099,6 +2120,17 @@ export default function App() {
           onClose={() => setShowBrowserStudio(false)}
           onInjectContextToChat={(promptText) => {
             setInput(promptText);
+          }}
+        />
+      )}
+
+      {showDesktopStudio && (
+        <DesktopAutomationStudio
+          isOpen={showDesktopStudio}
+          onClose={() => setShowDesktopStudio(false)}
+          onInjectContextToChat={(promptText) => {
+            setInput(promptText);
+            taRef.current?.focus();
           }}
         />
       )}

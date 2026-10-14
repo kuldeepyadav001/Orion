@@ -25,6 +25,7 @@ pub mod downloader;
 pub mod email;
 pub mod browser;
 pub mod search;
+pub mod automation;
 
 use std::sync::Arc;
 
@@ -92,6 +93,8 @@ pub struct AppState {
     pub active_loaded_model: Arc<tokio::sync::Mutex<String>>,
     /// Sandboxed browser automation manager (Milestone 8).
     pub browser: Arc<browser::BrowserManager>,
+    /// OS desktop UI automation manager (Milestone 9).
+    pub automation: Arc<automation::OsAutomationManager>,
     /// Ensures the lazy engine start happens exactly once, even if several
     /// messages are sent before it finishes loading.
     pub engine_started: Arc<tokio::sync::OnceCell<()>>,
@@ -1071,6 +1074,109 @@ async fn web_search(query: String, limit: Option<usize>) -> Result<Vec<search::S
 async fn browse_and_summarize(url: String, state: State<'_, AppState>) -> Result<String> {
     let snap = state.browser.navigate(&url).await?;
     Ok(snap.semantic_tree_text)
+}
+
+/* ------------------------------------------------------------------ */
+/* OS Desktop UI Automation Commands (Milestone 9)                    */
+/* ------------------------------------------------------------------ */
+
+#[tauri::command]
+async fn desktop_snapshot(state: State<'_, AppState>) -> Result<automation::ax::OsSnapshot> {
+    let db = state.db.lock().await;
+    let _ = db.conn().execute(
+        "INSERT INTO audit_log (id, timestamp, domain, capability, path_accessed, tier, outcome, reason)
+         VALUES (?1, ?2, 'trusted', 'desktop_snapshot', 'desktop', 'T0', 'ALLOWED', ?3)",
+        rusqlite::params![
+            uuid::Uuid::new_v4().to_string(),
+            chrono::Utc::now().to_rfc3339(),
+            "Inspected active desktop windows and accessibility controls",
+        ],
+    );
+    drop(db);
+    state.automation.snapshot().await
+}
+
+#[tauri::command]
+async fn desktop_launch_app(
+    app_name: String,
+    state: State<'_, AppState>,
+) -> Result<String> {
+    let db = state.db.lock().await;
+    let _ = db.conn().execute(
+        "INSERT INTO audit_log (id, timestamp, domain, capability, path_accessed, tier, outcome, reason)
+         VALUES (?1, ?2, 'trusted', 'desktop_launch_app', ?3, 'T2', 'ALLOWED', ?4)",
+        rusqlite::params![
+            uuid::Uuid::new_v4().to_string(),
+            chrono::Utc::now().to_rfc3339(),
+            app_name,
+            "Launched desktop application",
+        ],
+    );
+    drop(db);
+    state.automation.launch_app(&app_name).await
+}
+
+#[tauri::command]
+async fn desktop_click(
+    element_ref: String,
+    x: Option<i32>,
+    y: Option<i32>,
+    button: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<String> {
+    let db = state.db.lock().await;
+    let _ = db.conn().execute(
+        "INSERT INTO audit_log (id, timestamp, domain, capability, path_accessed, tier, outcome, reason)
+         VALUES (?1, ?2, 'trusted', 'desktop_click', ?3, 'T2', 'ALLOWED', ?4)",
+        rusqlite::params![
+            uuid::Uuid::new_v4().to_string(),
+            chrono::Utc::now().to_rfc3339(),
+            element_ref,
+            "Simulated desktop mouse click",
+        ],
+    );
+    drop(db);
+    state.automation.click(&element_ref, x, y, button.as_deref()).await
+}
+
+#[tauri::command]
+async fn desktop_type(
+    text: String,
+    state: State<'_, AppState>,
+) -> Result<String> {
+    let db = state.db.lock().await;
+    let _ = db.conn().execute(
+        "INSERT INTO audit_log (id, timestamp, domain, capability, path_accessed, tier, outcome, reason)
+         VALUES (?1, ?2, 'trusted', 'desktop_type', 'active_window', 'T2', 'ALLOWED', ?3)",
+        rusqlite::params![
+            uuid::Uuid::new_v4().to_string(),
+            chrono::Utc::now().to_rfc3339(),
+            "Simulated keyboard input into active window",
+        ],
+    );
+    drop(db);
+    state.automation.type_text(&text).await
+}
+
+#[tauri::command]
+async fn desktop_hotkey(
+    keys: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<String> {
+    let combo = keys.join("+");
+    let db = state.db.lock().await;
+    let _ = db.conn().execute(
+        "INSERT INTO audit_log (id, timestamp, domain, capability, path_accessed, tier, outcome, reason)
+         VALUES (?1, ?2, 'trusted', 'desktop_hotkey', ?3, 'T2', 'ALLOWED', ?4)",
+        rusqlite::params![
+            uuid::Uuid::new_v4().to_string(),
+            chrono::Utc::now().to_rfc3339(),
+            combo,
+            "Dispatched keyboard hotkey to active window",
+        ],
+    );
+    drop(db);
+    state.automation.send_hotkey(&keys).await
 }
 
 /// The measured (or simulated) hardware profile.
@@ -2327,6 +2433,7 @@ pub fn run() {
             let downloader = Arc::new(downloader::DownloadManager::new(models_dir_dl));
             let active_loaded_model = Arc::new(tokio::sync::Mutex::new("general".to_string()));
             let browser_mgr = Arc::new(browser::BrowserManager::new());
+            let automation_mgr = Arc::new(automation::OsAutomationManager::new());
 
             app.manage(AppState {
                 engine: engine.clone(),
@@ -2345,6 +2452,7 @@ pub fn run() {
                 downloader: downloader.clone(),
                 active_loaded_model: active_loaded_model.clone(),
                 browser: browser_mgr.clone(),
+                automation: automation_mgr.clone(),
                 engine_started: Arc::new(tokio::sync::OnceCell::new()),
             });
 
@@ -2541,7 +2649,12 @@ pub fn run() {
             browser_snapshot,
             browser_close,
             web_search,
-            browse_and_summarize
+            browse_and_summarize,
+            desktop_snapshot,
+            desktop_launch_app,
+            desktop_click,
+            desktop_type,
+            desktop_hotkey
         ])
         .build(tauri::generate_context!())
         .expect("error while building Orion")
