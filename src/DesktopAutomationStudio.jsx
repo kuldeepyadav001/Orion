@@ -2,120 +2,52 @@ import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   IconMonitor,
-  IconShield,
   IconZap,
   IconX,
-  IconLock,
   IconRotateCw,
-  IconCheck,
-  IconCopy,
-  IconFileText,
 } from "./Icons";
 
-const SAMPLE_SNAPSHOT = {
-  active_window: "Untitled - Notepad",
-  active_process: "notepad.exe",
-  visible_windows: [
-    {
-      handle_id: "w-101",
-      title: "Untitled - Notepad",
-      process_name: "notepad.exe",
-      is_active: true,
-      rect: [120, 80, 860, 580],
-    },
-    {
-      handle_id: "w-102",
-      title: "Calculator",
-      process_name: "calc.exe",
-      is_active: false,
-      rect: [1020, 140, 360, 520],
-    },
-    {
-      handle_id: "w-103",
-      title: "File Explorer - Documents",
-      process_name: "explorer.exe",
-      is_active: false,
-      rect: [200, 220, 940, 640],
-    },
-  ],
-  interactive_refs: [
-    {
-      ref_id: "@d1",
-      role: "Window",
-      name: "Untitled - Notepad",
-      window_title: "Untitled - Notepad",
-      center_coords: [550, 370],
-    },
-    {
-      ref_id: "@d2",
-      role: "Edit",
-      name: "Text Editor",
-      window_title: "Untitled - Notepad",
-      center_coords: [550, 380],
-    },
-    {
-      ref_id: "@d3",
-      role: "Button",
-      name: "File Menu",
-      window_title: "Untitled - Notepad",
-      center_coords: [147, 96],
-    },
-    {
-      ref_id: "@d4",
-      role: "Window",
-      name: "Calculator",
-      window_title: "Calculator",
-      center_coords: [1200, 400],
-    },
-    {
-      ref_id: "@d5",
-      role: "Edit",
-      name: "Display",
-      window_title: "Calculator",
-      center_coords: [1200, 194],
-    },
-  ],
-  semantic_tree_text: `[Active Desktop | Window: Untitled - Notepad | Process: notepad.exe]
-[ref: @d0] Desktop "Desktop Workspace" (at: 0,0 1920x1080)
-  [ref: @d1] Window "Untitled - Notepad" (at: 120,80 860x580) [focused]
-    [ref: @d2] Edit "Text Editor" (at: 125,110 850x540) [focused]
-    [ref: @d3] Button "File Menu" (at: 125,85 45x22)
-  [ref: @d4] Window "Calculator" (at: 1020,140 360x520)
-    [ref: @d5] Edit "Display" (at: 1030,170 340x48)`,
-};
+const QUICK_APPS = [
+  { id: "notepad", name: "Notepad", icon: "📝", desc: "Text editor" },
+  { id: "calc", name: "Calculator", icon: "🧮", desc: "Math & calculations" },
+  { id: "explorer", name: "File Explorer", icon: "📁", desc: "Browse files" },
+  { id: "cmd", name: "Terminal", icon: "💻", desc: "Command prompt" },
+  { id: "code", name: "VS Code", icon: "⚡", desc: "Code editor" },
+];
+
+const SUGGESTIONS = [
+  "Open Notepad and write down my meeting notes",
+  "Open Calculator and calculate 45 * 128",
+  "Open File Explorer in my Documents folder",
+  "Summarize our active chat and paste into Notepad",
+];
 
 export default function DesktopAutomationStudio({ isOpen, onClose, onInjectContextToChat }) {
-  const [snapshot, setSnapshot] = useState(SAMPLE_SNAPSHOT);
+  const [snapshot, setSnapshot] = useState(null);
   const [loading, setLoading] = useState(false);
   const [taskInput, setTaskInput] = useState("");
-  const [typeTextInput, setTypeTextInput] = useState("");
+  const [textToType, setTextToType] = useState("");
   const [statusMessage, setStatusMessage] = useState(null);
-  const [copiedRef, setCopiedRef] = useState(null);
-  const [auditLogEntry, setAuditLogEntry] = useState({
-    time: "Just now",
-    action: "desktop_snapshot",
-    tier: "T0",
-    target: "desktop",
-    outcome: "ALLOWED",
-  });
 
-  const refreshSnapshot = useCallback(async () => {
+  const refreshDesktop = useCallback(async () => {
     setLoading(true);
     try {
       const snap = await invoke("desktop_snapshot");
       if (snap) {
         setSnapshot(snap);
-        setAuditLogEntry({
-          time: new Date().toLocaleTimeString(),
-          action: "desktop_snapshot",
-          tier: "T0",
-          target: snap.active_window || "desktop",
-          outcome: "ALLOWED",
-        });
       }
-    } catch (err) {
-      console.warn("Using sample desktop snapshot in fallback mode:", err);
-      setSnapshot(SAMPLE_SNAPSHOT);
+    } catch {
+      // Fallback preview
+      setSnapshot({
+        active_window: "Untitled - Notepad",
+        active_process: "notepad.exe",
+        visible_windows: [
+          { handle_id: "w-1", title: "Untitled - Notepad", process_name: "notepad.exe", is_active: true },
+          { handle_id: "w-2", title: "Calculator", process_name: "calc.exe", is_active: false },
+          { handle_id: "w-3", title: "File Explorer", process_name: "explorer.exe", is_active: false },
+        ],
+        semantic_tree_text: "[Active: Untitled - Notepad]",
+      });
     } finally {
       setLoading(false);
     }
@@ -123,89 +55,45 @@ export default function DesktopAutomationStudio({ isOpen, onClose, onInjectConte
 
   useEffect(() => {
     if (isOpen) {
-      refreshSnapshot();
+      refreshDesktop();
     }
-  }, [isOpen, refreshSnapshot]);
+  }, [isOpen, refreshDesktop]);
 
-  const handleLaunchApp = async (appName) => {
+  const handleLaunchApp = async (appId, appName) => {
     setLoading(true);
+    setStatusMessage(null);
     try {
-      const res = await invoke("desktop_launch_app", { appName });
-      setStatusMessage(res);
-      setAuditLogEntry({
-        time: new Date().toLocaleTimeString(),
-        action: "desktop_launch_app",
-        tier: "T2",
-        target: appName,
-        outcome: "ALLOWED",
-      });
-      setTimeout(() => refreshSnapshot(), 800);
+      await invoke("desktop_launch_app", { appName: appId });
+      setStatusMessage(`Opened ${appName}`);
+      setTimeout(() => refreshDesktop(), 800);
     } catch (err) {
-      setStatusMessage(`Error: ${err}`);
+      setStatusMessage(`Could not open ${appName}: ${err}`);
     } finally {
       setLoading(false);
     }
   };
 
-  const handleClickElement = async (refId, coords) => {
+  const handleTypeText = async () => {
+    if (!textToType.trim()) return;
     setLoading(true);
+    setStatusMessage(null);
     try {
-      const x = coords ? coords[0] : null;
-      const y = coords ? coords[1] : null;
-      const res = await invoke("desktop_click", {
-        elementRef: refId,
-        x,
-        y,
-        button: "left",
-      });
-      setStatusMessage(res);
-      setAuditLogEntry({
-        time: new Date().toLocaleTimeString(),
-        action: "desktop_click",
-        tier: "T2",
-        target: refId,
-        outcome: "ALLOWED",
-      });
+      await invoke("desktop_type", { text: textToType });
+      setStatusMessage(`Typed "${textToType.slice(0, 30)}..." into active app`);
+      setTextToType("");
     } catch (err) {
-      setStatusMessage(`Click failed: ${err}`);
+      setStatusMessage(`Typing failed: ${err}`);
     } finally {
       setLoading(false);
     }
   };
 
-  const handleSendType = async () => {
-    if (!typeTextInput.trim()) return;
+  const handleHotkey = async (keys, label) => {
     setLoading(true);
+    setStatusMessage(null);
     try {
-      const res = await invoke("desktop_type", { text: typeTextInput });
-      setStatusMessage(res);
-      setTypeTextInput("");
-      setAuditLogEntry({
-        time: new Date().toLocaleTimeString(),
-        action: "desktop_type",
-        tier: "T2",
-        target: snapshot.active_window,
-        outcome: "ALLOWED",
-      });
-    } catch (err) {
-      setStatusMessage(`Type failed: ${err}`);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleSendHotkey = async (keys) => {
-    setLoading(true);
-    try {
-      const res = await invoke("desktop_hotkey", { keys });
-      setStatusMessage(res);
-      setAuditLogEntry({
-        time: new Date().toLocaleTimeString(),
-        action: "desktop_hotkey",
-        tier: "T2",
-        target: keys.join("+"),
-        outcome: "ALLOWED",
-      });
+      await invoke("desktop_hotkey", { keys });
+      setStatusMessage(`Sent ${label} to active app`);
     } catch (err) {
       setStatusMessage(`Hotkey failed: ${err}`);
     } finally {
@@ -213,10 +101,11 @@ export default function DesktopAutomationStudio({ isOpen, onClose, onInjectConte
     }
   };
 
-  const handleDelegateToOrion = () => {
+  const handleRunTask = () => {
     if (!onInjectContextToChat) return;
-    const task = taskInput.trim() || "Analyze active desktop windows and recommend automated next actions.";
-    const contextPrompt = `[OS Desktop Accessibility Snapshot]\n${snapshot.semantic_tree_text}\n\nUser Request: ${task}`;
+    const task = taskInput.trim() || "Analyze open desktop windows and automate the next action.";
+    const activeApp = snapshot?.active_window || "Desktop";
+    const contextPrompt = `[Desktop Task | Active Window: ${activeApp}]\nUser Request: ${task}`;
     onInjectContextToChat(contextPrompt);
     onClose();
   };
@@ -225,26 +114,37 @@ export default function DesktopAutomationStudio({ isOpen, onClose, onInjectConte
 
   return (
     <div className="email-modal-backdrop" onClick={onClose}>
-      <div className="email-modal-dialog modern-browser-dialog" onClick={(e) => e.stopPropagation()}>
-        {/* Header Bar */}
+      <div
+        className="email-modal-dialog modern-browser-dialog"
+        onClick={(e) => e.stopPropagation()}
+        style={{ maxWidth: "980px", height: "80vh", maxHeight: "740px" }}
+      >
+        {/* Clean Human-Friendly Header */}
         <div className="modern-browser-header">
           <div className="modern-browser-header-left">
-            <div className="modern-browser-icon-wrap">
+            <div className="modern-browser-icon-wrap" style={{ background: "rgba(6, 182, 212, 0.15)", color: "#38bdf8" }}>
               <IconMonitor size={16} />
             </div>
             <div>
-              <div className="modern-browser-title">OS UI Automation Studio</div>
+              <div className="modern-browser-title">Desktop Assistant</div>
               <div className="modern-browser-subtitle">
-                Zero-Vision Accessibility Trees • Single-Resident RAM Compliant (&le;2.0 GB)
+                Launch apps, type notes, and control your PC with Orion
               </div>
             </div>
           </div>
 
           <div className="modern-browser-header-actions">
-            <span className="modern-security-pill">
-              <IconShield size={12} />
-              <span>Broker Tier 2 • Audited</span>
-            </span>
+            <button
+              type="button"
+              className="email-secondary-btn"
+              onClick={refreshDesktop}
+              disabled={loading}
+              title="Refresh open windows"
+              style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}
+            >
+              <IconRotateCw size={12} className={loading ? "spin" : ""} />
+              <span>{loading ? "Scanning..." : "Refresh"}</span>
+            </button>
 
             <button
               type="button"
@@ -257,322 +157,289 @@ export default function DesktopAutomationStudio({ isOpen, onClose, onInjectConte
           </div>
         </div>
 
-        {/* Quick Launch & Action Strip */}
-        <div className="modern-browser-nav-bar">
-          <div className="modern-omnibar-wrap" style={{ display: "flex", gap: "8px", alignItems: "center" }}>
-            <span style={{ fontSize: "12px", color: "var(--text-dim)", fontWeight: 500, paddingLeft: "4px" }}>
-              Quick Launch:
+        {/* Quick Launch Apps Strip */}
+        <div className="modern-browser-nav-bar" style={{ padding: "10px 18px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "10px", width: "100%", overflowX: "auto" }}>
+            <span style={{ fontSize: "12px", color: "var(--text-dim)", fontWeight: 500, flexShrink: 0 }}>
+              Launch:
             </span>
-            <button
-              type="button"
-              className="modern-shortcut-chip"
-              onClick={() => handleLaunchApp("notepad")}
-              disabled={loading}
-            >
-              Notepad
-            </button>
-            <button
-              type="button"
-              className="modern-shortcut-chip"
-              onClick={() => handleLaunchApp("calc")}
-              disabled={loading}
-            >
-              Calculator
-            </button>
-            <button
-              type="button"
-              className="modern-shortcut-chip"
-              onClick={() => handleLaunchApp("explorer")}
-              disabled={loading}
-            >
-              File Explorer
-            </button>
-            <button
-              type="button"
-              className="modern-shortcut-chip"
-              onClick={() => handleLaunchApp("cmd")}
-              disabled={loading}
-            >
-              Terminal
-            </button>
-            <button
-              type="button"
-              className="modern-shortcut-chip"
-              onClick={() => handleLaunchApp("code")}
-              disabled={loading}
-            >
-              VS Code
-            </button>
-
-            <button
-              type="button"
-              className="email-secondary-btn"
-              style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: "6px" }}
-              onClick={refreshSnapshot}
-              disabled={loading}
-              title="Refresh desktop window tree"
-            >
-              <IconRotateCw size={12} className={loading ? "spin" : ""} />
-              <span>{loading ? "Scanning..." : "Scan Desktop"}</span>
-            </button>
+            {QUICK_APPS.map((app) => (
+              <button
+                key={app.id}
+                type="button"
+                className="modern-shortcut-chip"
+                onClick={() => handleLaunchApp(app.id, app.name)}
+                disabled={loading}
+                title={app.desc}
+                style={{ display: "inline-flex", alignItems: "center", gap: "6px", padding: "5px 12px" }}
+              >
+                <span>{app.icon}</span>
+                <span>{app.name}</span>
+              </button>
+            ))}
           </div>
         </div>
 
-        {/* Split Container */}
-        <div className="email-split-container">
-          {/* Left: Active Windows & Accessible Control Tree */}
-          <div className="email-list-pane browser-table-pane">
-            <div className="browser-table-top" style={{ padding: "10px 14px", borderBottom: "1px solid var(--border-subtle)" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <span style={{ fontSize: "12px", fontWeight: 600, color: "var(--text)" }}>
-                  Visible Windows ({snapshot.visible_windows?.length || 0})
-                </span>
-                <span style={{ fontSize: "11px", color: "#38bdf8" }}>
-                  Active: {snapshot.active_window || "None"}
-                </span>
-              </div>
+        {/* Status notification banner */}
+        {statusMessage && (
+          <div style={{
+            margin: "8px 18px 0",
+            padding: "8px 14px",
+            borderRadius: "8px",
+            background: "rgba(6, 182, 212, 0.12)",
+            border: "1px solid rgba(6, 182, 212, 0.28)",
+            color: "#38bdf8",
+            fontSize: "12px",
+            fontWeight: 500,
+          }}>
+            ✦ {statusMessage}
+          </div>
+        )}
+
+        {/* Main 2-Column Clean Layout */}
+        <div className="email-split-container" style={{ flex: 1, overflow: "hidden" }}>
+          {/* Left Column: Running Apps List */}
+          <div className="email-list-pane" style={{ width: "320px", borderRight: "1px solid var(--border-soft)", display: "flex", flexDirection: "column" }}>
+            <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--border-subtle)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span style={{ fontSize: "12px", fontWeight: 600, color: "var(--text)" }}>
+                Open Windows
+              </span>
+              <span style={{ fontSize: "11px", color: "var(--text-dim)" }}>
+                {snapshot?.visible_windows?.length || 0} active
+              </span>
             </div>
 
-            <div className="browser-table-scroll">
-              <table className="browser-elements-table">
-                <thead>
-                  <tr>
-                    <th style={{ width: "55px" }}>Ref</th>
-                    <th style={{ width: "75px" }}>Role</th>
-                    <th>Control Name / Window</th>
-                    <th style={{ width: "70px", textAlign: "right" }}>Action</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {snapshot.interactive_refs?.map((item) => (
-                    <tr key={item.ref_id} className="browser-elem-row">
-                      <td className="browser-ref-code">
-                        <code style={{ color: "#38bdf8" }}>{item.ref_id}</code>
-                      </td>
-                      <td>
-                        <span className={`role-tag role-${item.role.toLowerCase()}`}>
-                          {item.role}
-                        </span>
-                      </td>
-                      <td className="browser-elem-name" title={item.name}>
-                        <div style={{ fontWeight: 500 }}>{item.name || item.role}</div>
-                        <div style={{ fontSize: "10px", color: "var(--text-dim)" }}>
-                          {item.window_title} {item.center_coords ? `(${item.center_coords[0]},${item.center_coords[1]})` : ""}
+            <div style={{ flex: 1, overflowY: "auto", padding: "8px" }}>
+              {snapshot?.visible_windows && snapshot.visible_windows.length > 0 ? (
+                snapshot.visible_windows.map((win, idx) => {
+                  const isActive = win.is_active || win.title === snapshot.active_window;
+                  const isNote = win.process_name?.toLowerCase().includes("notepad");
+                  const isCalc = win.process_name?.toLowerCase().includes("calc");
+                  const isExp = win.process_name?.toLowerCase().includes("explorer");
+                  const isCode = win.process_name?.toLowerCase().includes("code");
+
+                  return (
+                    <div
+                      key={win.handle_id || idx}
+                      style={{
+                        padding: "10px 12px",
+                        borderRadius: "10px",
+                        marginBottom: "6px",
+                        background: isActive ? "rgba(6, 182, 212, 0.08)" : "rgba(255, 255, 255, 0.02)",
+                        border: isActive ? "1px solid rgba(6, 182, 212, 0.3)" : "1px solid rgba(255, 255, 255, 0.05)",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "10px",
+                        transition: "all 0.15s ease",
+                      }}
+                    >
+                      <div style={{ fontSize: "18px", flexShrink: 0 }}>
+                        {isNote ? "📝" : isCalc ? "🧮" : isExp ? "📁" : isCode ? "💻" : "🪟"}
+                      </div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: "12.5px", fontWeight: 600, color: "var(--text)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                          {win.title || win.process_name}
                         </div>
-                      </td>
-                      <td style={{ textAlign: "right" }}>
-                        <button
-                          type="button"
-                          className="browser-btn-ref-copy"
-                          onClick={() => handleClickElement(item.ref_id, item.center_coords)}
-                          disabled={loading}
-                          title="Click this OS control"
-                        >
-                          <IconZap size={11} className="text-cyan" />
-                          <span>Click</span>
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                  {(!snapshot.interactive_refs || snapshot.interactive_refs.length === 0) && (
-                    <tr>
-                      <td colSpan={4} className="browser-empty-cell">
-                        No accessible controls discovered.
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
+                        <div style={{ fontSize: "10.5px", color: "var(--text-dim)" }}>
+                          {win.process_name}
+                        </div>
+                      </div>
+                      {isActive && (
+                        <span style={{
+                          fontSize: "10px",
+                          fontWeight: 600,
+                          padding: "2px 6px",
+                          borderRadius: "10px",
+                          background: "rgba(56, 189, 248, 0.2)",
+                          color: "#38bdf8",
+                        }}>
+                          Focused
+                        </span>
+                      )}
+                    </div>
+                  );
+                })
+              ) : (
+                <div style={{ padding: "24px 16px", textAlign: "center", color: "var(--text-dim)", fontSize: "12px" }}>
+                  No open windows detected. Launch an app above!
+                </div>
+              )}
             </div>
           </div>
 
-          {/* Right: Live Interactive Agent Control & Direct Input */}
-          <div className="email-detail-pane browser-detail-pane">
-            <div className="email-detail-scroll" style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
-              {/* Active Window Context Card */}
-              <div className="browser-boundary-card" style={{ margin: 0 }}>
-                <div className="browser-boundary-icon">
-                  <IconFileText size={16} />
+          {/* Right Column: Actions & Natural Language Command */}
+          <div className="email-detail-pane" style={{ flex: 1, display: "flex", flexDirection: "column", padding: "18px 22px", gap: "16px", overflowY: "auto" }}>
+            {/* Active App Target Banner */}
+            <div style={{
+              padding: "12px 16px",
+              borderRadius: "12px",
+              background: "rgba(255, 255, 255, 0.03)",
+              border: "1px solid rgba(255, 255, 255, 0.08)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+            }}>
+              <div>
+                <div style={{ fontSize: "11px", color: "var(--text-dim)", textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 600 }}>
+                  Active Window Target
                 </div>
-                <div className="browser-boundary-text">
-                  <strong>Active Desktop Target:</strong>
-                  <p>
-                    Window: <code>{snapshot.active_window}</code> | Process: <code>{snapshot.active_process}</code>
-                  </p>
-                </div>
-              </div>
-
-              {/* Status Message Notification */}
-              {statusMessage && (
-                <div style={{
-                  padding: "8px 12px",
-                  borderRadius: "8px",
-                  background: "rgba(6, 182, 212, 0.12)",
-                  border: "1px solid rgba(6, 182, 212, 0.3)",
-                  fontSize: "12px",
-                  color: "#38bdf8",
-                }}>
-                  {statusMessage}
-                </div>
-              )}
-
-              {/* Direct Keyboard Input Simulation */}
-              <div style={{
-                background: "rgba(255, 255, 255, 0.025)",
-                border: "1px solid var(--border-subtle)",
-                borderRadius: "10px",
-                padding: "12px 14px",
-              }}>
-                <div style={{ fontSize: "12px", fontWeight: 600, color: "var(--text)", marginBottom: "8px" }}>
-                  Direct Keyboard Input to Active Window:
-                </div>
-                <div style={{ display: "flex", gap: "8px" }}>
-                  <input
-                    type="text"
-                    className="modern-task-input"
-                    value={typeTextInput}
-                    onChange={(e) => setTypeTextInput(e.target.value)}
-                    placeholder="Enter text to type into active window..."
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") {
-                        e.preventDefault();
-                        handleSendType();
-                      }
-                    }}
-                  />
-                  <button
-                    type="button"
-                    className="modern-task-submit"
-                    onClick={handleSendType}
-                    disabled={loading || !typeTextInput.trim()}
-                  >
-                    <span>Type Text</span>
-                  </button>
-                </div>
-
-                {/* Quick Hotkeys Strip */}
-                <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", marginTop: "10px" }}>
-                  <span style={{ fontSize: "11px", color: "var(--text-dim)", alignSelf: "center", marginRight: "4px" }}>
-                    Hotkeys:
-                  </span>
-                  {["Enter", "Tab", "Esc", "Backspace"].map((hk) => (
-                    <button
-                      key={hk}
-                      type="button"
-                      className="modern-shortcut-chip"
-                      onClick={() => handleSendHotkey([hk])}
-                      style={{ fontSize: "11px", padding: "3px 8px" }}
-                    >
-                      {hk}
-                    </button>
-                  ))}
-                  {[
-                    { label: "Ctrl+S", keys: ["Control", "s"] },
-                    { label: "Ctrl+C", keys: ["Control", "c"] },
-                    { label: "Ctrl+V", keys: ["Control", "v"] },
-                    { label: "Alt+Tab", keys: ["Alt", "Tab"] },
-                  ].map((hk) => (
-                    <button
-                      key={hk.label}
-                      type="button"
-                      className="modern-shortcut-chip"
-                      onClick={() => handleSendHotkey(hk.keys)}
-                      style={{ fontSize: "11px", padding: "3px 8px" }}
-                    >
-                      {hk.label}
-                    </button>
-                  ))}
+                <div style={{ fontSize: "14px", fontWeight: 600, color: "#f1f5f9", marginTop: "2px" }}>
+                  {snapshot?.active_window || "Desktop Workspace"}
                 </div>
               </div>
+              <div style={{ fontSize: "11px", color: "#38bdf8", background: "rgba(6, 182, 212, 0.1)", padding: "3px 8px", borderRadius: "6px" }}>
+                Ready for input
+              </div>
+            </div>
 
-              {/* Semantic Accessibility Tree Context Box */}
-              <div style={{
-                background: "rgba(10, 14, 24, 0.7)",
-                border: "1px solid var(--border-subtle)",
-                borderRadius: "10px",
-                padding: "12px",
-                flex: 1,
-                minHeight: "160px",
-                display: "flex",
-                flexDirection: "column",
-              }}>
-                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px" }}>
-                  <span style={{ fontSize: "11.5px", fontWeight: 600, color: "var(--text-dim)" }}>
-                    Normalized OS Accessibility Hierarchy (Zero-Vision LLM Payload):
-                  </span>
-                  <button
-                    type="button"
-                    style={{ background: "none", border: "none", color: "#38bdf8", fontSize: "11px", cursor: "pointer", display: "inline-flex", gap: "4px", alignItems: "center" }}
-                    onClick={() => {
-                      navigator.clipboard.writeText(snapshot.semantic_tree_text);
-                      setCopiedRef("tree");
-                      setTimeout(() => setCopiedRef(null), 1500);
-                    }}
-                  >
-                    {copiedRef === "tree" ? <IconCheck size={11} className="text-emerald" /> : <IconCopy size={11} />}
-                    <span>{copiedRef === "tree" ? "Copied" : "Copy Tree"}</span>
-                  </button>
-                </div>
-                <pre style={{
-                  fontFamily: "monospace",
-                  fontSize: "11px",
-                  color: "#cbd5e1",
-                  whiteSpace: "pre-wrap",
-                  lineHeight: "1.45",
-                  margin: 0,
-                  overflowY: "auto",
-                  maxHeight: "180px",
-                }}>
-                  {snapshot.semantic_tree_text}
-                </pre>
+            {/* Natural Language Task Box (JARVIS Mode) */}
+            <div style={{
+              padding: "14px 16px",
+              borderRadius: "12px",
+              background: "rgba(15, 23, 42, 0.55)",
+              border: "1px solid rgba(56, 189, 248, 0.2)",
+              display: "flex",
+              flexDirection: "column",
+              gap: "10px",
+            }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                <IconZap size={14} className="text-cyan" />
+                <span style={{ fontSize: "12.5px", fontWeight: 600, color: "#38bdf8" }}>
+                  Ask Orion to Automate on Desktop
+                </span>
               </div>
 
-              {/* Autonomous Natural Language Desktop Task Bar */}
-              <div className="modern-browser-task-bar" style={{ marginTop: "auto" }}>
+              <div style={{ display: "flex", gap: "8px" }}>
                 <input
                   type="text"
                   className="modern-task-input"
                   value={taskInput}
                   onChange={(e) => setTaskInput(e.target.value)}
-                  placeholder="Tell Orion what to automate (e.g. 'Open Notepad and paste the financial summary')..."
+                  placeholder="e.g. 'Open Notepad and paste my notes' or 'Calculate 25 * 40'..."
                   onKeyDown={(e) => {
-                    if (e.key === "Enter" && !e.shiftKey) {
+                    if (e.key === "Enter") {
                       e.preventDefault();
-                      handleDelegateToOrion();
+                      handleRunTask();
                     }
                   }}
+                  style={{ flex: 1 }}
                 />
                 <button
                   type="button"
                   className="modern-btn-analyze-primary"
-                  onClick={handleDelegateToOrion}
-                  title="Delegate desktop task to Orion Chat"
+                  onClick={handleRunTask}
+                  style={{ padding: "8px 16px", fontSize: "12px" }}
                 >
-                  <IconZap size={13} />
                   <span>Ask Orion</span>
                 </button>
+              </div>
+
+              {/* Suggestion Chips */}
+              <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", marginTop: "4px" }}>
+                {SUGGESTIONS.map((sug, i) => (
+                  <button
+                    key={i}
+                    type="button"
+                    onClick={() => setTaskInput(sug)}
+                    style={{
+                      background: "rgba(255, 255, 255, 0.03)",
+                      border: "1px solid rgba(255, 255, 255, 0.08)",
+                      borderRadius: "6px",
+                      padding: "3px 8px",
+                      color: "var(--text-dim)",
+                      fontSize: "11px",
+                      cursor: "pointer",
+                      transition: "all 0.12s ease",
+                    }}
+                    onMouseEnter={(e) => { e.currentTarget.style.color = "#f1f5f9"; e.currentTarget.style.borderColor = "rgba(56, 189, 248, 0.3)"; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.color = "var(--text-dim)"; e.currentTarget.style.borderColor = "rgba(255, 255, 255, 0.08)"; }}
+                  >
+                    ✦ {sug}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Direct Keystrokes & Typing */}
+            <div style={{
+              padding: "14px 16px",
+              borderRadius: "12px",
+              background: "rgba(255, 255, 255, 0.02)",
+              border: "1px solid rgba(255, 255, 255, 0.06)",
+              display: "flex",
+              flexDirection: "column",
+              gap: "10px",
+            }}>
+              <div style={{ fontSize: "12.5px", fontWeight: 600, color: "var(--text)" }}>
+                Type Into Active Window:
+              </div>
+
+              <div style={{ display: "flex", gap: "8px" }}>
+                <input
+                  type="text"
+                  className="modern-task-input"
+                  value={textToType}
+                  onChange={(e) => setTextToType(e.target.value)}
+                  placeholder="Enter text to type directly into the focused app..."
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      handleTypeText();
+                    }
+                  }}
+                  style={{ flex: 1 }}
+                />
+                <button
+                  type="button"
+                  className="modern-task-submit"
+                  onClick={handleTypeText}
+                  disabled={loading || !textToType.trim()}
+                  style={{ padding: "8px 14px", fontSize: "12px" }}
+                >
+                  <span>Type Text</span>
+                </button>
+              </div>
+
+              {/* Quick Useful Hotkeys */}
+              <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", marginTop: "4px" }}>
+                <span style={{ fontSize: "11px", color: "var(--text-dim)" }}>Shortcuts:</span>
+                {[
+                  { label: "Enter ↵", keys: ["Enter"] },
+                  { label: "Save (Ctrl+S)", keys: ["Control", "s"] },
+                  { label: "Copy (Ctrl+C)", keys: ["Control", "c"] },
+                  { label: "Paste (Ctrl+V)", keys: ["Control", "v"] },
+                  { label: "Escape", keys: ["Escape"] },
+                  { label: "Tab ⇥", keys: ["Tab"] },
+                ].map((hk) => (
+                  <button
+                    key={hk.label}
+                    type="button"
+                    className="modern-shortcut-chip"
+                    onClick={() => handleHotkey(hk.keys, hk.label)}
+                    disabled={loading}
+                    style={{ fontSize: "11px", padding: "3px 10px" }}
+                  >
+                    {hk.label}
+                  </button>
+                ))}
               </div>
             </div>
           </div>
         </div>
 
-        {/* Capability Broker Audit Footer */}
-        <div className="email-modal-footer">
-          <div className="email-footer-rule-wrap">
-            <IconLock size={12} className="text-cyan" />
-            <span className="email-footer-rule-text">
-              Capability Broker Audit:
-            </span>
-            <code className="browser-footer-code">
-              [{auditLogEntry.time}] {auditLogEntry.action} • Tier: {auditLogEntry.tier} • Target: {auditLogEntry.target} • Outcome: {auditLogEntry.outcome}
-            </code>
+        {/* Clean Footer */}
+        <div className="email-modal-footer" style={{ padding: "10px 18px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ fontSize: "11.5px", color: "var(--text-dim)", display: "flex", alignItems: "center", gap: "6px" }}>
+            <span style={{ color: "#34d399" }}>●</span>
+            <span>Desktop automation ready. Actions execute locally on your PC.</span>
           </div>
+
           <button
             type="button"
             className="email-done-btn"
             onClick={onClose}
           >
-            Close
+            Done
           </button>
         </div>
       </div>
