@@ -22,6 +22,7 @@ import {
   IconMail,
   IconGlobe,
   IconMonitor,
+  IconMoreVertical,
   IconPaperclip,
   IconPlus,
   IconPencil,
@@ -337,6 +338,17 @@ export default function App() {
   const [webSearchEnabled, setWebSearchEnabled] = useState(false);
   const [webSearchingQuery, setWebSearchingQuery] = useState(null);
 
+  // Flexible resizable sidebar state
+  const [sidebarWidth, setSidebarWidth] = useState(() => {
+    const saved = localStorage.getItem("orion_sidebar_width");
+    return saved ? Math.max(210, Math.min(440, parseInt(saved, 10))) : 260;
+  });
+  const [isResizingSidebar, setIsResizingSidebar] = useState(false);
+
+  // 3-Dot More Actions Menu state
+  const [showMoreMenu, setShowMoreMenu] = useState(false);
+  const moreMenuRef = useRef(null);
+
   const audioPlayerRef = useRef(null);
   const lastSourceRef = useRef("text");
   const lastUserQueryRef = useRef("");
@@ -363,6 +375,49 @@ export default function App() {
       })
       .catch(() => {});
   }, []);
+
+  // Sidebar drag resizer handlers
+  const startResizing = useCallback((e) => {
+    e.preventDefault();
+    setIsResizingSidebar(true);
+  }, []);
+
+  useEffect(() => {
+    if (!isResizingSidebar) return;
+    const onMouseMove = (e) => {
+      const newWidth = Math.max(210, Math.min(440, e.clientX));
+      setSidebarWidth(newWidth);
+    };
+    const onMouseUp = () => {
+      setIsResizingSidebar(false);
+      localStorage.setItem("orion_sidebar_width", sidebarWidth.toString());
+    };
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+    return () => {
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+    };
+  }, [isResizingSidebar, sidebarWidth]);
+
+  // Close 3-Dot More Menu when clicking outside or pressing Escape
+  useEffect(() => {
+    if (!showMoreMenu) return;
+    const handleClickOutside = (e) => {
+      if (moreMenuRef.current && !moreMenuRef.current.contains(e.target)) {
+        setShowMoreMenu(false);
+      }
+    };
+    const handleKeyDown = (e) => {
+      if (e.key === "Escape") setShowMoreMenu(false);
+    };
+    window.addEventListener("mousedown", handleClickOutside);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("mousedown", handleClickOutside);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [showMoreMenu]);
 
   const refreshModelInfo = useCallback(async () => {
     try {
@@ -1348,9 +1403,11 @@ export default function App() {
           being reported and discarded. */}
       <DropZone onAccepted={indexDroppedFiles} />
 
-      {/* Sidebar: persistent, so the library is always visible rather than
-          hidden behind a modal the user has to remember exists. */}
-      <aside className={`sidebar ${sidebarOpen ? "" : "collapsed"}`}>
+      {/* Sidebar: persistent, flexible & resizable */}
+      <aside
+        className={`sidebar ${sidebarOpen ? "" : "collapsed"} ${isResizingSidebar ? "resizing" : ""}`}
+        style={{ width: sidebarOpen ? `${sidebarWidth}px` : 0 }}
+      >
         <div className="side-head">
           <div className="brand">
             <Logo size={22} />
@@ -1478,23 +1535,29 @@ export default function App() {
             </div>
           </div>
         </div>
+
+        {sidebarOpen && (
+          <div
+            className="sidebar-resizer"
+            onMouseDown={startResizing}
+            title="Drag to resize sidebar width"
+          />
+        )}
       </aside>
 
       <div className="main">
         <header className="chat-top-header">
           <div className="header-left-group">
-            {!sidebarOpen && (
-              <button
-                type="button"
-                className="btn-toggle-sidebar"
-                onClick={() => setSidebarOpen(true)}
-                title="Open conversations sidebar (Ctrl+B)"
-                aria-label="Toggle sidebar"
-              >
-                <IconMessageSquare size={13} />
-                <span>Chats</span>
-              </button>
-            )}
+            <button
+              type="button"
+              className="btn-toggle-sidebar"
+              onClick={() => setSidebarOpen((v) => !v)}
+              title={sidebarOpen ? "Hide sidebar (Ctrl+B)" : "Show sidebar (Ctrl+B)"}
+              aria-label="Toggle sidebar"
+            >
+              <IconMessageSquare size={13} />
+              <span>{sidebarOpen ? "Hide" : "Chats"}</span>
+            </button>
 
             <div className="header-session-info">
               {isEditingTitle ? (
@@ -1582,33 +1645,6 @@ export default function App() {
           <div className="header-actions">
             <button
               type="button"
-              className="btn-header-browser"
-              onClick={() => setShowDesktopStudio(true)}
-              title="OS Desktop Automation Studio (M9)"
-            >
-              <IconMonitor size={13} />
-              <span>OS Agent</span>
-            </button>
-            <button
-              type="button"
-              className="btn-header-browser"
-              onClick={() => setShowBrowserStudio(true)}
-              title="Sandboxed Browser Automation (M8)"
-            >
-              <IconGlobe size={13} />
-              <span>Browser</span>
-            </button>
-            <button
-              type="button"
-              className="btn-header-email"
-              onClick={() => setShowEmailStudio(true)}
-              title="Sovereign Email Assistant (M7)"
-            >
-              <IconMail size={13} />
-              <span>Email</span>
-            </button>
-            <button
-              type="button"
               className="btn-quick-new-chat"
               onClick={handleCreateSession}
               title="New conversation (Ctrl+N)"
@@ -1616,15 +1652,126 @@ export default function App() {
               <IconPlus size={13} />
               <span>New Chat</span>
             </button>
-            <button
-              type="button"
-              className="btn-header-settings"
-              onClick={() => setShowSystem(true)}
-              title="System & Hardware Settings"
-              aria-label="Settings"
-            >
-              <IconSettings size={14} />
-            </button>
+
+            {/* Clean 3-Dot More Actions Menu */}
+            <div className="header-more-menu-wrap" ref={moreMenuRef}>
+              <button
+                type="button"
+                className={`btn-header-more ${showMoreMenu ? "active" : ""}`}
+                onClick={() => setShowMoreMenu((prev) => !prev)}
+                title="Tools, Workspaces & Settings"
+                aria-label="More options"
+                aria-expanded={showMoreMenu}
+              >
+                <IconMoreVertical size={16} />
+              </button>
+
+              {showMoreMenu && (
+                <div className="header-dropdown-menu" role="menu">
+                  <div className="dropdown-section-title">Workspaces &amp; Agents</div>
+                  <button
+                    type="button"
+                    className="dropdown-item"
+                    role="menuitem"
+                    onClick={() => {
+                      setShowMoreMenu(false);
+                      setShowDesktopStudio(true);
+                    }}
+                  >
+                    <span className="dropdown-item-icon text-cyan"><IconMonitor size={14} /></span>
+                    <div className="dropdown-item-text">
+                      <div className="dropdown-item-title">Desktop Agent</div>
+                      <div className="dropdown-item-desc">OS UI Automation &amp; Controls</div>
+                    </div>
+                  </button>
+
+                  <button
+                    type="button"
+                    className="dropdown-item"
+                    role="menuitem"
+                    onClick={() => {
+                      setShowMoreMenu(false);
+                      setShowBrowserStudio(true);
+                    }}
+                  >
+                    <span className="dropdown-item-icon text-blue"><IconGlobe size={14} /></span>
+                    <div className="dropdown-item-text">
+                      <div className="dropdown-item-title">Browser Sandbox</div>
+                      <div className="dropdown-item-desc">Two-domain web exploration</div>
+                    </div>
+                  </button>
+
+                  <button
+                    type="button"
+                    className="dropdown-item"
+                    role="menuitem"
+                    onClick={() => {
+                      setShowMoreMenu(false);
+                      setShowEmailStudio(true);
+                    }}
+                  >
+                    <span className="dropdown-item-icon text-purple"><IconMail size={14} /></span>
+                    <div className="dropdown-item-text">
+                      <div className="dropdown-item-title">Sovereign Email</div>
+                      <div className="dropdown-item-desc">Private inbox &amp; AI triage</div>
+                    </div>
+                  </button>
+
+                  <div className="dropdown-divider" />
+                  <div className="dropdown-section-title">System &amp; Security</div>
+
+                  <button
+                    type="button"
+                    className="dropdown-item"
+                    role="menuitem"
+                    onClick={() => {
+                      setShowMoreMenu(false);
+                      setShowSystem(true);
+                    }}
+                  >
+                    <span className="dropdown-item-icon text-amber"><IconSettings size={14} /></span>
+                    <div className="dropdown-item-text">
+                      <div className="dropdown-item-title">System &amp; Hardware</div>
+                      <div className="dropdown-item-desc">Hardware specs &amp; persona config</div>
+                    </div>
+                  </button>
+
+                  <button
+                    type="button"
+                    className="dropdown-item"
+                    role="menuitem"
+                    onClick={() => {
+                      setShowMoreMenu(false);
+                      setShowLockSettings(true);
+                    }}
+                  >
+                    <span className="dropdown-item-icon text-emerald"><IconShield size={14} /></span>
+                    <div className="dropdown-item-text">
+                      <div className="dropdown-item-title">Master Passcode</div>
+                      <div className="dropdown-item-desc">8-minute PIN screen lock</div>
+                    </div>
+                  </button>
+
+                  {lockStatus?.enabled && (
+                    <button
+                      type="button"
+                      className="dropdown-item dropdown-item-danger"
+                      role="menuitem"
+                      onClick={() => {
+                        setShowMoreMenu(false);
+                        handleLockNow();
+                      }}
+                    >
+                      <span className="dropdown-item-icon text-rose"><IconLock size={14} /></span>
+                      <div className="dropdown-item-text">
+                        <div className="dropdown-item-title">Lock App Now</div>
+                        <div className="dropdown-item-desc">Immediate screen lock</div>
+                      </div>
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
         </header>
 

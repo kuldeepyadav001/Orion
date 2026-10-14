@@ -224,8 +224,8 @@ export default function DesktopAutomationStudio({ isOpen, onClose, onInjectConte
   if (!isOpen) return null;
 
   return (
-    <div className="email-studio-backdrop" onClick={onClose}>
-      <div className="modern-browser-modal" onClick={(e) => e.stopPropagation()}>
+    <div className="email-modal-backdrop" onClick={onClose}>
+      <div className="email-modal-dialog modern-browser-dialog" onClick={(e) => e.stopPropagation()}>
         {/* Header Bar */}
         <div className="modern-browser-header">
           <div className="modern-browser-header-left">
