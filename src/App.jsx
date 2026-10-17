@@ -1282,7 +1282,7 @@ export default function App() {
         if (appTarget === "notepad" || appTarget === "notes") desktopAppToLaunch = "notepad";
         else if (appTarget === "calc" || appTarget === "calculator") desktopAppToLaunch = "calc";
         else if (appTarget === "terminal" || appTarget === "cmd" || appTarget === "command prompt") desktopAppToLaunch = "cmd";
-        else if (appTarget === "explorer" || appTarget === "files" || appTarget === "file explorer") desktopAppToLaunch = "explorer";
+        else if (appTarget === "explorer" || appTarget === "files" || appTarget === "file" || appTarget === "file explorer" || appTarget === "file manager" || appTarget === "folder" || appTarget === "folders" || appTarget === "documents" || appTarget === "downloads") desktopAppToLaunch = "explorer";
         else if (appTarget === "code" || appTarget === "vs code" || appTarget === "vscode") desktopAppToLaunch = "code";
         else if (appTarget === "paint" || appTarget === "mspaint") desktopAppToLaunch = "mspaint";
       }

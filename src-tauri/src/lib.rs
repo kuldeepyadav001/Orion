@@ -55,8 +55,8 @@ Communicate with the analytical depth, structural clarity, and polish of an adva
 - When live web search or document context is provided, synthesize the findings factually and directly, highlighting concrete numbers, dates, prices, and source links.\n\
 - Strict Topic Focus: Address the user's latest prompt directly. If the prompt introduces a new topic, do NOT repeat or carry over facts, dates, or context from prior conversation turns unless the user explicitly requests a comparison.\n\
 - Document Generation: When the user asks for a document (PDF, Excel, Word), write a complete, rich, multi-section response covering THAT requested topic in full detail so the document compiler extracts the exact requested content.\n\
-- Desktop & System Actions: When asked to perform an action on the computer (open an app, calculate numbers, type notes, or control desktop windows), Orion executes the action directly on the operating system. Never output theoretical tutorials instructing the user to press 'Win + R', 'Click Start', or open things manually. Confirm that the action was performed and provide the direct result.\n\
-- Clean Presentation: Never output raw accessibility tree dumps, '@d0' labels, or internal window bounding boxes to the user.\n\
+- Desktop & System Actions: When asked to perform an action on the computer (open an app, calculate numbers, type notes, or control desktop windows), Orion executes the action directly on the operating system. Never output theoretical tutorials instructing the user to press 'Win + R', 'Win + E', 'Click Start', or open things manually. Confirm that the action was performed directly on the desktop and provide the result.\n\
+- Clean Human Output: STRICTLY NEVER output 'Desktop Accessibility Snapshot', '[ref: @d0]' labels, or internal window bounding boxes to the user.\n\
 - Conclude complex answers with practical takeaways, next steps, or recommendations.";
 
 const WEB_GROUNDED_SYSTEM_PROMPT: &str = "You are Orion, an advanced personal AI workspace and JARVIS-class assistant.\n\
@@ -303,6 +303,27 @@ async fn send_message(
         db.recent_messages(&session_id, HISTORY_LIMIT)?
     };
 
+    // Sanitize past conversation turns to purge any legacy scaffolding, raw AX tree dumps, or "@d0" refs
+    let clean_history: Vec<db::StoredMessage> = history
+        .into_iter()
+        .map(|mut m| {
+            if m.content.contains("[ref: @d")
+                || m.content.contains("Desktop Accessibility Snapshot")
+                || m.content.contains("[OS Desktop Accessibility Snapshot]")
+                || m.content.contains("ApplicationFrameHost")
+            {
+                if let Some(pos) = m.content.find("User Request:") {
+                    m.content = m.content[pos + "User Request:".len()..].trim().to_string();
+                } else if let Some(pos) = m.content.find("Result:") {
+                    m.content = m.content[pos..].to_string();
+                } else {
+                    m.content = "Executed desktop action on operating system.".to_string();
+                }
+            }
+            m
+        })
+        .collect();
+
     // Autonomous Desktop Action Hook (Milestone 9 JARVIS OS Execution):
     // Directly executes OS actions on the PC (Calculator, Notepad, Explorer, Terminal, Window Focus/Close)
     if let Some(desktop_res) = automation::detect_and_execute_desktop_action(&message, &state.automation).await {
@@ -403,8 +424,8 @@ async fn send_message(
     let mut msgs = vec![ChatMessage::system(&full_system_prompt)];
 
     if let Some(ctx) = &grounded {
-        let prior_history = if !history.is_empty() {
-            &history[..history.len() - 1]
+        let prior_history = if !clean_history.is_empty() {
+            &clean_history[..clean_history.len() - 1]
         } else {
             &[]
         };
@@ -433,8 +454,8 @@ async fn send_message(
         );
         let _ = app.emit("chat://citations", ctx.citations.clone());
     } else if let Some(web_block) = &web_context {
-        let prior_history = if !history.is_empty() {
-            &history[..history.len() - 1]
+        let prior_history = if !clean_history.is_empty() {
+            &clean_history[..clean_history.len() - 1]
         } else {
             &[]
         };
@@ -459,7 +480,7 @@ async fn send_message(
             content: prompt_with_web,
         });
     } else {
-        msgs.extend(history.into_iter().map(|m| ChatMessage {
+        msgs.extend(clean_history.into_iter().map(|m| ChatMessage {
             role: m.role,
             content: m.content,
         }));

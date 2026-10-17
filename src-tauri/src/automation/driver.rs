@@ -39,13 +39,15 @@ impl OsDriver {
     pub async fn launch_app(&self, app_name: &str) -> Result<String> {
         let clean_app = app_name.trim().to_lowercase();
         let target = match clean_app.as_str() {
-            "notepad" | "notes" => "notepad",
+            "notepad" | "notes" | "note" => "notepad",
             "calculator" | "calc" => "calc",
-            "explorer" | "files" | "file explorer" => "explorer",
+            "explorer" | "files" | "file" | "file explorer" | "file manager" | "folder" | "folders" | "this pc" | "my computer" => "explorer",
             "terminal" | "cmd" | "command prompt" => "cmd",
             "powershell" => "powershell",
             "code" | "vs code" | "vscode" => "code",
             "paint" | "mspaint" => "mspaint",
+            "task manager" | "taskmgr" => "taskmgr",
+            "settings" => "ms-settings:",
             "browser" | "edge" => "msedge",
             "chrome" => "chrome",
             other => other,

@@ -287,9 +287,19 @@ pub async fn detect_and_execute_desktop_action(
         });
     }
 
-    // 4. File Explorer
-    if (lower.contains("explorer") || lower.contains("files") || lower.contains("documents") || lower.contains("downloads"))
-        && (lower.contains("open") || lower.contains("launch") || lower.contains("browse"))
+    // 4. File Explorer / File Manager / Files
+    if (lower.contains("file manager")
+        || lower.contains("file explorer")
+        || lower.contains("explorer")
+        || lower.contains("files")
+        || lower.contains("file")
+        || lower.contains("folder")
+        || lower.contains("folders")
+        || lower.contains("documents")
+        || lower.contains("downloads")
+        || lower.contains("this pc")
+        || lower.contains("my computer"))
+        && (lower.contains("open") || lower.contains("launch") || lower.contains("browse") || lower.contains("show") || lower.contains("start"))
     {
         let _ = manager.launch_app("explorer").await;
         return Some(AutonomousDesktopResult {
@@ -326,7 +336,27 @@ pub async fn detect_and_execute_desktop_action(
         });
     }
 
-    // 7. Close window / application
+    // 7. Generic "open <app>" or "launch <app>" handler for any desktop program
+    if lower.starts_with("open ") || lower.starts_with("launch ") || lower.starts_with("start ") || lower.starts_with("run ") {
+        let app_name = lower
+            .trim_start_matches("open ")
+            .trim_start_matches("launch ")
+            .trim_start_matches("start ")
+            .trim_start_matches("run ")
+            .trim();
+
+        if !app_name.is_empty() && app_name.len() < 35 && !app_name.contains("http") && !app_name.contains("www.") {
+            let _ = manager.launch_app(app_name).await;
+            return Some(AutonomousDesktopResult {
+                executed: true,
+                action_type: "launch".into(),
+                description: format!("Launched {app_name} on desktop."),
+                direct_answer: format!("I have opened **{app_name}** on your desktop."),
+            });
+        }
+    }
+
+    // 8. Close window / application
     if lower.starts_with("close ") || lower.starts_with("exit ") || lower.starts_with("quit ") {
         let target = lower
             .replace("close ", "")
