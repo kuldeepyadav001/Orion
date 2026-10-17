@@ -47,6 +47,16 @@ impl OsAutomationManager {
         self.driver.launch_app(app_name).await
     }
 
+    /// Brings a specific window to the foreground.
+    pub async fn focus_window(&self, target: &str) -> Result<String> {
+        self.driver.focus_window(target).await
+    }
+
+    /// Closes a specific window or application.
+    pub async fn close_window(&self, target: &str) -> Result<String> {
+        self.driver.close_window(target).await
+    }
+
     /// Clicks on an OS accessibility element or desktop coordinates.
     pub async fn click(&self, element_ref: &str, x: Option<i32>, y: Option<i32>, button: Option<&str>) -> Result<String> {
         let btn = button.unwrap_or("left");
@@ -82,6 +92,51 @@ impl OsAutomationManager {
     pub async fn send_hotkey(&self, keys: &[String]) -> Result<String> {
         self.driver.send_hotkey(keys).await
     }
+
+    /// Executes a sequence of desktop automation steps.
+    pub async fn execute_action_plan(&self, steps: Vec<DesktopActionStep>) -> Result<Vec<String>> {
+        let mut results = Vec::new();
+        for step in steps {
+            match step {
+                DesktopActionStep::Launch { app } => {
+                    results.push(self.launch_app(&app).await?);
+                }
+                DesktopActionStep::Focus { target } => {
+                    results.push(self.focus_window(&target).await?);
+                }
+                DesktopActionStep::Type { text } => {
+                    results.push(self.type_text(&text).await?);
+                }
+                DesktopActionStep::Hotkey { keys } => {
+                    results.push(self.send_hotkey(&keys).await?);
+                }
+                DesktopActionStep::Click { element_ref, x, y } => {
+                    results.push(self.click(element_ref.as_deref().unwrap_or("@d1"), x, y, None).await?);
+                }
+                DesktopActionStep::Wait { ms } => {
+                    tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+                    results.push(format!("Waited {ms}ms"));
+                }
+                DesktopActionStep::Close { target } => {
+                    results.push(self.close_window(&target).await?);
+                }
+            }
+        }
+        Ok(results)
+    }
+}
+
+/// A single step in an automated multi-step desktop workflow.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type")]
+pub enum DesktopActionStep {
+    Launch { app: String },
+    Focus { target: String },
+    Type { text: String },
+    Hotkey { keys: Vec<String> },
+    Click { element_ref: Option<String>, x: Option<i32>, y: Option<i32> },
+    Wait { ms: u64 },
+    Close { target: String },
 }
 
 pub type SharedAutomationManager = Arc<OsAutomationManager>;

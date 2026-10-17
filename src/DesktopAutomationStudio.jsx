@@ -101,6 +101,34 @@ export default function DesktopAutomationStudio({ isOpen, onClose, onInjectConte
     }
   };
 
+  const handleFocusWindow = async (target) => {
+    setLoading(true);
+    setStatusMessage(null);
+    try {
+      await invoke("desktop_focus_window", { target });
+      setStatusMessage(`Brought "${target}" to front`);
+      setTimeout(() => refreshDesktop(), 500);
+    } catch (err) {
+      setStatusMessage(`Could not focus ${target}: ${err}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleCloseWindow = async (target) => {
+    setLoading(true);
+    setStatusMessage(null);
+    try {
+      await invoke("desktop_close_window", { target });
+      setStatusMessage(`Closed "${target}"`);
+      setTimeout(() => refreshDesktop(), 600);
+    } catch (err) {
+      setStatusMessage(`Could not close ${target}: ${err}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleRunTask = () => {
     if (!onInjectContextToChat) return;
     const task = taskInput.trim() || "Analyze open desktop windows and automate the next action.";
@@ -229,33 +257,73 @@ export default function DesktopAutomationStudio({ isOpen, onClose, onInjectConte
                         border: isActive ? "1px solid rgba(6, 182, 212, 0.3)" : "1px solid rgba(255, 255, 255, 0.05)",
                         display: "flex",
                         alignItems: "center",
-                        gap: "10px",
+                        gap: "8px",
                         transition: "all 0.15s ease",
                       }}
                     >
-                      <div style={{ fontSize: "18px", flexShrink: 0 }}>
+                      <div style={{ fontSize: "16px", flexShrink: 0 }}>
                         {isNote ? "📝" : isCalc ? "🧮" : isExp ? "📁" : isCode ? "💻" : "🪟"}
                       </div>
                       <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: "12.5px", fontWeight: 600, color: "var(--text)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                        <div style={{ fontSize: "12px", fontWeight: 600, color: "var(--text)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                           {win.title || win.process_name}
                         </div>
-                        <div style={{ fontSize: "10.5px", color: "var(--text-dim)" }}>
+                        <div style={{ fontSize: "10px", color: "var(--text-dim)" }}>
                           {win.process_name}
                         </div>
                       </div>
-                      {isActive && (
-                        <span style={{
-                          fontSize: "10px",
-                          fontWeight: 600,
-                          padding: "2px 6px",
-                          borderRadius: "10px",
-                          background: "rgba(56, 189, 248, 0.2)",
-                          color: "#38bdf8",
-                        }}>
-                          Focused
-                        </span>
-                      )}
+                      
+                      <div style={{ display: "flex", alignItems: "center", gap: "4px", flexShrink: 0 }}>
+                        {isActive ? (
+                          <span style={{
+                            fontSize: "9.5px",
+                            fontWeight: 600,
+                            padding: "2px 5px",
+                            borderRadius: "6px",
+                            background: "rgba(56, 189, 248, 0.2)",
+                            color: "#38bdf8",
+                          }}>
+                            Active
+                          </span>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => handleFocusWindow(win.title || win.process_name)}
+                            disabled={loading}
+                            title="Bring window to front"
+                            style={{
+                              background: "rgba(255, 255, 255, 0.04)",
+                              border: "1px solid rgba(255, 255, 255, 0.1)",
+                              borderRadius: "4px",
+                              padding: "2px 6px",
+                              color: "var(--text-dim)",
+                              fontSize: "10px",
+                              cursor: "pointer",
+                            }}
+                          >
+                            Focus
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => handleCloseWindow(win.title || win.process_name)}
+                          disabled={loading}
+                          title="Close window"
+                          style={{
+                            background: "none",
+                            border: "none",
+                            color: "var(--text-faint)",
+                            padding: "2px 4px",
+                            cursor: "pointer",
+                            fontSize: "11px",
+                            borderRadius: "4px",
+                          }}
+                          onMouseEnter={(e) => { e.currentTarget.style.color = "#ef4444"; }}
+                          onMouseLeave={(e) => { e.currentTarget.style.color = "var(--text-faint)"; }}
+                        >
+                          ✕
+                        </button>
+                      </div>
                     </div>
                   );
                 })

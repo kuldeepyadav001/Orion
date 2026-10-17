@@ -1179,6 +1179,66 @@ async fn desktop_hotkey(
     state.automation.send_hotkey(&keys).await
 }
 
+#[tauri::command]
+async fn desktop_focus_window(
+    target: String,
+    state: State<'_, AppState>,
+) -> Result<String> {
+    let db = state.db.lock().await;
+    let _ = db.conn().execute(
+        "INSERT INTO audit_log (id, timestamp, domain, capability, path_accessed, tier, outcome, reason)
+         VALUES (?1, ?2, 'trusted', 'desktop_focus_window', ?3, 'T1', 'ALLOWED', ?4)",
+        rusqlite::params![
+            uuid::Uuid::new_v4().to_string(),
+            chrono::Utc::now().to_rfc3339(),
+            target,
+            "Brought target desktop window to foreground",
+        ],
+    );
+    drop(db);
+    state.automation.focus_window(&target).await
+}
+
+#[tauri::command]
+async fn desktop_close_window(
+    target: String,
+    state: State<'_, AppState>,
+) -> Result<String> {
+    let db = state.db.lock().await;
+    let _ = db.conn().execute(
+        "INSERT INTO audit_log (id, timestamp, domain, capability, path_accessed, tier, outcome, reason)
+         VALUES (?1, ?2, 'trusted', 'desktop_close_window', ?3, 'T2', 'ALLOWED', ?4)",
+        rusqlite::params![
+            uuid::Uuid::new_v4().to_string(),
+            chrono::Utc::now().to_rfc3339(),
+            target,
+            "Closed desktop window/application",
+        ],
+    );
+    drop(db);
+    state.automation.close_window(&target).await
+}
+
+#[tauri::command]
+async fn desktop_execute_plan(
+    steps: Vec<automation::DesktopActionStep>,
+    state: State<'_, AppState>,
+) -> Result<Vec<String>> {
+    let count = steps.len();
+    let db = state.db.lock().await;
+    let _ = db.conn().execute(
+        "INSERT INTO audit_log (id, timestamp, domain, capability, path_accessed, tier, outcome, reason)
+         VALUES (?1, ?2, 'trusted', 'desktop_execute_plan', 'workflow', 'T2', 'ALLOWED', ?3)",
+        rusqlite::params![
+            uuid::Uuid::new_v4().to_string(),
+            chrono::Utc::now().to_rfc3339(),
+            format!("Executed multi-step desktop workflow with {count} actions"),
+        ],
+    );
+    drop(db);
+    state.automation.execute_action_plan(steps).await
+}
+
 /// The measured (or simulated) hardware profile.
 #[tauri::command]
 async fn hardware_profile(state: State<'_, AppState>) -> Result<HardwareProfile> {
@@ -2654,7 +2714,10 @@ pub fn run() {
             desktop_launch_app,
             desktop_click,
             desktop_type,
-            desktop_hotkey
+            desktop_hotkey,
+            desktop_focus_window,
+            desktop_close_window,
+            desktop_execute_plan
         ])
         .build(tauri::generate_context!())
         .expect("error while building Orion")

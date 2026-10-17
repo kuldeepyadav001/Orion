@@ -77,6 +77,73 @@ impl OsDriver {
         Ok(format!("Successfully launched '{target}' on desktop."))
     }
 
+    /// Brings a specific window or application process to the foreground.
+    pub async fn focus_window(&self, target: &str) -> Result<String> {
+        let clean_target = target.trim().replace('"', "");
+        #[cfg(target_os = "windows")]
+        {
+            let ps_script = format!(
+                "$p = Get-Process | Where-Object {{ ($_.MainWindowTitle -like '*{clean_target}*' -or $_.ProcessName -like '*{clean_target}*') -and $_.MainWindowHandle -ne 0 }} | Select-Object -First 1; \
+                 if ($p) {{ \
+                     $sig = '[DllImport(\"user32.dll\")] public static extern bool SetForegroundWindow(IntPtr hWnd); [DllImport(\"user32.dll\")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);'; \
+                     $type = Add-Type -MemberDefinition $sig -Name Win32Focuser -Namespace Win32Utils -PassThru; \
+                     $type::ShowWindow($p.MainWindowHandle, 9); \
+                     $type::SetForegroundWindow($p.MainWindowHandle); \
+                     Write-Output 'OK'; \
+                 }} else {{ Write-Output 'NOT_FOUND'; }}"
+            );
+            let output = Command::new("powershell")
+                .args(["-NoProfile", "-NonInteractive", "-Command", &ps_script])
+                .output()
+                .map_err(|e| OrionError::Config(format!("Focus window failed: {e}")))?;
+            let out_str = String::from_utf8_lossy(&output.stdout);
+            if out_str.contains("NOT_FOUND") {
+                return Ok(format!("Window matching '{clean_target}' was not found."));
+            }
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = Command::new("xdotool")
+                .args(["search", "--name", &clean_target, "windowactivate"])
+                .output();
+        }
+
+        Ok(format!("Brought window '{clean_target}' to the foreground."))
+    }
+
+    /// Closes a running window or process gracefully.
+    pub async fn close_window(&self, target: &str) -> Result<String> {
+        let clean_target = target.trim().replace('"', "");
+        #[cfg(target_os = "windows")]
+        {
+            let ps_script = format!(
+                "$p = Get-Process | Where-Object {{ ($_.MainWindowTitle -like '*{clean_target}*' -or $_.ProcessName -like '*{clean_target}*') -and $_.MainWindowHandle -ne 0 }} | Select-Object -First 1; \
+                 if ($p) {{ \
+                     $p.CloseMainWindow() | Out-Null; \
+                     Write-Output 'OK'; \
+                 }} else {{ Write-Output 'NOT_FOUND'; }}"
+            );
+            let output = Command::new("powershell")
+                .args(["-NoProfile", "-NonInteractive", "-Command", &ps_script])
+                .output()
+                .map_err(|e| OrionError::Config(format!("Close window failed: {e}")))?;
+            let out_str = String::from_utf8_lossy(&output.stdout);
+            if out_str.contains("NOT_FOUND") {
+                return Ok(format!("Window matching '{clean_target}' was not found."));
+            }
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = Command::new("pkill")
+                .args(["-f", &clean_target])
+                .output();
+        }
+
+        Ok(format!("Closed window '{clean_target}'."))
+    }
+
     /// Simulates a mouse click at specific coordinates or active control center.
     pub async fn click(&self, x: i32, y: i32, button: &str) -> Result<String> {
         #[cfg(target_os = "windows")]
