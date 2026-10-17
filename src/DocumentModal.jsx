@@ -185,7 +185,7 @@ export default function DocumentModal({ isOpen, onClose, onDocumentGenerated }) 
             <div className="doc-section-title">Ready-Made Templates</div>
             <div className="doc-template-list">
               {Object.entries(TEMPLATES)
-                .filter(([_, t]) => t.format === selectedFormat)
+                .filter(([, t]) => t.format === selectedFormat)
                 .map(([key, t]) => (
                   <div
                     key={key}
