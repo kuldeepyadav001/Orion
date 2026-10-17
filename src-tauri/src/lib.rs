@@ -55,6 +55,8 @@ Communicate with the analytical depth, structural clarity, and polish of an adva
 - When live web search or document context is provided, synthesize the findings factually and directly, highlighting concrete numbers, dates, prices, and source links.\n\
 - Strict Topic Focus: Address the user's latest prompt directly. If the prompt introduces a new topic, do NOT repeat or carry over facts, dates, or context from prior conversation turns unless the user explicitly requests a comparison.\n\
 - Document Generation: When the user asks for a document (PDF, Excel, Word), write a complete, rich, multi-section response covering THAT requested topic in full detail so the document compiler extracts the exact requested content.\n\
+- Desktop & System Actions: When asked to perform an action on the computer (open an app, calculate numbers, type notes, or control desktop windows), Orion executes the action directly on the operating system. Never output theoretical tutorials instructing the user to press 'Win + R', 'Click Start', or open things manually. Confirm that the action was performed and provide the direct result.\n\
+- Clean Presentation: Never output raw accessibility tree dumps, '@d0' labels, or internal window bounding boxes to the user.\n\
 - Conclude complex answers with practical takeaways, next steps, or recommendations.";
 
 const WEB_GROUNDED_SYSTEM_PROMPT: &str = "You are Orion, an advanced personal AI workspace and JARVIS-class assistant.\n\
@@ -300,6 +302,30 @@ async fn send_message(
         let db = state.db.lock().await;
         db.recent_messages(&session_id, HISTORY_LIMIT)?
     };
+
+    // Autonomous Desktop Action Hook (Milestone 9 JARVIS OS Execution):
+    // Directly executes OS actions on the PC (Calculator, Notepad, Explorer, Terminal, Window Focus/Close)
+    if let Some(desktop_res) = automation::detect_and_execute_desktop_action(&message, &state.automation).await {
+        let direct_answer = desktop_res.direct_answer.clone();
+        let emitter = app.clone();
+        let session_id_clone = session_id.clone();
+        let db_clone = state.db.clone();
+
+        tauri::async_runtime::spawn(async move {
+            use tauri::Emitter;
+            for chunk in direct_answer.split_inclusive(' ') {
+                let _ = emitter.emit("chat://token", chunk);
+                tokio::time::sleep(std::time::Duration::from_millis(16)).await;
+            }
+
+            let db = db_clone.lock().await;
+            let _ = db.add_message(&session_id_clone, "assistant", &direct_answer);
+
+            let _ = emitter.emit("chat://done", ());
+        });
+
+        return Ok(());
+    }
 
     // Autonomous Web Search Hook:
     // Detect natural search intent ("search ...", "serch ...", "stock price ...", "weather ...", "[web_search]")

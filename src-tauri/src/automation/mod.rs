@@ -139,4 +139,211 @@ pub enum DesktopActionStep {
     Close { target: String },
 }
 
+/// Result of an autonomous desktop action executed directly on the OS.
+#[derive(Debug, Clone)]
+pub struct AutonomousDesktopResult {
+    pub executed: bool,
+    pub action_type: String,
+    pub description: String,
+    pub direct_answer: String,
+}
+
+/// Evaluates basic arithmetic expressions like "45 * 128" or "100 + 25".
+pub fn evaluate_simple_math(text: &str) -> Option<(f64, String, String)> {
+    let clean = text
+        .replace('x', "*")
+        .replace('X', "*")
+        .replace('÷', "/")
+        .replace(',', "");
+
+    for op in ['*', '+', '-', '/', '%'] {
+        if let Some(pos) = clean.find(op) {
+            let left = clean[..pos].trim();
+            let right = clean[pos + 1..].trim();
+
+            let left_num_str: String = left
+                .chars()
+                .rev()
+                .take_while(|c| c.is_ascii_digit() || *c == '.')
+                .collect::<String>()
+                .chars()
+                .rev()
+                .collect();
+
+            let right_num_str: String = right
+                .chars()
+                .take_while(|c| c.is_ascii_digit() || *c == '.')
+                .collect();
+
+            if let (Ok(n1), Ok(n2)) = (left_num_str.parse::<f64>(), right_num_str.parse::<f64>()) {
+                let res = match op {
+                    '+' => n1 + n2,
+                    '-' => n1 - n2,
+                    '*' => n1 * n2,
+                    '/' if n2 != 0.0 => n1 / n2,
+                    '%' => n1 % n2,
+                    _ => continue,
+                };
+                let res_str = if res.fract() == 0.0 {
+                    format!("{}", res as i64)
+                } else {
+                    format!("{:.2}", res)
+                };
+                let n1_str = if n1.fract() == 0.0 {
+                    format!("{}", n1 as i64)
+                } else {
+                    format!("{n1}")
+                };
+                let n2_str = if n2.fract() == 0.0 {
+                    format!("{}", n2 as i64)
+                } else {
+                    format!("{n2}")
+                };
+                let formula = format!("{n1_str} {op} {n2_str} = {res_str}");
+                return Some((res, formula, res_str));
+            }
+        }
+    }
+    None
+}
+
+/// Detects if a user message is a desktop automation command and executes it directly on the OS.
+pub async fn detect_and_execute_desktop_action(
+    message: &str,
+    manager: &OsAutomationManager,
+) -> Option<AutonomousDesktopResult> {
+    // 1. Strip any prompt wrapper if injected
+    let clean_message = if let Some(pos) = message.find("User Request:") {
+        message[pos + "User Request:".len()..].trim()
+    } else {
+        message.trim()
+    };
+    let lower = clean_message.to_lowercase();
+
+    // 2. Calculator & Math
+    if lower.contains("calculator") || lower.contains("calc") || lower.starts_with("calculate ") {
+        let math_eval = evaluate_simple_math(clean_message);
+        let _ = manager.launch_app("calc").await;
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let _ = manager.focus_window("Calculator").await;
+
+        if let Some((_, formula, res_str)) = math_eval {
+            let send_text = format!("{}=", formula.split('=').next().unwrap_or("").trim());
+            let _ = manager.type_text(&send_text).await;
+            return Some(AutonomousDesktopResult {
+                executed: true,
+                action_type: "calculator".into(),
+                description: format!("Launched Calculator on your desktop and computed {formula}."),
+                direct_answer: format!(
+                    "I have opened **Calculator** on your screen and executed the calculation:\n\n**Calculation:** `{formula}`\n\n**Result:** `{res_str}`"
+                ),
+            });
+        }
+
+        return Some(AutonomousDesktopResult {
+            executed: true,
+            action_type: "calculator".into(),
+            description: "Launched Calculator on your desktop.".into(),
+            direct_answer: "I have opened **Calculator** on your screen ready for your calculations.".into(),
+        });
+    }
+
+    // 3. Notepad & Notes
+    if (lower.contains("notepad") || lower.contains("notes"))
+        && (lower.contains("open") || lower.contains("launch") || lower.contains("write") || lower.contains("paste"))
+    {
+        let _ = manager.launch_app("notepad").await;
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        let _ = manager.focus_window("Notepad").await;
+
+        let mut text_to_write = "";
+        for marker in ["write down", "write", "paste", "type"] {
+            if let Some(pos) = lower.find(marker) {
+                let rest = clean_message[pos + marker.len()..].trim();
+                if !rest.is_empty() {
+                    text_to_write = rest;
+                    break;
+                }
+            }
+        }
+
+        if !text_to_write.is_empty() {
+            let _ = manager.type_text(text_to_write).await;
+            return Some(AutonomousDesktopResult {
+                executed: true,
+                action_type: "notepad".into(),
+                description: "Opened Notepad on desktop and typed the requested notes.".into(),
+                direct_answer: format!(
+                    "I have opened **Notepad** on your screen and typed your notes:\n\n> {text_to_write}"
+                ),
+            });
+        }
+
+        return Some(AutonomousDesktopResult {
+            executed: true,
+            action_type: "notepad".into(),
+            description: "Opened Notepad on desktop.".into(),
+            direct_answer: "I have opened **Notepad** on your screen ready for your notes.".into(),
+        });
+    }
+
+    // 4. File Explorer
+    if (lower.contains("explorer") || lower.contains("files") || lower.contains("documents") || lower.contains("downloads"))
+        && (lower.contains("open") || lower.contains("launch") || lower.contains("browse"))
+    {
+        let _ = manager.launch_app("explorer").await;
+        return Some(AutonomousDesktopResult {
+            executed: true,
+            action_type: "explorer".into(),
+            description: "Opened File Explorer on desktop.".into(),
+            direct_answer: "I have opened **File Explorer** on your desktop.".into(),
+        });
+    }
+
+    // 5. Terminal / CMD
+    if (lower.contains("terminal") || lower.contains("cmd") || lower.contains("command prompt") || lower.contains("powershell"))
+        && (lower.contains("open") || lower.contains("launch"))
+    {
+        let _ = manager.launch_app("cmd").await;
+        return Some(AutonomousDesktopResult {
+            executed: true,
+            action_type: "terminal".into(),
+            description: "Opened Command Prompt Terminal on desktop.".into(),
+            direct_answer: "I have opened the **Terminal** command prompt on your screen.".into(),
+        });
+    }
+
+    // 6. VS Code
+    if (lower.contains("vscode") || lower.contains("vs code") || lower.contains("code editor"))
+        && (lower.contains("open") || lower.contains("launch"))
+    {
+        let _ = manager.launch_app("code").await;
+        return Some(AutonomousDesktopResult {
+            executed: true,
+            action_type: "code".into(),
+            description: "Opened Visual Studio Code on desktop.".into(),
+            direct_answer: "I have opened **Visual Studio Code** on your desktop.".into(),
+        });
+    }
+
+    // 7. Close window / application
+    if lower.starts_with("close ") || lower.starts_with("exit ") || lower.starts_with("quit ") {
+        let target = lower
+            .replace("close ", "")
+            .replace("exit ", "")
+            .replace("quit ", "")
+            .trim()
+            .to_string();
+        let _ = manager.close_window(&target).await;
+        return Some(AutonomousDesktopResult {
+            executed: true,
+            action_type: "close".into(),
+            description: format!("Closed {target} on desktop."),
+            direct_answer: format!("I have closed **{target}** on your desktop."),
+        });
+    }
+
+    None
+}
+
 pub type SharedAutomationManager = Arc<OsAutomationManager>;

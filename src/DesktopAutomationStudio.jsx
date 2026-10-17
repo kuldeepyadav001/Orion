@@ -132,9 +132,7 @@ export default function DesktopAutomationStudio({ isOpen, onClose, onInjectConte
   const handleRunTask = () => {
     if (!onInjectContextToChat) return;
     const task = taskInput.trim() || "Analyze open desktop windows and automate the next action.";
-    const activeApp = snapshot?.active_window || "Desktop";
-    const contextPrompt = `[Desktop Task | Active Window: ${activeApp}]\nUser Request: ${task}`;
-    onInjectContextToChat(contextPrompt);
+    onInjectContextToChat(task);
     onClose();
   };
 
