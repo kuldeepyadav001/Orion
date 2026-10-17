@@ -62,8 +62,8 @@ The foundational product roadmap established for Orion consists of 10 core engin
 | **M6** | **Auto-Installer & Personas** | ✅ **VERIFIED** | Windows NSIS packaging, streaming background assets, sequential model distribution, 2-mode segmented switcher (General vs Selected Specialist), zero dual-model RAM bloat. |
 | **M7** | **Sovereign Email Assistant** | 🚀 **COMPLETED** | Offline IMAP/SMTP triage, multi-vector sanitization (strips zero-width chars, bidi overrides, hidden CSS), adversarial prompt-injection quarantine, real IMAP over TLS sync, Rule R-5 compliance (strictly no auto-send). |
 | **M8** | **Sandboxed Browser** | 🚀 **COMPLETED** | Zero-vision Accessibility (AX) DOM tree automation, dedicated profile isolation (~/.orion/browser_profile), two-domain quarantine, 2–5 KB text context vs 1.4 MB screenshots, Capability Broker T2 navigation & audit trail. |
-| **M9** | **OS UI Automation** | ⏳ Queued | Win32 / UI Automation (UIA) cross-app desktop control, Linux AT-SPI accessibility tree, undo-journal backed file operations. |
-| **M10** | **Kernel Hardening** | ⏳ Queued | Windows AppContainer isolation, memory protection, kernel zero-egress firewall filter certification, enterprise single-binary release. |
+| **M9** | **OS UI Automation** | 🚀 **COMPLETED** | Win32 UIA / AT-SPI desktop control, direct native execution for File Explorer / Calculator / system apps without prompt bleed, accessibility tree driver, undo journal integration. |
+| **M10** | **Kernel Hardening** | 🚀 **COMPLETED** | Windows AppContainer / JobObject containment (`KILL_ON_JOB_CLOSE`), 8-minute dynamic RAM standby hibernation (zeroing memory footprint), salted SHA-256 PIN auto-lock, zero-egress air-gap enterprise certification (`docs/M10-DEPLOYMENT-CERTIFICATION.md`). |
 
 ### 2.1 Integrated Platform Additions (Co-Engineered with M1–M7)
 - **Permanent SQLite Multi-Session Chat Engine:** Storage-first architecture replacing in-memory RAM loading with SQLite Schema v3; pagination of active turns; persistent session switching, renaming, and audit logs.

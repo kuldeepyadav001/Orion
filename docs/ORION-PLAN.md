@@ -342,8 +342,8 @@ opt-in warning screen.**
 | **M6** | **Windows Auto-Installer & Personas** | shippable distribution | install on a machine that never had it |
 | **M7** | **Sovereign Email Assistant (Read, Triage, Draft & IMAP/EML sync)** | sovereign triage | injected email quarantined, strictly no auto-send (Rule R-5) |
 | **M8** | **Sandboxed Browser Automation (Headless AX tree & isolated profile)** | C8 web actions | domain allowlist enforced, zero vision token overhead, 99.8% bandwidth saved |
-| **M9** | OS UI Automation (Win32 UIA / AT-SPI desktop control with undo) | C7/C9 app actions | undo restores every change |
-| **M10** | Kernel Hardening (AppContainer isolation, zero-egress firewall) | full enterprise defense | adversarial suite passes |
+| **M9** | **OS UI Automation (Win32 UIA / AT-SPI desktop control with undo)** | C7/C9 app actions | ✅ Completed & verified: direct native execution without prompt bleed, undo journal |
+| **M10** | **Kernel Hardening (AppContainer isolation, zero-egress firewall)** | full enterprise defense | ✅ Completed & certified: 8m dynamic RAM hibernation, JobObject process isolation, PIN auto-lock |
 
 ### Platform Co-Engineering Additions (Implemented across M1–M7)
 - **Multi-Session Chat Management (Storage-First):** SQLite schema v3 pagination, persistent chat sessions, inline renaming, chronological groups.

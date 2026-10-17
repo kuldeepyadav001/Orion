@@ -822,14 +822,46 @@ export default function App() {
     }
   }, []);
 
-  const handleLockNow = async () => {
+  const handleLockNow = useCallback(async () => {
     try {
       await invoke("lock_app_now");
       refreshLockStatus();
     } catch (e) {
       console.error("Failed to lock app:", e);
     }
-  };
+  }, [refreshLockStatus]);
+
+  // 8-minute user inactivity auto-lock watchdog (M10 Enterprise Hardening)
+  useEffect(() => {
+    if (!lockStatus?.enabled) return;
+
+    let timeoutId = null;
+    const resetTimer = () => {
+      if (timeoutId) clearTimeout(timeoutId);
+      if (lockStatus?.locked) return;
+      timeoutId = setTimeout(() => {
+        handleLockNow();
+      }, 8 * 60 * 1000); // exactly 8 minutes of inactivity
+    };
+
+    resetTimer();
+
+    const events = ["mousedown", "mousemove", "keydown", "touchstart", "scroll"];
+    events.forEach((evt) => window.addEventListener(evt, resetTimer, { passive: true }));
+
+    let unLocked;
+    listen("lock://locked", () => {
+      refreshLockStatus();
+    }).then((un) => {
+      unLocked = un;
+    });
+
+    return () => {
+      if (timeoutId) clearTimeout(timeoutId);
+      events.forEach((evt) => window.removeEventListener(evt, resetTimer));
+      unLocked?.();
+    };
+  }, [lockStatus?.enabled, lockStatus?.locked, handleLockNow, refreshLockStatus]);
 
   const copyMessage = useCallback(async (content, index) => {
     try {
