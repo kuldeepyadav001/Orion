@@ -52,3 +52,13 @@ npm-debug.log*
 # per platform. Revisit once CI pins the toolchain and generates the lockfile
 # on one platform.
 src-tauri/Cargo.lock
+
+# Private research papers & enterprise presentations (untracked)
+docs/*[pP][aA][pP][eE][rR]*
+docs/*[pP][rR][eE][sS][eE][nN][tT][aA][tT][iI][oO][nN]*
+docs/*[rR][eE][sS][eE][aA][rR][cC][hH]*
+docs/*.docx
+docs/*.pptx
+docs/*.pdf
+scripts/*[pP][aA][pP][eE][rR]*
+
