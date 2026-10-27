@@ -424,7 +424,15 @@ export default function SystemPanel({ onClose, onPersonaChanged }) {
             <div className="security-posture-card">
               <div className="security-card-title">Single-Model Resident Invariant</div>
               <div className="security-card-val text-purple">&le; 2.0 GiB RAM Budget</div>
-              <div className="security-card-sub">Sequential dynamic handoff; zero RAM thrashing on 8 GB target</div>
+              <div className="security-card-sub">
+                Sequential dynamic handoff; zero RAM thrashing on 8 GB target
+              </div>
+              <div className="security-card-sub text-cyan">
+                Resident:{" "}
+                <span className="truncate">
+                  {securityPosture?.residency_state || "Standby — no model resident"}
+                </span>
+              </div>
             </div>
 
             <div className="security-posture-card">

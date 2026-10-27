@@ -111,20 +111,34 @@ pub fn to_mono(interleaved: &[f32], channels: u16) -> Vec<f32> {
 /// resampler would add a dependency and CPU cost for no measurable accuracy
 /// gain on speech.
 pub fn resample_to_16k(input: &[f32], from_rate: u32) -> Vec<f32> {
+    // A zero source rate means the capture layer failed to report a rate.
+    // Dividing by it yields an infinite ratio, and the capacity calculation
+    // below would try to reserve an unbounded amount of memory.
+    if from_rate == 0 {
+        return Vec::new();
+    }
     if from_rate == TARGET_RATE || input.is_empty() {
         return input.to_vec();
     }
 
     let ratio = TARGET_RATE as f64 / from_rate as f64;
     let out_len = ((input.len() as f64) * ratio).round() as usize;
+    if out_len == 0 {
+        return Vec::new();
+    }
     let mut out = Vec::with_capacity(out_len);
+    let last = input.len() - 1;
 
     for i in 0..out_len {
         let src = i as f64 / ratio;
-        let lo = src.floor() as usize;
-        let hi = (lo + 1).min(input.len() - 1);
-        let frac = (src - lo as f64) as f32;
-        let a = input[lo.min(input.len() - 1)];
+        // `src` can run past the end of the input when the output is longer
+        // than the source (upsampling) or when rounding pushes the last
+        // sample beyond the buffer. Clamping the index keeps the read in
+        // bounds instead of panicking.
+        let lo = (src.floor() as usize).min(last);
+        let hi = (lo + 1).min(last);
+        let frac = ((src - lo as f64) as f32).clamp(0.0, 1.0);
+        let a = input[lo];
         let b = input[hi];
         out.push(a + (b - a) * frac);
     }
@@ -379,5 +393,43 @@ mod tests {
     fn an_utterance_is_capped_at_a_sane_length() {
         // A stuck VAD must not grow the buffer without bound.
         assert_eq!(MAX_SAMPLES, 480_000);
+    }
+
+    /* ---------- resampler edge cases ---------- */
+
+    #[test]
+    fn a_zero_sample_rate_yields_no_audio() {
+        // The capture layer can fail to report a rate. Dividing by zero
+        // produced an infinite ratio and an unbounded allocation request.
+        let out = resample_to_16k(&[0.5; 480], 0);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn a_single_sample_does_not_panic() {
+        // One sample at 48 kHz is a third of one 16 kHz sample, so the
+        // correct output is empty — and the index maths must not read
+        // past the single element.
+        let out = resample_to_16k(&[0.75], 48_000);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn a_short_buffer_is_resampled_without_panicking() {
+        let out = resample_to_16k(&[0.1, 0.9], 48_000);
+        assert!(out.len() <= 2);
+    }
+
+    #[test]
+    fn non_finite_samples_do_not_panic_the_resampler() {
+        // A broken driver can hand back NaN or infinity. The resampler must
+        // survive them; the WAV encoder clamps them back into range.
+        let dirty = vec![f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 0.5, 0.25];
+        let out = resample_to_16k(&dirty, 48_000);
+        // Five samples at 48 kHz is one third of a second, so two 16 kHz
+        // samples come out.
+        assert_eq!(out.len(), 2);
+        let wav = encode_wav_16k_mono(&out);
+        assert_eq!(wav.len(), 44 + out.len() * 2);
     }
 }

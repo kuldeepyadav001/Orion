@@ -91,7 +91,12 @@ pub fn sanitize_email_body(raw: &str) -> String {
 }
 
 fn strip_tag_blocks(input: &str, tag_name: &str) -> String {
-    let lower = input.to_lowercase();
+    // ASCII-only lowercasing preserves byte offsets exactly. Full Unicode
+    // lowercasing can change byte length (e.g. 'İ' U+0130 is 2 bytes and
+    // lowercases to 3 bytes), which would desynchronise the indices found
+    // here from the original string and panic on the slices below. Email
+    // bodies are fully attacker-controlled, so this is a reachable crash.
+    let lower = input.to_ascii_lowercase();
     let open_pattern = format!("<{}", tag_name);
     let close_pattern = format!("</{}>", tag_name);
 
@@ -291,6 +296,31 @@ mod tests {
         assert!(!sanitized.contains("<b>"));
         assert!(sanitized.contains("Hello World!"));
         assert!(sanitized.contains("Paragraph content"));
+    }
+
+    #[test]
+    fn sanitization_does_not_panic_on_case_shifting_unicode() {
+        // 'İ' (U+0130) is 2 bytes and lowercases to 3 bytes ("i" + combining
+        // dot above). The sanitizer used to slice the original string at byte
+        // offsets computed against a lowercased copy, so a Turkish-capital
+        // İ before a <script> tag desynchronised the offsets and panicked
+        // on a non-char-boundary slice. Email bodies are fully
+        // attacker-controlled, so this was remotely triggerable.
+        let hostile = "İstanbul report<script>alert(1)</script>tail";
+        let sanitized = sanitize_email_body(hostile);
+        assert!(!sanitized.contains("alert"));
+        assert!(sanitized.contains("tail"));
+    }
+
+    #[test]
+    fn sanitization_handles_a_greek_final_sigma() {
+        // 'ς' (U+03C2) lowercases to 'σ' — same byte length, but 'Σ'
+        // (U+03A3) lowercases to 'σ' as well. The point of the test is that
+        // any multibyte content before a tag must not break the offsets.
+        let hostile = "Σοφία Καβάλα<script>evil()</script>end";
+        let sanitized = sanitize_email_body(hostile);
+        assert!(!sanitized.contains("evil"));
+        assert!(sanitized.contains("end"));
     }
 
     #[test]

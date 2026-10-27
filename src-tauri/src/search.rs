@@ -21,7 +21,11 @@ pub struct SearchResult {
 /// and document commands from search queries so engines receive clean information targets.
 pub fn clean_query_noise(query: &str) -> String {
     let mut q = query.trim().to_string();
-    let lower = q.to_lowercase();
+    // ASCII-only lowercasing on purpose. `str::to_lowercase` can change the
+    // byte length of a string (U+0130 'İ' is 2 bytes but lowercases to 3),
+    // and the byte offsets computed below are used to slice the *original*
+    // string — a length change silently misaligns them.
+    let lower = q.to_ascii_lowercase();
 
     let action_suffixes = [
         " and make a pdf",
@@ -100,7 +104,7 @@ pub fn detect_search_intent(message: &str) -> Option<String> {
         return if cleaned.is_empty() { None } else { Some(cleaned) };
     }
 
-    let lower = raw.to_lowercase();
+    let lower = raw.to_ascii_lowercase();
 
     // 2. Direct search command prefixes (handling common misspellings like 'serch')
     let prefixes = [
@@ -256,7 +260,12 @@ pub async fn perform_web_search(query: &str, limit: usize) -> Result<Vec<SearchR
 /// Parses DuckDuckGo HTML results with rank preservation and clean snippet pairing.
 fn parse_ddg_html(html: &str, limit: usize) -> Vec<SearchResult> {
     let mut results = Vec::new();
-    let lower = html.to_lowercase();
+    // ASCII-only lowercasing. `to_lowercase` is not length-preserving: 'İ'
+    // (U+0130, 2 bytes) lowercases to 'i' + U+0307 (3 bytes). Every offset
+    // computed against `lower` is then applied to `html`, so a single such
+    // character anywhere in a remote page shifts the cursor onto a non-char
+    // boundary and panics the parser. This page is attacker-controlled.
+    let lower = html.to_ascii_lowercase();
     let mut cursor = 0;
 
     // 1. Scan for semantic result__title headings
@@ -387,7 +396,9 @@ fn parse_ddg_html(html: &str, limit: usize) -> Vec<SearchResult> {
 }
 
 fn extract_attribute(tag_head: &str, attr: &str) -> Option<String> {
-    let lower = tag_head.to_lowercase();
+    // Must be ASCII-only: the offset found in `lower` is applied to
+    // `tag_head`, so the two must have identical byte lengths.
+    let lower = tag_head.to_ascii_lowercase();
     for quote in ['"', '\''] {
         let pat = format!("{attr}={quote}");
         if let Some(pos) = lower.find(&pat) {
@@ -458,3 +469,132 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).to_string()
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /* ---------- query hygiene ---------- */
+
+    #[test]
+    fn document_instructions_are_stripped_from_the_query() {
+        // The engine must receive the information target, not the artifact
+        // request that was appended to it.
+        let q = clean_query_noise("what is the capital of france and make a pdf");
+        assert_eq!(q, "what is the capital of france");
+    }
+
+    #[test]
+    fn common_misspellings_are_corrected() {
+        assert_eq!(clean_query_noise("tesla prics"), "tesla price");
+        assert_eq!(clean_query_noise("serch rust"), "search rust");
+    }
+
+    #[test]
+    fn a_query_with_unicode_does_not_panic_or_corrupt() {
+        // 'İ' lowercases to 3 bytes from 2. If the lowercasing changes the
+        // byte length, the suffix strip below cuts at the wrong offset.
+        let out = clean_query_noise("İstanbul population and make a pdf");
+        assert!(!out.is_empty());
+        assert!(!out.contains('\u{fffd}'), "produced invalid UTF-8");
+    }
+
+    /* ---------- intent detection ---------- */
+
+    #[test]
+    fn the_explicit_ui_tag_is_honoured() {
+        let q = detect_search_intent("[web_search] rust borrow checker").unwrap();
+        assert_eq!(q, "rust borrow checker");
+    }
+
+    #[test]
+    fn search_prefixes_are_detected() {
+        assert_eq!(
+            detect_search_intent("search google for rust lifetimes").unwrap(),
+            "rust lifetimes"
+        );
+        assert_eq!(
+            detect_search_intent("look up the current price of bitcoin").unwrap(),
+            "the current price of bitcoin"
+        );
+    }
+
+    #[test]
+    fn real_time_questions_trigger_a_search() {
+        assert!(detect_search_intent("what is the stock price of nvda").is_some());
+        assert!(detect_search_intent("latest news about the mars rover").is_some());
+    }
+
+    #[test]
+    fn ordinary_questions_are_not_searches() {
+        // A false positive here sends the whole turn to the network for no
+        // reason and adds seconds of latency to every answer.
+        assert!(detect_search_intent("explain the borrow checker to me").is_none());
+        assert!(detect_search_intent("write a function that reverses a string").is_none());
+    }
+
+    /* ---------- ddg parsing ---------- */
+
+    #[test]
+    fn results_are_parsed_with_title_and_snippet() {
+        let html = r#"
+        <div class="result__title"><a href="https://example.com/a">Example Title</a></div>
+        <div class="result__snippet"><a href="https://example.com/a">A short summary.</a></div>
+        "#;
+        let results = parse_ddg_html(html, 5);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].url, "https://example.com/a");
+        assert_eq!(results[0].title, "Example Title");
+        assert!(results[0].snippet.contains("short summary"));
+    }
+
+    #[test]
+    fn duckduckgo_redirects_are_unwrapped() {
+        let html = r#"<div class="result__title"><a href="https://duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fb">Redirected</a></div>"#;
+        let results = parse_ddg_html(html, 5);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].url, "https://example.com/b");
+    }
+
+    #[test]
+    fn the_result_limit_is_respected() {
+        // Titles must exceed three characters: the parser drops anything
+        // shorter as noise, so a one-word stub would be filtered out
+        // before the limit is ever reached.
+        let html = r#"
+        <div class="result__title"><a href="https://example.com/1">Alpha Result</a></div>
+        <div class="result__title"><a href="https://example.com/2">Bravo Result</a></div>
+        <div class="result__title"><a href="https://example.com/3">Charlie Result</a></div>
+        "#;
+        let results = parse_ddg_html(html, 2);
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].url, "https://example.com/1");
+        assert_eq!(results[1].url, "https://example.com/2");
+    }
+
+    /* ---------- unicode safety ---------- */
+
+    #[test]
+    fn a_multibyte_character_before_a_result_does_not_panic() {
+        // 'İ' is 2 bytes but lowercases to 3. If the parser lowercases with
+        // `to_lowercase`, every offset it computes is 3 bytes past the real
+        // position and the slice lands mid-character — a remotely triggerable
+        // panic from any page that contains a Turkish dotted capital I.
+        let html = "<html><body>\u{0130}\u{0130}\u{0130}<div class=\"result__title\"><a href=\"https://example.com/u\">Unicode Page</a></div></body></html>";
+        let results = parse_ddg_html(html, 5);
+        assert_eq!(results.len(), 1, "parser lost the result");
+        assert_eq!(results[0].url, "https://example.com/u");
+        assert_eq!(results[0].title, "Unicode Page");
+    }
+
+    #[test]
+    fn a_multibyte_character_before_an_attribute_does_not_panic() {
+        // Same hazard, one level down: the offset of `href` is found in the
+        // lowercased tag but applied to the original.
+        let tag = "<a \u{0130}=\"x\" href=\"https://example.com/attr\">";
+        assert_eq!(
+            extract_attribute(tag, "href").as_deref(),
+            Some("https://example.com/attr")
+        );
+    }
+}

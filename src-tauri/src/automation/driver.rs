@@ -9,8 +9,7 @@
 use std::process::Command;
 use crate::error::{OrionError, Result};
 use super::ax::{
-    collect_os_interactive_refs, format_os_tree_to_text, OsElement, OsInteractiveRef, OsSnapshot,
-    WindowSummary,
+    collect_os_interactive_refs, format_os_tree_to_text, OsElement, OsSnapshot, WindowSummary,
 };
 
 /// High-level OS automation driver.
@@ -63,17 +62,77 @@ impl OsDriver {
 
         #[cfg(target_os = "macos")]
         {
+            let mac_target = match target {
+                "explorer" => "Finder",
+                "calc" => "Calculator",
+                "notepad" => "TextEdit",
+                "cmd" => "Terminal",
+                other => other,
+            };
             Command::new("open")
-                .args(["-a", target])
+                .args(["-a", mac_target])
                 .spawn()
-                .map_err(|e| OrionError::Config(format!("Failed to launch '{target}' on macOS: {e}")))?;
+                .map_err(|e| OrionError::Config(format!("Failed to launch '{mac_target}' on macOS: {e}")))?;
         }
 
         #[cfg(not(any(target_os = "windows", target_os = "macos")))]
         {
-            Command::new(target)
-                .spawn()
-                .map_err(|e| OrionError::Config(format!("Failed to launch '{target}' on Linux: {e}")))?;
+            let linux_cmd = match target {
+                "explorer" => {
+                    let candidates = ["nautilus", "thunar", "dolphin", "pcmanfm", "nemo", "caja"];
+                    let mut found = None;
+                    for c in candidates {
+                        if std::process::Command::new("which").arg(c).output().map(|o| o.status.success()).unwrap_or(false) {
+                            found = Some(c.to_string());
+                            break;
+                        }
+                    }
+                    found.unwrap_or_else(|| "xdg-open .".to_string())
+                }
+                "calc" => {
+                    let candidates = ["gnome-calculator", "kcalc", "galculator", "xcalc"];
+                    let mut found = None;
+                    for c in candidates {
+                        if std::process::Command::new("which").arg(c).output().map(|o| o.status.success()).unwrap_or(false) {
+                            found = Some(c.to_string());
+                            break;
+                        }
+                    }
+                    found.unwrap_or_else(|| "gnome-calculator".to_string())
+                }
+                "notepad" => {
+                    let candidates = ["gedit", "kate", "mousepad", "xed", "leafpad"];
+                    let mut found = None;
+                    for c in candidates {
+                        if std::process::Command::new("which").arg(c).output().map(|o| o.status.success()).unwrap_or(false) {
+                            found = Some(c.to_string());
+                            break;
+                        }
+                    }
+                    found.unwrap_or_else(|| "gedit".to_string())
+                }
+                "cmd" => "x-terminal-emulator".to_string(),
+                "chrome" => {
+                    let candidates = ["google-chrome", "chromium", "chromium-browser"];
+                    let mut found = None;
+                    for c in candidates {
+                        if std::process::Command::new("which").arg(c).output().map(|o| o.status.success()).unwrap_or(false) {
+                            found = Some(c.to_string());
+                            break;
+                        }
+                    }
+                    found.unwrap_or_else(|| "google-chrome".to_string())
+                }
+                other => other.to_string(),
+            };
+
+            let parts: Vec<&str> = linux_cmd.split_whitespace().collect();
+            if let Some((first, rest)) = parts.split_first() {
+                Command::new(first)
+                    .args(rest)
+                    .spawn()
+                    .map_err(|e| OrionError::Config(format!("Failed to launch '{first}' on Linux: {e}")))?;
+            }
         }
 
         Ok(format!("Successfully launched '{target}' on desktop."))

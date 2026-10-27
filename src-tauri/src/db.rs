@@ -120,6 +120,9 @@ impl Db {
             .map_err(|e| OrionError::Db(format!("cannot enable foreign keys: {e}")))?;
         conn.pragma_update(None, "synchronous", "NORMAL")
             .map_err(|e| OrionError::Db(format!("cannot set synchronous: {e}")))?;
+        // Prevent SQLITE_BUSY crashes under concurrent async background operations:
+        conn.busy_timeout(std::time::Duration::from_millis(5000))
+            .map_err(|e| OrionError::Db(format!("cannot set busy_timeout: {e}")))?;
 
         let db = Self { conn };
         db.migrate()?;

@@ -273,27 +273,57 @@ mod tests {
 
     #[test]
     fn no_sidecar_is_spawned_without_being_registered() {
-        // Structural guard. Every `.spawn()` of a sidecar must hand its child
-        // to the registry; a future third sidecar that forgets would
-        // reintroduce the orphaned-process leak silently.
+        // Structural guard. Every sidecar spawned through the Tauri shell
+        // plugin must hand its child to the registry; a future third sidecar
+        // that forgets would reintroduce the orphaned-process leak silently.
+        //
+        // Only `.shell().sidecar(...)` spawns are sidecars. A plain
+        // `std::process::Command::spawn()` is a *detached OS helper* — the
+        // file manager, the browser launcher — which is supposed to outlive
+        // Orion. Counting those made this guard both wrong (it demanded the
+        // registry own processes that must stay alive) and unenforceable.
         for (file, src) in [
             ("lib.rs", include_str!("lib.rs")),
             ("documents.rs", include_str!("documents.rs")),
         ] {
-            let spawns = src.matches(".spawn()").count();
-            if spawns == 0 {
-                continue;
-            }
-            let registrations = src.matches("register(").count();
+            let sidecars = src.matches(".sidecar(").count();
+            let registrations = src.matches("registry.register(").count();
+
             assert!(
-                registrations >= spawns,
-                "{file} spawns {spawns} sidecar(s) but registers {registrations}; \
+                registrations >= sidecars,
+                "{file} spawns {sidecars} sidecar(s) but registers {registrations}; \
                  an unregistered child is never killed and leaks on exit"
             );
+
+            // The handle must be kept, never dropped on the floor.
             assert!(
                 !src.contains("let (mut rx, _child)"),
                 "{file} still discards a child handle with `_child`"
             );
+        }
+    }
+
+    #[test]
+    fn only_model_sidecars_are_registered() {
+        // Detached OS helpers (`xdg-open`, `explorer`, `cmd`) are launched
+        // with `std::process::Command` and are expected to outlive Orion.
+        // Registering one would make shutdown kill the user's file manager
+        // in the middle of their work.
+        for (file, src) in [
+            ("lib.rs", include_str!("lib.rs")),
+            ("documents.rs", include_str!("documents.rs")),
+        ] {
+            for (lineno, line) in src.lines().enumerate() {
+                if let Some(idx) = line.find("registry.register(") {
+                    let rest = &line[idx..];
+                    assert!(
+                        rest.contains("llama-server"),
+                        "{file}:{} registers something that is not a model sidecar: {}",
+                        lineno + 1,
+                        line.trim()
+                    );
+                }
+            }
         }
     }
 }

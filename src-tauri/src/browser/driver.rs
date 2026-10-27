@@ -156,7 +156,10 @@ impl BrowserDriver {
 }
 
 fn extract_html_title(html: &str) -> Option<String> {
-    let lower = html.to_lowercase();
+    // ASCII-only lowercasing keeps byte offsets aligned with `html`.
+    // Unicode lowercasing can change byte length (e.g. 'İ' 2 bytes -> 3),
+    // which would make the slice below land on a non-char boundary.
+    let lower = html.to_ascii_lowercase();
     let start_tag = "<title>";
     let end_tag = "</title>";
 
@@ -185,7 +188,9 @@ fn convert_html_to_ax_nodes(html: &str) -> Vec<serde_json::Value> {
         ("p", "paragraph"),
     ];
 
-    let lower = html.to_lowercase();
+    // ASCII-only lowercasing preserves byte offsets exactly, so indices found
+    // in `lower` are always valid indices into `html`.
+    let lower = html.to_ascii_lowercase();
     for &(tag, role) in &tags_to_find {
         let open_pat = format!("<{tag}");
         let mut cursor = 0;
@@ -219,6 +224,52 @@ fn convert_html_to_ax_nodes(html: &str) -> Vec<serde_json::Value> {
 
             if nodes.len() >= 60 {
                 break;
+            }
+        }
+    }
+
+    // Resilient fallback for SPAs, React roots, and metadata-rich web documents:
+    if nodes.len() < 3 {
+        let meta_patterns = [
+            r#"name="description" content=""#,
+            r#"property="og:description" content=""#,
+            r#"name="twitter:description" content=""#,
+        ];
+        for pat in meta_patterns {
+            if let Some(pos) = lower.find(pat) {
+                let start = pos + pat.len();
+                if let Some(end_quote) = html[start..].find('"') {
+                    let desc = &html[start..start + end_quote];
+                    if !desc.trim().is_empty() {
+                        nodes.push(serde_json::json!({
+                            "role": { "value": "description" },
+                            "name": { "value": desc.trim() },
+                            "value": { "value": "" },
+                            "children": []
+                        }));
+                    }
+                }
+            }
+        }
+
+        for container in ["<article", "<main", "<section", "<div id=\"root\"", "<div id=\"__next\""] {
+            if let Some(start) = lower.find(container) {
+                let text_start = match html[start..].find('>') {
+                    Some(gt) => start + gt + 1,
+                    None => continue,
+                };
+                let raw_chunk = &html[text_start..html.len().min(text_start + 1500)];
+                let stripped = strip_inner_html_tags(raw_chunk);
+                let cleaned = stripped.trim();
+                if cleaned.len() > 15 {
+                    nodes.push(serde_json::json!({
+                        "role": { "value": "content" },
+                        "name": { "value": cleaned[..cleaned.len().min(350)].to_string() },
+                        "value": { "value": "" },
+                        "children": []
+                    }));
+                    break;
+                }
             }
         }
     }

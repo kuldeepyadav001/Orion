@@ -215,7 +215,7 @@ impl ActionKind {
             Self::DesktopClick { element_ref, .. } => {
                 format!("Allow mouse click on desktop element '{element_ref}'?")
             }
-            Self::DesktopType { text } => {
+            Self::DesktopType { .. } => {
                 format!("Allow entering text into the active desktop window?")
             }
             Self::DesktopHotkey { keys } => {

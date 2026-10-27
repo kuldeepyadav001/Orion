@@ -26,6 +26,7 @@ pub mod email;
 pub mod browser;
 pub mod search;
 pub mod automation;
+pub mod residency;
 
 use std::sync::Arc;
 
@@ -136,7 +137,11 @@ const ENGINE_WAIT: std::time::Duration = std::time::Duration::from_secs(180);
 /// `spawn` + `OnceCell` handles the race where several messages arrive during
 /// loading: one starts the engine, and all of them wait on the same health
 /// check.
-async fn ensure_engine(app: &tauri::AppHandle, state: &State<'_, AppState>) -> Result<()> {
+async fn ensure_engine(
+    app: &tauri::AppHandle,
+    state: &State<'_, AppState>,
+    role: residency::ModelRole,
+) -> Result<()> {
     let engine = state.engine.clone();
     let status = engine.status().await;
 
@@ -153,16 +158,16 @@ async fn ensure_engine(app: &tauri::AppHandle, state: &State<'_, AppState>) -> R
         let manager = state.manager.clone();
         let sidecars = state.sidecars.clone();
         let tier = *state.active_tier.lock().await;
-        let active_persona = {
-            let db = state.db.lock().await;
-            persona::get_active_persona(&db).ok()
-        };
         let handle = app.clone();
 
-        tracing::info!("starting engine (previous state: {:?})", status.state);
+        tracing::info!(
+            role = role.label(),
+            "starting engine (previous state: {:?})",
+            status.state
+        );
         let _ = state.engine_started.set(());
         tauri::async_runtime::spawn(async move {
-            start_engine(sidecars, handle, engine, manager, tier, active_persona).await;
+            start_engine(sidecars, handle, engine, manager, tier, role).await;
         });
     }
 
@@ -199,83 +204,81 @@ async fn send_message(
         return Err(OrionError::Config("message is empty".into()));
     }
 
-    // Start the engine on demand. The first message pays the load cost; the
-    // window and tray were up immediately.
-    // Blocks until the model can answer. On a cold start this is the pause
-    // the user sees instead of a 503.
-    ensure_engine(&app, &state).await?;
-
+    // Resolve the persona and the routing *before* starting the engine, so
+    // the first message loads the weights that will actually answer it.
+    // Loading the general model and then immediately swapping it out
+    // doubled the cold-start cost of the first code question.
     let persona = {
         let db = state.db.lock().await;
         persona::get_active_persona(&db).unwrap_or(persona::PersonaKind::General)
     };
+    let routing = residency::resolve_routing(persona, &message);
+
+    // Start the engine on demand. The first message pays the load cost; the
+    // window and tray were up immediately.
+    // Blocks until the model can answer. On a cold start this is the pause
+    // the user sees instead of a 503.
+    ensure_engine(&app, &state, routing.role).await?;
 
     // Sequential Dynamic Handoff (Dual-Model Router):
-    // Only ONE model is ever allowed in RAM. Check if prompt/persona requires specialized coder weights.
-    let is_code_task = if persona == persona::PersonaKind::Developer {
-        // In Specialist Developer mode: always route to the dedicated coder model
-        true
-    } else {
-        // In General mode: only route to coder model if user explicitly asks for code writing/debugging
-        let msg_lower = message.to_lowercase();
-        (message.contains("```") && (msg_lower.contains("code") || msg_lower.contains("error") || msg_lower.contains("bug") || msg_lower.contains("fix")))
-            || msg_lower.starts_with("write code")
-            || msg_lower.starts_with("implement a function")
-            || msg_lower.starts_with("create a function")
-            || msg_lower.starts_with("refactor this code")
-            || msg_lower.starts_with("write a script")
-            || msg_lower.starts_with("debug this code")
-            || msg_lower.contains("write a python script")
-            || msg_lower.contains("write a rust function")
-            || msg_lower.contains("write a javascript function")
-    };
+    // Only ONE model is ever allowed in RAM. The general model is the front
+    // door; when a turn needs a specialist, the general model is unloaded
+    // from RAM and the dedicated model is loaded in its place.
+    //
+    // The decision is made on resolved *weights paths*, not on labels.
+    // Labels desynchronised from the GGUF that was actually mapped, which
+    // made Developer mode tear down and reload a model that was already
+    // correct — a multi-second stall on every cold start.
+    let tier = *state.active_tier.lock().await;
+    let desired_path = residency::resolve_weights(&state.manager, tier, routing.role).ok();
+    let resident_path = state.engine.config().await.map(|c| c.model_path);
+    let engine_ready = state.engine.status().await.state == EngineState::Ready;
 
-    let target_kind = if is_code_task {
-        let coder_path = state.manager.models_dir().join("qwen2.5-coder-3b-instruct-q4_k_m.gguf");
-        if coder_path.is_file() { "coder" } else { "general" }
-    } else {
-        "general"
-    };
+    let needs_swap = engine_ready
+        && desired_path.is_some()
+        && resident_path.as_deref() != desired_path.as_deref();
 
-    {
-        let mut loaded = state.active_loaded_model.lock().await;
-        if *loaded != target_kind && state.engine.status().await.state == EngineState::Ready {
-            let from = loaded.clone();
-            let to = target_kind.to_string();
-            tracing::info!(from = %from, to = %to, "initiating sequential model handoff in RAM");
+    if needs_swap {
+        let target_path = desired_path.as_ref().expect("checked above");
+        let from = state.active_loaded_model.lock().await.clone();
+        let to = routing.role.label().to_string();
+        tracing::info!(
+            from = %from,
+            to = %to,
+            path = %target_path.display(),
+            "initiating sequential model handoff in RAM"
+        );
 
-            let _ = app.emit("engine://swapping", serde_json::json!({
-                "from": from,
-                "to": to,
-                "reason": "Sequential handoff to dedicated model architecture"
-            }));
+        let _ = app.emit("engine://swapping", serde_json::json!({
+            "from": from,
+            "to": to,
+            "reason": "Sequential handoff to dedicated model architecture"
+        }));
 
-            // 1. Unload current model from RAM
-            state.sidecars.terminate("llama-server (chat)");
-            state.engine.set_status(EngineState::Starting, format!("Swapping to {to} model in RAM...")).await;
+        // 1. Unload current model from RAM
+        state.sidecars.terminate("llama-server (chat)");
+        state
+            .engine
+            .set_status(EngineState::Starting, format!("Swapping to {to} model in RAM..."))
+            .await;
 
-            // 2. Wait 400 ms for OS memory release
-            tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        // 2. Wait 400 ms for OS memory release
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
 
-            // 3. Spawn target model into RAM
-            let tier = *state.active_tier.lock().await;
-            let target_persona = if target_kind == "coder" {
-                Some(persona::PersonaKind::Developer)
-            } else {
-                Some(persona::PersonaKind::General)
-            };
+        // 3. Spawn target model into RAM
+        let sidecars = state.sidecars.clone();
+        let handle = app.clone();
+        let engine = state.engine.clone();
+        let manager = state.manager.clone();
 
-            let sidecars = state.sidecars.clone();
-            let handle = app.clone();
-            let engine = state.engine.clone();
-            let manager = state.manager.clone();
+        start_engine(sidecars, handle, engine, manager, tier, routing.role).await;
+        state.engine.wait_until_ready(ENGINE_WAIT).await?;
 
-            start_engine(sidecars, handle, engine, manager, tier, target_persona).await;
-            state.engine.wait_until_ready(ENGINE_WAIT).await?;
-
+        {
+            let mut loaded = state.active_loaded_model.lock().await;
             *loaded = to.clone();
-            let _ = app.emit("engine://swapped", serde_json::json!({ "active": to }));
         }
+        let _ = app.emit("engine://swapped", serde_json::json!({ "active": to }));
     }
 
     let session_id = state.session_id.lock().await.clone();
@@ -1872,14 +1875,23 @@ async fn set_active_persona(
         persona::set_active_persona(&db, &target)?
     };
 
-    let target_kind = if target == "developer" { "coder" } else { "general" };
-    let should_swap = {
-        let loaded = state.active_loaded_model.lock().await;
-        *loaded != target_kind && state.engine.status().await.state == EngineState::Ready
-    };
+    // The persona determines which slot's weights should be resident. The
+    // previous mapping compared the literal string "developer" against
+    // everything else, so switching to the Researcher left the coder
+    // weights resident while the R1 weights sat idle on disk.
+    let kind = persona::PersonaKind::parse(&target).unwrap_or(persona::PersonaKind::General);
+    let role = residency::ModelRole::for_persona(&kind);
+    let tier = *state.active_tier.lock().await;
+    let desired = residency::resolve_weights(&state.manager, tier, role).ok();
+    let resident = state.engine.config().await.map(|c| c.model_path);
+    let engine_ready = state.engine.status().await.state == EngineState::Ready;
+
+    // Compare resolved paths, not labels: a label comparison tore down and
+    // reloaded a model that was already the right one.
+    let should_swap =
+        engine_ready && desired.is_some() && resident.as_deref() != desired.as_deref();
 
     if should_swap {
-        let tier = *state.active_tier.lock().await;
         let sidecars = state.sidecars.clone();
         let handle = app.clone();
         let engine = state.engine.clone();
@@ -1891,7 +1903,7 @@ async fn set_active_persona(
                 let loaded = active_loaded.lock().await;
                 loaded.clone()
             };
-            let to = target_kind.to_string();
+            let to = role.label().to_string();
             tracing::info!(from = %from, to = %to, "persona toggled: swapping model in RAM");
 
             let _ = handle.emit("engine://swapping", serde_json::json!({
@@ -1905,13 +1917,7 @@ async fn set_active_persona(
 
             tokio::time::sleep(std::time::Duration::from_millis(400)).await;
 
-            let target_persona = if target_kind == "coder" {
-                Some(persona::PersonaKind::Developer)
-            } else {
-                Some(persona::PersonaKind::General)
-            };
-
-            start_engine(sidecars, handle.clone(), engine.clone(), manager, tier, target_persona).await;
+            start_engine(sidecars, handle.clone(), engine.clone(), manager, tier, role).await;
             if let Ok(()) = engine.wait_until_ready(ENGINE_WAIT).await {
                 let mut loaded = active_loaded.lock().await;
                 *loaded = to.clone();
@@ -2043,11 +2049,29 @@ pub struct SecurityPosture {
 
 #[tauri::command]
 async fn security_posture(state: State<'_, AppState>) -> Result<SecurityPosture> {
-    let db = state.db.lock().await;
-    let pin_lock_configured = persona::is_lock_configured(&db).unwrap_or(false);
+    // Scope the database lock tightly. Holding it across the engine query
+    // below would serialise every chat turn behind an audit read.
+    let (pin_lock_configured, audits) = {
+        let db = state.db.lock().await;
+        (
+            persona::is_lock_configured(&db).unwrap_or(false),
+            broker::list_recent_audits(db.conn(), 500).unwrap_or_default(),
+        )
+    };
     let is_locked = pin_lock_configured && !state.is_unlocked.load(std::sync::atomic::Ordering::SeqCst);
-    let audits = broker::list_recent_audits(&db, 500).unwrap_or_default();
-    let current_model = state.active_loaded_model.lock().await.clone();
+
+    // Report what is *actually* resident, not the last label that was
+    // written. The label drifted out of sync with the loaded GGUF, so the
+    // panel used to claim a model was resident when nothing was.
+    let residency_state = match state.engine.config().await {
+        Some(cfg) => cfg
+            .model_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown model")
+            .to_string(),
+        None => "standby \u{2014} no model resident".to_string(),
+    };
 
     Ok(SecurityPosture {
         zero_egress_enforced: true,
@@ -2063,7 +2087,7 @@ async fn security_posture(state: State<'_, AppState>) -> Result<SecurityPosture>
         },
         total_audits: audits.len(),
         hardware_ram_ceiling_gb: 2.0,
-        residency_state: current_model,
+        residency_state,
         enterprise_certification: "SOC-2 Type II & Sovereign Air-Gap Compliant".to_string(),
     })
 }
@@ -2072,89 +2096,23 @@ async fn security_posture(state: State<'_, AppState>) -> Result<SecurityPosture>
 /* sidecar                                                             */
 /* ------------------------------------------------------------------ */
 
-/// Resolve which GGUF to load, in priority order:
-///   1. `ORION_MODEL_PATH` — explicit override, always wins
-///   2. dedicated specialized weights for active persona (e.g. Coder, Reasoning) if present
-///   3. the catalogue model for the active tier, if installed
-///   4. the best installed catalogue model of any tier
-///   5. any user-supplied .gguf in the models directory
+/// Resolve which GGUF should be resident for a given role.
+///
+/// The priority order and the persona→role mapping both live in
+/// [`residency`], which is the single source of truth for model identity.
+/// Duplicating the rules here is what let the Researcher's reasoning
+/// weights be downloaded and never loaded.
 fn resolve_model(
     models: &ModelManager,
     tier: Tier,
-    persona: Option<persona::PersonaKind>,
+    role: residency::ModelRole,
 ) -> Result<std::path::PathBuf> {
-    if let Ok(p) = std::env::var("ORION_MODEL_PATH") {
-        let p = std::path::PathBuf::from(p);
-        if p.is_file() {
-            tracing::info!(path = %p.display(), "using ORION_MODEL_PATH");
-            return Ok(p);
-        }
-        return Err(OrionError::Config(format!(
-            "ORION_MODEL_PATH does not point at a file: {}",
-            p.display()
-        )));
-    }
+    residency::resolve_weights(models, tier, role)
+}
 
-    // 1. If Developer persona is active, prioritize specialized coder weights if present:
-    if let Some(persona::PersonaKind::Developer) = persona {
-        let dir = models.models_dir();
-        if let Ok(entries) = std::fs::read_dir(dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                let name = path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("")
-                    .to_lowercase();
-                if name.ends_with(".gguf")
-                    && (name.contains("coder") || name.contains("qwen2.5-coder"))
-                {
-                    tracing::info!(
-                        path = %path.display(),
-                        "resolved specialized Developer coder weights"
-                    );
-                    return Ok(path);
-                }
-            }
-        }
-    }
-
-    // 2. If Researcher persona is active, prioritize specialized reasoning weights if present:
-    if let Some(persona::PersonaKind::Researcher) = persona {
-        let dir = models.models_dir();
-        if let Ok(entries) = std::fs::read_dir(dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                let name = path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("")
-                    .to_lowercase();
-                if name.ends_with(".gguf")
-                    && (name.contains("deepseek") || name.contains("r1") || name.contains("distill"))
-                {
-                    tracing::info!(
-                        path = %path.display(),
-                        "resolved specialized Researcher reasoning weights"
-                    );
-                    return Ok(path);
-                }
-            }
-        }
-    }
-
-    if let Some(spec) = models.resolve_for_tier(tier) {
-        let path = models.local_path(spec);
-        tracing::info!(model = %spec.id, tier = spec.tier.as_str(), "resolved catalogue model");
-        return Ok(path);
-    }
-
-    if let Some(found) = models.foreign_models().into_iter().next() {
-        tracing::info!(path = %found.display(), "using a user-supplied model");
-        return Ok(found);
-    }
-
-    Err(OrionError::NoModel)
+/// The role a resident weights file belongs to, inferred from its filename.
+fn role_of_path(path: &std::path::Path) -> residency::ModelRole {
+    residency::role_of_path(path)
 }
 
 /// Information about the active model file and persona.
@@ -2164,6 +2122,9 @@ pub struct ActiveModelInfo {
     pub is_specialized: bool,
     pub persona_id: String,
     pub persona_name: String,
+    /// The role of the weights that are actually resident right now.
+    pub resident_role: String,
+    pub resident_role_label: String,
 }
 
 #[tauri::command]
@@ -2173,7 +2134,8 @@ async fn active_model_info(state: State<'_, AppState>) -> Result<ActiveModelInfo
         let db = state.db.lock().await;
         persona::get_active_persona(&db).unwrap_or(persona::PersonaKind::General)
     };
-    let model_path = resolve_model(&state.manager, tier, Some(persona)).ok();
+    let role = residency::ModelRole::for_persona(&persona);
+    let model_path = resolve_model(&state.manager, tier, role).ok();
     let file_name = model_path
         .as_ref()
         .and_then(|p| p.file_name())
@@ -2181,15 +2143,25 @@ async fn active_model_info(state: State<'_, AppState>) -> Result<ActiveModelInfo
         .unwrap_or("No model loaded")
         .to_string();
 
-    let is_specialized = file_name.to_lowercase().contains("coder")
-        || file_name.to_lowercase().contains("deepseek")
-        || file_name.to_lowercase().contains("r1");
+    let lower = file_name.to_ascii_lowercase();
+    let is_specialized = lower.contains("coder")
+        || lower.contains("deepseek")
+        || lower.contains("r1")
+        || lower.contains("distill");
+
+    // The resident role is read from the engine's live configuration, so it
+    // reflects the GGUF that is actually in RAM rather than the one the
+    // persona mapping *would* select.
+    let resident = state.engine.config().await.map(|c| c.model_path);
+    let resident_role = resident.as_deref().map(role_of_path).unwrap_or(role);
 
     Ok(ActiveModelInfo {
         file_name,
         is_specialized,
         persona_id: persona.id().to_string(),
         persona_name: persona.info().name,
+        resident_role: format!("{:?}", resident_role).to_ascii_lowercase(),
+        resident_role_label: resident_role.label().to_string(),
     })
 }
 
@@ -2236,9 +2208,9 @@ async fn start_engine(
     engine: Arc<Engine>,
     models: Arc<ModelManager>,
     tier: Tier,
-    persona: Option<persona::PersonaKind>,
+    role: residency::ModelRole,
 ) {
-    let model_path = match resolve_model(&models, tier, persona) {
+    let model_path = match resolve_model(&models, tier, role) {
         Ok(p) => p,
         Err(e) => {
             engine
@@ -2716,7 +2688,10 @@ pub fn run() {
                 let handle = app.handle().clone();
                 let mgr = manager.clone();
                 let engine_sidecars = sidecars.clone();
-                let persona_to_load = initial_persona;
+                let persona_to_load = initial_persona
+                    .as_ref()
+                    .map(residency::ModelRole::for_persona)
+                    .unwrap_or(residency::ModelRole::General);
                 tauri::async_runtime::spawn(async move {
                     start_engine(engine_sidecars, handle, engine, mgr, tier, persona_to_load).await;
                 });

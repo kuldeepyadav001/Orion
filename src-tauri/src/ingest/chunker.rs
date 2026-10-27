@@ -310,9 +310,19 @@ pub fn split_sentences(s: &str) -> Vec<String> {
                 }
 
                 // Known abbreviation immediately before the dot?
+                //
+                // `rfind` returns a byte offset, and adding 1 to it assumes
+                // the whitespace character is one byte wide. Unicode
+                // whitespace is not: U+00A0 (no-break space) is two bytes,
+                // U+2003 (em space) is three. `start + p + 1` then lands in
+                // the middle of the character and the slice below panics on
+                // a non-char boundary. Ingested documents are
+                // attacker-supplied, so this was remotely triggerable.
                 let word_start = s[start..i]
-                    .rfind(|ch: char| ch.is_whitespace())
-                    .map(|p| start + p + 1)
+                    .char_indices()
+                    .rev()
+                    .find(|(_, ch)| ch.is_whitespace())
+                    .map(|(p, ch)| start + p + ch.len_utf8())
                     .unwrap_or(start);
                 let word =
                     s[word_start..i].trim_matches(|c: char| !c.is_alphanumeric() && c != '.');
@@ -424,6 +434,22 @@ mod tests {
     fn does_not_split_initials() {
         let s = split_sentences("Written by J. R. Smith. It was long.");
         assert_eq!(s.len(), 2, "initials must not split: {s:?}");
+    }
+
+    #[test]
+    fn unicode_whitespace_before_a_period_does_not_panic() {
+        // U+00A0 is two bytes but matches `char::is_whitespace`. The
+        // abbreviation scan used to add 1 to the byte offset of the
+        // whitespace, landing inside the character and panicking on a
+        // non-char-boundary slice. Documents are user-supplied, so the
+        // input is attacker-controlled.
+        let s = split_sentences("Hello\u{00A0}. Next sentence here.");
+        assert_eq!(s.len(), 2, "expected two sentences, got {s:?}");
+        assert!(s[0].contains('\u{00A0}'));
+
+        // Three-byte whitespace too.
+        let s = split_sentences("Wide\u{2003}gap. Another one.");
+        assert_eq!(s.len(), 2, "expected two sentences, got {s:?}");
     }
 
     #[test]

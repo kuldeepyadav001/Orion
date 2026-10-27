@@ -207,6 +207,48 @@ pub fn evaluate_simple_math(text: &str) -> Option<(f64, String, String)> {
     None
 }
 
+/// True when `needle` appears in `haystack` as a whole word, ignoring ASCII case.
+///
+/// Substring matching hijacked ordinary questions into the desktop branch:
+/// "file" matched "profile", "calc" matched "calcium" and "calculation", so
+/// "open my profile picture" launched Explorer. Checking word boundaries
+/// fixes the class of defect rather than one instance of it.
+///
+/// The scan is byte-oriented but boundary-safe: every byte of a multi-byte
+/// UTF-8 character is >= 0x80 and is therefore treated as part of a word, so
+/// a needle can never be matched across a character boundary.
+pub fn contains_word(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return false;
+    }
+    let hay = haystack.as_bytes();
+    let pat = needle.as_bytes();
+    if pat.len() > hay.len() {
+        return false;
+    }
+    let mut i = 0usize;
+    while i + pat.len() <= hay.len() {
+        if hay[i..i + pat.len()].eq_ignore_ascii_case(pat) {
+            let before_ok = i == 0 || !is_word_byte(hay[i - 1]);
+            let after = i + pat.len();
+            let after_ok = after == hay.len() || !is_word_byte(hay[after]);
+            if before_ok && after_ok {
+                return true;
+            }
+        }
+        i += 1;
+    }
+    false
+}
+
+/// Bytes that may appear inside a word for the purposes of `contains_word`.
+///
+/// Continuation bytes (>= 0x80) count as word bytes so that a needle is
+/// never matched in the middle of a multi-byte character.
+fn is_word_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_' || b >= 0x80
+}
+
 /// Detects if a user message is a desktop automation command and executes it directly on the OS.
 pub async fn detect_and_execute_desktop_action(
     message: &str,
@@ -218,10 +260,15 @@ pub async fn detect_and_execute_desktop_action(
     } else {
         message.trim()
     };
-    let lower = clean_message.to_lowercase();
+    let lower = clean_message.to_ascii_lowercase();
 
     // 2. Calculator & Math
-    if lower.contains("calculator") || lower.contains("calc") || lower.starts_with("calculate ") {
+    //    Whole-word matching: "calcium" and "calculation" are not requests
+    //    for a calculator.
+    if contains_word(&lower, "calculator")
+        || contains_word(&lower, "calc")
+        || lower.starts_with("calculate ")
+    {
         let math_eval = evaluate_simple_math(clean_message);
         let _ = manager.launch_app("calc").await;
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
@@ -249,7 +296,7 @@ pub async fn detect_and_execute_desktop_action(
     }
 
     // 3. Notepad & Notes
-    if (lower.contains("notepad") || lower.contains("notes"))
+    if (contains_word(&lower, "notepad") || contains_word(&lower, "notes"))
         && (lower.contains("open") || lower.contains("launch") || lower.contains("write") || lower.contains("paste"))
     {
         let _ = manager.launch_app("notepad").await;
@@ -288,17 +335,17 @@ pub async fn detect_and_execute_desktop_action(
     }
 
     // 4. File Explorer / File Manager / Files
-    if (lower.contains("file manager")
-        || lower.contains("file explorer")
-        || lower.contains("explorer")
-        || lower.contains("files")
-        || lower.contains("file")
-        || lower.contains("folder")
-        || lower.contains("folders")
-        || lower.contains("documents")
-        || lower.contains("downloads")
-        || lower.contains("this pc")
-        || lower.contains("my computer"))
+    if (contains_word(&lower, "file manager")
+        || contains_word(&lower, "file explorer")
+        || contains_word(&lower, "explorer")
+        || contains_word(&lower, "files")
+        || contains_word(&lower, "file")
+        || contains_word(&lower, "folder")
+        || contains_word(&lower, "folders")
+        || contains_word(&lower, "documents")
+        || contains_word(&lower, "downloads")
+        || contains_word(&lower, "this pc")
+        || contains_word(&lower, "my computer"))
         && (lower.contains("open") || lower.contains("launch") || lower.contains("browse") || lower.contains("show") || lower.contains("start"))
     {
         let _ = manager.launch_app("explorer").await;
@@ -311,7 +358,10 @@ pub async fn detect_and_execute_desktop_action(
     }
 
     // 5. Terminal / CMD
-    if (lower.contains("terminal") || lower.contains("cmd") || lower.contains("command prompt") || lower.contains("powershell"))
+    if (contains_word(&lower, "terminal")
+        || contains_word(&lower, "cmd")
+        || contains_word(&lower, "command prompt")
+        || contains_word(&lower, "powershell"))
         && (lower.contains("open") || lower.contains("launch"))
     {
         let _ = manager.launch_app("cmd").await;
@@ -324,7 +374,7 @@ pub async fn detect_and_execute_desktop_action(
     }
 
     // 6. VS Code
-    if (lower.contains("vscode") || lower.contains("vs code") || lower.contains("code editor"))
+    if (contains_word(&lower, "vscode") || contains_word(&lower, "vs code") || contains_word(&lower, "code editor"))
         && (lower.contains("open") || lower.contains("launch"))
     {
         let _ = manager.launch_app("code").await;
@@ -377,3 +427,67 @@ pub async fn detect_and_execute_desktop_action(
 }
 
 pub type SharedAutomationManager = Arc<OsAutomationManager>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /* ---------- whole-word matching ---------- */
+
+    #[test]
+    fn a_word_inside_another_word_does_not_match() {
+        // "open my profile picture" used to launch File Explorer because
+        // "profile" contains "file".
+        assert!(!contains_word("open my profile picture", "file"));
+        assert!(!contains_word("show me the calibration report", "calc"));
+        assert!(!contains_word("what is the calcium requirement", "calc"));
+    }
+
+    #[test]
+    fn whole_words_match_regardless_of_case() {
+        assert!(contains_word("OPEN FILE", "file"));
+        assert!(contains_word("open file", "FILE"));
+        assert!(contains_word("please launch Calc now", "calc"));
+    }
+
+    #[test]
+    fn multiword_phrases_match_as_a_unit() {
+        assert!(contains_word("open the file manager", "file manager"));
+        assert!(contains_word("open the file manager", "manager"));
+        assert!(!contains_word("open the manager console", "file manager"));
+    }
+
+    #[test]
+    fn boundaries_are_respected_at_the_edges() {
+        assert!(contains_word("file", "file"));
+        assert!(contains_word("a file.", "file"));
+        assert!(contains_word("(file)", "file"));
+        assert!(!contains_word("f il e", "file"));
+        assert!(!contains_word("", "file"));
+    }
+
+    #[test]
+    fn multibyte_text_does_not_panic_or_match_across_characters() {
+        // Every byte of a multi-byte character counts as part of a word, so
+        // a needle can never be found spanning two characters.
+        assert!(contains_word("İstanbul file", "file"));
+        assert!(!contains_word("naïve", "na"));
+        assert!(!contains_word("日本語", "本"));
+    }
+
+    /* ---------- arithmetic ---------- */
+
+    #[test]
+    fn arithmetic_is_evaluated_exactly() {
+        let (value, formula, result) = evaluate_simple_math("45 * 128").unwrap();
+        assert_eq!(value, 5760.0);
+        assert_eq!(formula, "45 * 128 = 5760");
+        assert_eq!(result, "5760");
+    }
+
+    #[test]
+    fn division_by_zero_is_not_answered() {
+        // Returning a wrong number is worse than returning none.
+        assert!(evaluate_simple_math("10 / 0").is_none());
+    }
+}

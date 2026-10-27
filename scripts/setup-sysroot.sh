@@ -34,49 +34,110 @@ MIRROR_SEC="http://deb.debian.org/debian-security/pool/updates/main"
 
 mkdir -p "$DEBS" "$ROOT"
 
-# pool-path:package-name
-# Split into dev (headers + .pc) and runtime (.so) because linking needs both
-# and the -dev packages alone are not enough — a lesson from -latk-1.0 not
-# being found after everything appeared to resolve.
+# The roots of the closure. Only the -dev packages are named explicitly;
+# everything they pull in — headers, runtime .so files, their own
+# dependencies — is resolved from apt's index below.
+#
+# The runtime packages matter as much as the headers. A -dev package ships
+# the `libfoo.so` symlink but not `libfoo.so.0`; unpack the -dev package
+# alone and the symlink dangles, and the linker fails with
+# "unable to find library -lfoo" even though pkg-config reported OK.
+ROOT_PACKAGES=(
+  libwebkit2gtk-4.1-dev
+  libjavascriptcoregtk-4.1-dev
+  libgtk-3-dev
+  libsoup-3.0-dev
+  libglib2.0-dev
+  libatk1.0-dev
+  libatspi2.0-dev
+  libatk-bridge2.0-dev
+  libcairo2-dev
+  libpango1.0-dev
+  libgdk-pixbuf-2.0-dev
+  libharfbuzz-dev
+  libasound2-dev
+  libepoxy-dev
+  libpixman-1-dev
+  libxml2-dev
+  libsqlite3-dev
+  libnghttp2-dev
+  libpsl-dev
+  zlib1g-dev
+  libffi-dev
+  libmount-dev
+  libblkid-dev
+  libselinux1-dev
+  libpcre2-dev
+  libgraphene-1.0-dev
+  libgirepository1.0-dev
+  libfontconfig-dev
+  libfreetype-dev
+  libpng-dev
+  libcloudproviders-dev
+  libgl-dev
+  libegl-dev
+  libglvnd-dev
+  libgl1-mesa-dev
+  libdbus-1-dev
+  libsystemd-dev
+  libx11-dev
+  libxext-dev
+  libxi-dev
+  libxfixes-dev
+  libxrandr-dev
+  libxcursor-dev
+  libxinerama-dev
+  libxrender-dev
+  libxcb1-dev
+  libxau-dev
+  libxdmcp-dev
+  libxcomposite-dev
+  libxdamage-dev
+  libxkbcommon-dev
+  libxres-dev
+  libxtst-dev
+  libwayland-dev
+)
+
+# Pool-path form, retained for the fallback path when apt-get is absent.
 PACKAGES=(
-  # webkit + javascriptcore live in the security pool
   "SEC:w/webkit2gtk:libwebkit2gtk-4.1-dev"
-  "SEC:w/webkit2gtk:libwebkit2gtk-4.1-0"
   "SEC:w/webkit2gtk:libjavascriptcoregtk-4.1-dev"
-  "SEC:w/webkit2gtk:libjavascriptcoregtk-4.1-0"
-
-  # gtk stack, dev
   "MAIN:g/gtk+3.0:libgtk-3-dev"
-  "MAIN:g/gtk+3.0:libgtk-3-0t64"
   "MAIN:libs/libsoup3:libsoup-3.0-dev"
-  "MAIN:libs/libsoup3:libsoup-3.0-0"
   "MAIN:g/glib2.0:libglib2.0-dev"
-  "MAIN:g/glib2.0:libglib2.0-0t64"
   "MAIN:a/atk1.0:libatk1.0-dev"
-  "MAIN:a/atk1.0:libatk1.0-0"
   "MAIN:a/at-spi2-core:libatspi2.0-dev"
-  "MAIN:a/at-spi2-core:libatspi2.0-0t64"
   "MAIN:a/at-spi2-atk:libatk-bridge2.0-dev"
-  "MAIN:a/at-spi2-core:libatk-bridge2.0-0t64"
   "MAIN:c/cairo:libcairo2-dev"
-  "MAIN:c/cairo:libcairo2"
-  "MAIN:c/cairo:libcairo-gobject2"
   "MAIN:p/pango1.0:libpango1.0-dev"
-  "MAIN:p/pango1.0:libpango-1.0-0"
-  "MAIN:p/pango1.0:libpangocairo-1.0-0"
   "MAIN:g/gdk-pixbuf:libgdk-pixbuf-2.0-dev"
-  "MAIN:g/gdk-pixbuf:libgdk-pixbuf-2.0-0"
   "MAIN:h/harfbuzz:libharfbuzz-dev"
-  "MAIN:h/harfbuzz:libharfbuzz0b"
-
-  # gdk-pixbuf now pulls glycin, which pulls seccomp and lcms2
-  "MAIN:g/glycin:libglycin-2-dev"
-  "MAIN:g/glycin:libglycin-2-0"
-  "MAIN:libs/libseccomp:libseccomp-dev"
-  "MAIN:l/lcms2:liblcms2-dev"
-  "MAIN:s/shared-mime-info:shared-mime-info"
-
-  # X11 and friends
+  "MAIN:a/alsa-lib:libasound2-dev"
+  "MAIN:l/libepoxy:libepoxy-dev"
+  "MAIN:p/pixman:libpixman-1-dev"
+  "MAIN:libx/libxml2:libxml2-dev"
+  "MAIN:s/sqlite3:libsqlite3-dev"
+  "MAIN:n/nghttp2:libnghttp2-dev"
+  "MAIN:p/libpsl:libpsl-dev"
+  "MAIN:z/zlib:zlib1g-dev"
+  "MAIN:f/libffi:libffi-dev"
+  "MAIN:u/util-linux:libmount-dev"
+  "MAIN:u/util-linux:libblkid-dev"
+  "MAIN:libs/libselinux:libselinux1-dev"
+  "MAIN:p/pcre2:libpcre2-dev"
+  "MAIN:g/graphene:libgraphene-1.0-dev"
+  "MAIN:g/gobject-introspection:libgirepository1.0-dev"
+  "MAIN:f/fontconfig:libfontconfig-dev"
+  "MAIN:f/freetype:libfreetype-dev"
+  "MAIN:libx/libpng1.6:libpng-dev"
+  "MAIN:c/libcloudproviders:libcloudproviders-dev"
+  "MAIN:libg/libglvnd:libgl-dev"
+  "MAIN:libg/libglvnd:libegl-dev"
+  "MAIN:libg/libglvnd:libglvnd-dev"
+  "MAIN:m/mesa:libgl1-mesa-dev"
+  "MAIN:d/dbus:libdbus-1-dev"
+  "MAIN:s/systemd:libsystemd-dev"
   "MAIN:libx/libx11:libx11-dev"
   "MAIN:libx/libxext:libxext-dev"
   "MAIN:libx/libxi:libxi-dev"
@@ -94,67 +155,122 @@ PACKAGES=(
   "MAIN:libx/libxres:libxres-dev"
   "MAIN:libx/libxtst:libxtst-dev"
   "MAIN:w/wayland:libwayland-dev"
-
-  # ALSA for cpal audio input
-  "MAIN:a/alsa-lib:libasound2-dev"
-  "MAIN:a/alsa-lib:libasound2t64"
-
-  # misc transitive
-  "MAIN:libe/libepoxy:libepoxy-dev"
-  "MAIN:p/pixman:libpixman-1-dev"
-  "MAIN:libx/libxml2:libxml2-dev"
-  "MAIN:s/sqlite3:libsqlite3-dev"
-  "MAIN:n/nghttp2:libnghttp2-dev"
-  "MAIN:libp/libpsl:libpsl-dev"
-  "MAIN:z/zlib:zlib1g-dev"
-  "MAIN:libf/libffi:libffi-dev"
-  "MAIN:u/util-linux:libmount-dev"
-  "MAIN:u/util-linux:libblkid-dev"
-  "MAIN:libs/libselinux:libselinux1-dev"
-  "MAIN:p/pcre2:libpcre2-dev"
-  "MAIN:g/graphene:libgraphene-1.0-dev"
-  "MAIN:g/gobject-introspection:libgirepository1.0-dev"
-  "MAIN:f/fontconfig:libfontconfig-dev"
-  "MAIN:f/freetype:libfreetype-dev"
-  "MAIN:libp/libpng1.6:libpng-dev"
-  "MAIN:libc/libcloudproviders:libcloudproviders-dev"
-  "MAIN:libg/libglvnd:libgl-dev"
-  "MAIN:libg/libglvnd:libegl-dev"
-  "MAIN:libg/libglvnd:libglvnd-dev"
-  "MAIN:m/mesa:libgl1-mesa-dev"
-  "MAIN:d/dbus:libdbus-1-dev"
-  "MAIN:s/systemd:libsystemd-dev"
 )
 
 echo "Resolving and downloading into $DEBS ..."
-for entry in "${PACKAGES[@]}"; do
-  IFS=':' read -r which pool pkg <<<"$entry"
-  base="$MIRROR_MAIN"
-  [ "$which" = "SEC" ] && base="$MIRROR_SEC"
+#
+# WHY THE DEPENDENCY CLOSURE INSTEAD OF A FLAT LIST
+#
+# `apt-get download <pkg>` fetches exactly one .deb. It does not pull in
+# dependencies. A flat list of -dev packages therefore yields a sysroot
+# whose headers are present but whose runtime shared objects are not, and
+# every `libfoo.so` symlink dangles. pkg-config reports success — the
+# symlink exists — and the failure only appears at link time as
+# "unable to find library -lfoo", which is a confusing place to discover
+# that the problem was the download step.
+#
+# `apt-cache depends --recurse` expands the roots into their full closure
+# against one suite, so every package comes from the same Debian release
+# and every runtime library arrives with its header.
+#
+# This also fixes the Debian 13 renames (libfoo-0 -> libfoo-0t64) for
+# free: apt knows the new names, a pool scrape does not.
+if command -v apt-get >/dev/null 2>&1 && command -v apt-cache >/dev/null 2>&1; then
+  CLOSURE=$(apt-cache depends --recurse \
+      --no-recommends --no-suggests --no-conflicts --no-breaks \
+      --no-replaces --no-enhances \
+      "${ROOT_PACKAGES[@]}" 2>/dev/null \
+    | grep -E '^[a-zA-Z0-9+.-]+$' | sort -u)
 
-  (
-    listing=$(curl -s "$base/$pool/" || true)
-    file=$(printf '%s' "$listing" | grep -o "${pkg}_[^\"]*_amd64\.deb" | grep -v dbgsym | sort -V | tail -1)
-    if [ -z "$file" ]; then
-      file=$(printf '%s' "$listing" | grep -o "${pkg}_[^\"]*_all\.deb" | sort -V | tail -1)
-    fi
-    if [ -z "$file" ]; then
-      echo "  skip (not found): $pkg"
+  echo "  closure: $(printf '%s\n' "$CLOSURE" | wc -l) packages"
+
+  # Resolve every package to its pool path and published SHA-256 in a
+  # single index query, then fetch the .deb files in parallel.
+  #
+  # `apt-get download <pkg>` is far too slow for a closure this size: it
+  # starts a resolver per invocation, so 700 packages take ~15 minutes of
+  # pure process startup. `apt-cache show` answers for the whole list in
+  # one pass, and curl fetches the files concurrently.
+  #
+  # The SHA-256 is not optional. A silently truncated .deb unpacks into a
+  # directory that looks correct and then fails at link time.
+  echo "  resolving pool paths ..."
+  apt-cache show --no-all-versions $CLOSURE 2>/dev/null > "$DEBS/.index"
+
+  python3 - "$DEBS" <<'PYEOF' > "$DEBS/.fetchlist"
+import io, re, sys
+
+debs = sys.argv[1]
+blocks = io.open(debs + "/.index", encoding="utf-8", errors="replace").read().split("\n\n")
+seen = set()
+for b in blocks:
+    fn = re.search(r"^Filename: (.+)$", b, re.M)
+    sh = re.search(r"^SHA256: ([0-9a-f]{64})$", b, re.M)
+    if not (fn and sh):
+        continue
+    name = fn.group(1).rsplit("/", 1)[-1]
+    if name in seen:
+        continue
+    seen.add(name)
+    print(f"{fn.group(1)}\t{sh.group(1)}\t{name}")
+PYEOF
+
+  cat > "$DEBS/.fetch.sh" <<'FETCHEOF'
+#!/bin/bash
+IFS=$'\t' read -r path sha name <<< "$1"
+out="$2/$name"
+[ -f "$out" ] && exit 0
+for base in "http://deb.debian.org/debian" \
+            "http://security.debian.org/debian-security" \
+            "http://deb.debian.org/debian-security"; do
+  if curl -sSL --fail --retry 2 -o "$out.tmp" "$base/$path" 2>/dev/null; then
+    if [ "$(sha256sum "$out.tmp" | cut -d' ' -f1)" = "$sha" ]; then
+      mv "$out.tmp" "$out"
       exit 0
     fi
-    if [ -f "$DEBS/$file" ]; then
-      echo "  cached: $file"
-      exit 0
-    fi
-    if curl -sSL --fail -o "$DEBS/$file" "$base/$pool/$file"; then
-      echo "  got: $file"
-    else
-      rm -f "$DEBS/$file"
-      echo "  FAILED: $pkg"
-    fi
-  ) &
+  fi
+  rm -f "$out.tmp"
 done
-wait
+exit 1
+FETCHEOF
+  chmod +x "$DEBS/.fetch.sh"
+
+  echo "  downloading ..."
+  xargs -P 16 -d '\n' -I{} "$DEBS/.fetch.sh" "{}" "$DEBS" < "$DEBS/.fetchlist"
+
+  rm -f "$DEBS/.index" "$DEBS/.fetchlist" "$DEBS/.fetch.sh"
+  echo "  downloaded: $(ls "$DEBS"/*.deb 2>/dev/null | wc -l) .deb files"
+else
+  echo "  apt-get unavailable — falling back to pool scraping."
+  for entry in "${PACKAGES[@]}"; do
+    IFS=':' read -r which pool pkg <<<"$entry"
+    base="$MIRROR_MAIN"
+    [ "$which" = "SEC" ] && base="$MIRROR_SEC"
+
+    (
+      listing=$(curl -s "$base/$pool/" || true)
+      file=$(printf '%s' "$listing" | grep -o "${pkg}_[^\"]*_amd64\.deb" | grep -v dbgsym | sort -V | tail -1)
+      if [ -z "$file" ]; then
+        file=$(printf '%s' "$listing" | grep -o "${pkg}_[^\"]*_all\.deb" | sort -V | tail -1)
+      fi
+      if [ -z "$file" ]; then
+        echo "  skip (not found): $pkg"
+        exit 0
+      fi
+      if [ -f "$DEBS/$file" ]; then
+        echo "  cached: $file"
+        exit 0
+      fi
+      if curl -sSL --fail -o "$DEBS/$file" "$base/$pool/$file"; then
+        echo "  got: $file"
+      else
+        rm -f "$DEBS/$file"
+        echo "  FAILED: $pkg"
+      fi
+    ) &
+  done
+  wait
+fi
 
 echo "Unpacking ..."
 for d in "$DEBS"/*.deb; do
@@ -167,11 +283,43 @@ export PKG_CONFIG_SYSROOT_DIR="$ROOT"
 echo
 echo "Verifying:"
 ok=0
-for p in glib-2.0 gtk+-3.0 gdk-3.0 libsoup-3.0 javascriptcoregtk-4.1 webkit2gtk-4.1; do
+for p in glib-2.0 gobject-2.0 gio-2.0 gtk+-3.0 gdk-3.0 libsoup-3.0 \
+         javascriptcoregtk-4.1 webkit2gtk-4.1 alsa; do
   if pkg-config --exists "$p"; then
-    echo "  OK   $p"
+    echo "  OK   $p ($(pkg-config --modversion "$p"))"
   else
-    echo "  MISS $p -> $(pkg-config --cflags "$p" 2>&1 | grep -oP "Package '\K[^']+" | head -1)"
+    echo "  MISS $p"
+    ok=1
+  fi
+done
+
+# A dangling .so symlink means the -dev package arrived without its
+# runtime partner. pkg-config will still say OK, so check explicitly.
+# Only shared objects matter here: some packages (aspell, ispell) ship
+# dangling dictionary symlinks that have nothing to do with linking.
+echo
+echo "Checking for dangling shared objects ..."
+dangling=$(find "$ROOT/usr/lib" "$ROOT/lib" -type l -name '*.so*' \
+             ! -exec test -e {} \; -print 2>/dev/null | wc -l)
+if [ "$dangling" -ne 0 ]; then
+  echo "  $dangling dangling .so symlink(s):"
+  find "$ROOT/usr/lib" "$ROOT/lib" -type l -name '*.so*' \
+       ! -exec test -e {} \; -print 2>/dev/null | head -20 | sed 's/^/    /'
+  ok=1
+else
+  echo "  OK   no dangling .so symlinks"
+fi
+
+# The link-time libraries the Tauri crate actually asks for.
+echo
+echo "Checking link libraries ..."
+for so in libgtk-3.so libgdk-3.so libwebkit2gtk-4.1.so libjavascriptcoregtk-4.1.so \
+          libsoup-3.0.so libatk-1.0.so libglib-2.0.so libgobject-2.0.so \
+          libasound.so libdbus-1.so; do
+  if [ -e "$ROOT/usr/lib/x86_64-linux-gnu/$so" ]; then
+    echo "  OK   $so"
+  else
+    echo "  MISS $so"
     ok=1
   fi
 done
@@ -179,8 +327,8 @@ done
 if [ "$ok" -ne 0 ]; then
   echo
   echo "Some packages did not resolve. Debian moves package names between"
-  echo "releases (libfoo-0 -> libfoo-0t64 etc.); check the missing name in the"
-  echo "pool listing and add it to PACKAGES above."
+  echo "releases (libfoo-0 -> libfoo-0t64 etc.); check the missing name in"
+  echo "the pool listing and add it to ROOT_PACKAGES above."
   exit 1
 fi
 

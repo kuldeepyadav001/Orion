@@ -1306,22 +1306,11 @@ export default function App() {
       setGrounded(null);
       setStreaming(true);
 
-      // Autonomous Desktop Action Hook (JARVIS Desktop Control)
-      const lower = text.toLowerCase().trim();
-      let desktopAppToLaunch = null;
-      if (lower.startsWith("open ") || lower.startsWith("launch ") || lower.startsWith("start ")) {
-        const appTarget = lower.replace(/^(open|launch|start)\s+/, "").trim();
-        if (appTarget === "notepad" || appTarget === "notes") desktopAppToLaunch = "notepad";
-        else if (appTarget === "calc" || appTarget === "calculator") desktopAppToLaunch = "calc";
-        else if (appTarget === "terminal" || appTarget === "cmd" || appTarget === "command prompt") desktopAppToLaunch = "cmd";
-        else if (appTarget === "explorer" || appTarget === "files" || appTarget === "file" || appTarget === "file explorer" || appTarget === "file manager" || appTarget === "folder" || appTarget === "folders" || appTarget === "documents" || appTarget === "downloads") desktopAppToLaunch = "explorer";
-        else if (appTarget === "code" || appTarget === "vs code" || appTarget === "vscode") desktopAppToLaunch = "code";
-        else if (appTarget === "paint" || appTarget === "mspaint") desktopAppToLaunch = "mspaint";
-      }
-
-      if (desktopAppToLaunch) {
-        invoke("desktop_launch_app", { appName: desktopAppToLaunch }).catch(() => {});
-      }
+      // NOTE: Desktop actions are executed exclusively by the Rust
+      // `detect_and_execute_desktop_action` hook inside `send_message`.
+      // An earlier frontend copy of this logic launched the app here as well
+      // as in the backend, so one "open notepad" spawned two windows and the
+      // user saw the app flash up twice.
 
       try {
         const payloadMessage =
