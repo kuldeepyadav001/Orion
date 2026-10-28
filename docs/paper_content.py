@@ -24,37 +24,33 @@ AUTHORS = ["Kuldeep Yadav"]
 
 AFFILIATION = "Independent Research and Development"
 
-ABSTRACT = [
+ABSTRACT = (
     "Cloud language-model APIs are excellent at capability and poor at custody. "
-    "The alternative — a model that runs on the machine it serves — is usually "
+    "The alternative \u2014 a model that runs on the machine it serves \u2014 is usually "
     "presented as a smaller, weaker version of the cloud service. It is a "
     "different engineering problem, one whose hard constraints are physical "
-    "rather than algorithmic.",
-
-    "We describe Orion, a desktop AI workspace built across eleven milestones "
-    "(M0–M10). It runs a quantized open-weight model entirely on an 8 GB "
-    "workstation, ingests documents without a network round trip, and drives the "
-    "host operating system and a web browser on the user's direct instruction. "
-    "Exactly one model occupies RAM at a time, and untrusted retrieved content is "
-    "separated from privileged instructions by construction rather than by prompt "
-    "wording.",
-
-    "Five contributions are reported, each with a mechanism and a measurement: "
-    "path-difference model residency; a two-domain capability broker that "
-    "refuses privileged calls whose provenance traces to retrieved content; "
-    "byte-budget resource accounting; a compile-time assertion that makes a "
-    "panic-catching guard impossible to ship under an aborting build profile, a "
-    "defect our own test suite masked for a full milestone; and heading-trail "
-    "chunking, worth +0.154 recall@4 overall. On a 30-question adversarial suite "
-    "hybrid retrieval reaches 0.769 recall@4 and 0.667 MRR against 0.731 and "
-    "0.635 for BM25 alone, with overlapping Wilson intervals. We report the "
-    "defect history alongside the results, because the defects, not the features, "
-    "are what a reader must judge.",
-]
+    "rather than algorithmic, and it should not be judged by the cloud "
+    "service's metrics. We describe Orion, a desktop AI workspace built across "
+    "eleven milestones (M0\u2013M10). It runs a quantized open-weight model "
+    "entirely on an 8 GB workstation, ingests documents without a network round "
+    "trip, and drives the host operating system and a web browser on the "
+    "user's direct instruction. Exactly one model occupies RAM at a time, and "
+    "untrusted retrieved content is separated from privileged instructions by "
+    "construction rather than by prompt wording. Five contributions are "
+    "reported, each with a mechanism and a measurement: path-difference model "
+    "residency; a two-domain capability broker that refuses privileged calls "
+    "whose provenance traces to retrieved content; byte-budget resource "
+    "accounting; a compile-time assertion that makes a panic-catching guard "
+    "impossible to ship under an aborting build profile; and heading-trail "
+    "chunking, worth +0.154 recall@4 overall. On a 30-question adversarial "
+    "suite hybrid retrieval reaches 0.769 recall@4 and 0.667 MRR against 0.731 "
+    "and 0.635 for BM25 alone, with overlapping Wilson intervals. We report "
+    "the defect history alongside the results."
+)
 
 KEYWORDS = (
-    "Local language models, retrieval-augmented generation, prompt injection, "
-    "capability security, model residency, edge inference, accessible automation"
+    "accessible automation, capability security, edge inference, local language "
+    "models, model residency, prompt injection, retrieval-augmented generation"
 )
 
 NOMENCLATURE = [
@@ -128,38 +124,38 @@ BODY = [
 
     ("p",
      "Local inference has matured faster than its evaluation practice. "
-     "Quantization is now routine: GPTQ [14] and AWQ [12] make 4-bit weights "
-     "usable on one consumer GPU, LLM.int8() [13] and QLoRA [15] extend the "
-     "same economy to fine-tuning, and the Llama family [16] gave the "
-     "community a base model a workstation can host. FlexInfer [17] shaped our "
+     "Quantization is now routine: GPTQ [1] and AWQ [2] make 4-bit weights "
+     "usable on one consumer GPU, LLM.int8() [3] and QLoRA [4] extend the "
+     "same economy to fine-tuning, and the Llama family [5] gave the "
+     "community a base model a workstation can host. FlexInfer [6] shaped our "
      "design directly: memory-mapping a model under a tight budget does not "
      "merely slow inference, it collapses it — plain mmap measured 0.08 to "
      "0.67 tokens per second, because autoregressive decoding has no parameter "
-     "locality. EdgeLoRA [18] agrees from the multi-tenant side."),
+     "locality. EdgeLoRA [7] agrees from the multi-tenant side."),
 
     ("p",
      "Retrieval machinery is settled enough to be a dependency rather than a "
-     "contribution. BM25 and the probabilistic relevance framework [2] remain "
-     "the lexical baseline; sentence-BERT [4], BGE [5], distilled variants [6] "
-     "and dense passage retrieval [7] supply the dense side, with HNSW [8] the "
-     "usual index. Retrieval-augmented generation [3] established the overall "
-     "shape. We fuse with Reciprocal Rank Fusion [1], whose insight — BM25 "
+     "contribution. BM25 and the probabilistic relevance framework [8] remain "
+     "the lexical baseline; sentence-BERT [9], BGE [10], distilled variants [11] "
+     "and dense passage retrieval [12] supply the dense side, with HNSW [13] the "
+     "usual index. Retrieval-augmented generation [14] established the overall "
+     "shape. We fuse with Reciprocal Rank Fusion [15], whose insight — BM25 "
      "scores and cosine similarities are not on comparable scales, so ranks must "
      "be fused rather than scores — is why our hybrid beats either component "
      "without a tuning sweep."),
 
     ("p",
      "A local assistant is most exposed to prompt injection, because local "
-     "deployment multiplies the number of untrusted inputs. Greshake et al. [9] "
+     "deployment multiplies the number of untrusted inputs. Greshake et al. [16] "
      "named indirect prompt injection: instructions planted in retrieved data "
-     "compete with the user's own. BIPIA [10] measured the exposure across 25 "
-     "models and five scenarios and found all susceptible. AgentDojo [11] made "
+     "compete with the user's own. BIPIA [17] measured the exposure across 25 "
+     "models and five scenarios and found all susceptible. AgentDojo [18] made "
      "the agent the unit of evaluation, with 97 tasks and 629 security test "
-     "cases. OWASP's LLM Top 10 [21] and the NIST framework [22] supply the "
-     "governance framing we adopt. Finally, ComponentBench [19] varies only the "
+     "cases. OWASP's LLM Top 10 [19] and the NIST framework [20] supply the "
+     "governance framing we adopt. Finally, ComponentBench [21] varies only the "
      "observation and action space on a fixed model and finds 83.1% task "
      "success from an accessibility tree against 48.9% from coordinate-only "
-     "pixels; LUMOS [20] proposes the same remedy from the operating-system "
+     "pixels; LUMOS [22] proposes the same remedy from the operating-system "
      "side."),
 
     ("h1", "III. DESIGN INVARIANTS"),
@@ -199,18 +195,18 @@ BODY = [
         "file": "fig1_architecture.png",
         "height_in": 2.10,
         "width_in": 7.10,
-        "caption": "FIG. 1. Orion in one view. The capability broker is the only route to an "
+        "caption": "Fig. 1. Orion in one view. The capability broker is the only route to an "
                    "effect outside the application.",
     }),
 
     ("p",
-     "Orion is a Tauri v2 [25] application: the window, tray, global hotkey "
-     "and file-drop intake are Rust, the interface is React. The model runs in "
-     "a llama.cpp [24] sidecar bound to 127.0.0.1 on an ephemeral port, spawned "
-     "lazily and torn down on an eight-minute inactivity timer so the weights "
-     "leave RAM while the user is away. Documents, chats, vectors, the audit "
-     "log and the undo journal live in one SQLite file [26] with FTS5 for "
-     "lexical search and sqlite-vec [27] for the dense side."),
+     "Orion is a Tauri v2 [23] application (Fig. 1): the window, tray, global "
+     "hotkey and file-drop intake are Rust, the interface is React. The model "
+     "runs in a llama.cpp [24] sidecar bound to 127.0.0.1 on an ephemeral port, "
+     "spawned lazily and torn down on an eight-minute inactivity timer so the "
+     "weights leave RAM while the user is away. Documents, chats, vectors, the "
+     "audit log and the undo journal live in one SQLite file [25] with FTS5 for "
+     "lexical search and sqlite-vec [26] for the dense side."),
 
     ("p",
      "The broker holds a permission tier, a path containment check and an "
@@ -222,8 +218,8 @@ BODY = [
      "broker (M5), packaging and personas (M6), sovereign email (M7), sandboxed "
      "browser (M8), OS UI automation (M9), and kernel containment with PIN "
      "auto-lock (M10). On Windows the kernel layer maps to AppContainer "
-     "isolation [29]; the residency rule rests on Denning's working-set "
-     "argument [23], [30]."),
+     "isolation [27]; the residency rule rests on Denning's working-set "
+     "argument [28], [29]."),
 
     ("h1", "V. CONTRIBUTIONS"),
 
@@ -249,12 +245,12 @@ BODY = [
 
     ("eq", {
         "num": 1,
-        "text": "swap(ρ)  =  1[ canonical( r(ρ) )  ≠  p_res ]",
+        "text": "swap(ρ)  =  1[ canonical( r(ρ) )  ≠  p_res ],",
         "note": "where p_res is the canonical path of the resident weight file.",
     }),
 
     ("p",
-     "The invariant is deliberately narrow. It does not say which model is "
+     "The invariant of (1) is deliberately narrow. It does not say which model is "
      "correct, and it does not prevent a swap when one is genuinely required — "
      "the generalist unloading to make room for a specialist is the intended "
      "behaviour and the only path by which I1 can hold. It says only that the "
@@ -269,34 +265,34 @@ BODY = [
      "I3 is the invariant most likely to be silently broken, because the "
      "attacker never touches the application. A document arrives, a clause in "
      "it reads as an instruction, and the model — correctly, from its own point "
-     "of view — obeys. Prompt-level defences do not help here: BIPIA [10] "
+     "of view — obeys. Prompt-level defences do not help here: BIPIA [17] "
      "attributes most successful injections to exactly that, and Greshake et "
-     "al. [9] showed the same class of failure escaping production systems "
+     "al. [16] showed the same class of failure escaping production systems "
      "that had a safety mode."),
 
     ("p",
      "We moved the boundary out of the prompt and into the broker. Every call c "
-     "carries a provenance tag prov(c) recording where its instruction text "
-     "came from: a direct user utterance, a retrieved document, a scraped web "
-     "page, an email body. The broker admits a call when"),
+     "carries a provenance tag prov(c) recording where its instruction text came "
+     "from: a direct user utterance, a retrieved document, a scraped web page, an "
+     "email body. The broker admits a call when (2) holds:"),
 
     ("eq", {
         "num": 2,
-        "text": "allow(c)  =  1[ tier(c) ≤ T0   ∨   prov(c) = Trusted ]",
+        "text": "allow(c)  =  1[ tier(c) ≤ T0   ∨   prov(c) = Trusted ],",
         "note": "so a call of any tier above read-only is refused outright "
                 "unless its instruction came from the user.",
     }),
 
     ("p",
-     "This is not a detection heuristic that must recognise an attack; it is a "
-     "type check on the provenance tag. An injected instruction that reaches the "
-     "model produces a tool call whose provenance is document text, and the call "
-     "is refused regardless of what the instruction said. Three supporting layers "
-     "raise that cost: retrieved text is delimited into numbered source blocks "
-     "whose terminators are broken so a document cannot close its own block; "
-     "control, zero-width and bidirectional-override characters are stripped; and "
-     "filenames and headings are sanitised, because a file may legitimately be "
-     "named Ignore all previous instructions.pdf."),
+     "Condition (2) is not a detection heuristic that must recognise an attack; "
+     "it is a type check on the provenance tag. An injected instruction that "
+     "reaches the model produces a tool call whose provenance is document text, "
+     "and the call is refused regardless of what the instruction said. Three "
+     "supporting layers raise that cost: retrieved text is delimited into "
+     "numbered source blocks whose terminators are broken so a document cannot "
+     "close its own block; control, zero-width and bidirectional-override "
+     "characters are stripped; and filenames and headings are sanitised, because "
+     "a file may legitimately be named Ignore all previous instructions.pdf."),
 
     ("p",
      "The same tagging drives the browser and email subsystems: a web page is "
@@ -310,21 +306,20 @@ BODY = [
     ("p",
      "The classic decompression attacks declare their size in metadata, and the "
      "size in the metadata is the attack. A zip entry claiming 600 MB inside a "
-     "600 KB archive is a request to materialise 600 MB, and a limit that "
-     "reads the declared value has already agreed to it. We therefore enforce "
-     "every ingestion budget against bytes actually read through the "
-     "decompressor:"),
+     "600 KB archive is a request to materialise 600 MB, and a limit that reads "
+     "the declared value has already agreed to it. We therefore enforce every "
+     "ingestion budget against bytes actually read through the decompressor (3):"),
 
     ("eq", {
         "num": 3,
-        "text": "bytes_read( r )  ≤  B( r )    ∀ r ∈ { compressed, expanded, "
-                "entity, element }",
+        "text": "bytes_read( r )  ≤  B( r )    ∀ r ∈ { compressed, expanded, entity, element "
+                "},",
         "note": "checked at the point of extraction, never at the point of "
                 "declaration.",
     }),
 
     ("p",
-     "The budget covers the compressed entry, the decompressed output, the "
+     "Constraint (3) covers the compressed entry, the decompressed output, the "
      "nesting depth of XML entities and the number of elements. A 600 MB zip bomb "
      "is refused in 311 ms with a resident-set increase of 3 MB — the cost of the "
      "refusal, not of the payload. A zip-slip entry naming ../../../../etc/passwd "
@@ -335,7 +330,7 @@ BODY = [
      "parsers, no input produced a panic."),
 
     ("p",
-     "Document identity is a SHA-256 digest [28] of the extracted bytes, "
+     "Document identity is a SHA-256 digest [30] of the extracted bytes, "
      "computed incrementally so that a streamed file is identified without "
      "buffering it whole."),
 
@@ -390,27 +385,27 @@ BODY = [
 
     ("p",
      "Fusion across the lexical and dense retrievers uses Reciprocal Rank Fusion "
-     "[1]. We chose it over a weighted score combination for the reason its "
+     "[15]. We chose it over a weighted score combination for the reason its "
      "authors give: BM25 scores are unbounded and cosine similarities live in "
      "[−1, 1], so any direct mixture is miscalibrated by construction. Rank "
-     "fusion is scale-free:"),
+     "fusion is scale-free (4):"),
 
     ("eq", {
         "num": 4,
-        "text": "RRF( d )  =  Σ_{ i ∈ R }  1 / ( k + rank_i( d ) ),      k = 60",
+        "text": "RRF( d )  =  Σ_{ i ∈ R }  1 / ( k + rank_i( d ) ),      k = 60,",
         "note": "R is the set of retriever rankings, rank_i(d) the rank of "
                 "document d in ranking i.",
     }),
 
     ("p",
-     "Retrieval quality is reported with the usual two metrics over the set Q "
-     "of answerable questions, with hits(q) the set of documents that answer q "
-     "and Top_k(q) the top-k retrieved set:"),
+     "Retrieval quality is reported with the usual two metrics of (5) over the "
+     "set Q of answerable questions, with hits(q) the set of documents that "
+     "answer q and Top_k(q) the top-k retrieved set:"),
 
     ("eq", {
         "num": 5,
-        "text": "recall@k = |{ q : hits(q) ∩ Top_k(q) ≠ ∅ }| / |Q|,        "
-                "MRR = (1/|Q|) Σ_q 1 / rank_q",
+        "text": "recall@k = |{ q : hits(q) ∩ Top_k(q) ≠ ∅ }| / |Q|,        MRR = (1/|Q|) Σ_q "
+                "1 / rank_q.",
     }),
 
     ("p",
@@ -437,11 +432,11 @@ BODY = [
     ("h2", "B. Testbed"),
 
     ("p",
-     "All measurements come from one machine, and it is not the deployment "
-     "target: the build and test host has 1.9 GiB of RAM against the 5.7 GiB "
-     "usable budget the product is designed for, so the numbers below are a lower "
-     "bound on the target hardware. The retrieval corpus is 22 chunks chosen to "
-     "be adversarial — two conflicting human-resources handbooks where one "
+     "Table II lists the configuration. All measurements come from one machine, "
+     "and it is not the deployment target: the build and test host has 1.9 GiB of "
+     "RAM against the 5.7 GiB usable budget the product is designed for, so the "
+     "numbers below are a lower bound. The retrieval corpus is 22 chunks chosen "
+     "to be adversarial — two conflicting human-resources handbooks where one "
      "supersedes the other, a contract, an invoice and a runbook — and the "
      "question set is 30 probes over it, four unanswerable by construction and "
      "excluded from retrieval averages. Refusing to answer is a generation-stage "
@@ -470,7 +465,7 @@ BODY = [
         "file": "fig2_retrieval.png",
         "height_in": 1.72,
         "width_in": 7.10,
-        "caption": "FIG. 2. recall@4 by configuration, with Wilson 95% intervals over the 26 "
+        "caption": "Fig. 2. recall@4 by configuration, with Wilson 95% intervals over the 26 "
                    "answerable questions. The intervals overlap, so the configurations are not "
                    "separated by this corpus.",
     }),
@@ -514,16 +509,16 @@ BODY = [
     }),
 
     ("p",
-     "Two failures constrain what the system can do. A query for a specific "
-     "bank account number is found by BM25 alone and lost by hybrid at k = 4, "
-     "because noise from the stand-in embedder crowds the exact match out of "
-     "the fused top four; if that survives a real encoder, the repair is a score "
-     "floor on the dense side, not a re-weighting of the fusion. A second query "
-     "about terminating a services agreement fails in every configuration, "
-     "because the document says “bring this arrangement to an end” and no "
-     "lexical or hashed-dense signal connects that to the question. Neither is a "
-     "retrieval-configuration problem; both are consequences of the encoder "
-     "standing in."),
+     "Table IV breaks the result down by probe category. Two failures constrain "
+     "what the system can do. A query for a specific bank account number is found "
+     "by BM25 alone and lost by hybrid at k = 4, because noise from the stand-in "
+     "embedder crowds the exact match out of the fused top four; if that survives "
+     "a real encoder, the repair is a score floor on the dense side, not a "
+     "re-weighting of the fusion. A second query about terminating a services "
+     "agreement fails in every configuration, because the document says “bring "
+     "this arrangement to an end” and no lexical or hashed-dense signal connects "
+     "that to the question. Neither is a retrieval-configuration problem; both "
+     "are consequences of the encoder standing in."),
 
     ("h2", "D. Adversarial Ingestion (RQ2, RQ3)"),
 
@@ -572,26 +567,31 @@ BODY = [
     }),
 
     ("p",
-     "The Unicode class deserves a note, because it is a family of bugs ordinary "
-     "testing does not find. Lowercasing U+0130, a single character, yields a "
-     "three-byte sequence from a two-byte input, so code that computes a byte "
-     "offset before lowercasing and slices afterwards can cut a character in "
-     "half. We removed it by adopting ASCII-only case folding for "
-     "attacker-controlled text, which preserves byte lengths, and by advancing "
-     "split offsets with char_indices and len_utf8 rather than arithmetic on "
-     "bytes. One earlier test passed for the wrong reason: a test asserting that "
-     "PDF and DOCX parsing returned errors kept passing after the formats were "
-     "implemented, because the fixtures were malformed."),
+     "Table VI lists the defect classes the suite caught. The Unicode class "
+     "deserves a note, because it is a family of bugs ordinary testing does not "
+     "find. Lowercasing U+0130, a single character, yields a three-byte sequence "
+     "from a two-byte input, so code that computes a byte offset before "
+     "lowercasing and slices afterwards can cut a character in half. We removed "
+     "it by adopting ASCII-only case folding for attacker-controlled text, which "
+     "preserves byte lengths, and by advancing split offsets with char_indices "
+     "and len_utf8 rather than byte arithmetic. One earlier test passed for the "
+     "wrong reason: a test asserting that PDF and DOCX parsing returned errors "
+     "kept passing after the formats were implemented, because the fixtures were "
+     "malformed."),
 
     ("h2", "F. Observation-Space Cost"),
+
+    ("p",
+     "Fig. 3 shows the context an observation costs: 2-5 KB for an "
+     "accessibility tree against 1.4 MB for a screenshot."),
 
     ("fig", {
         "file": "fig3_context.png",
         "height_in": 1.02,
         "width_in": 7.10,
-        "caption": "FIG. 3. Context carried per observation. Accessibility-tree observation "
+        "caption": "Fig. 3. Context carried per observation. Accessibility-tree observation "
                    "rather than pixels is what keeps the agent inside the 8 GB budget; "
-                   "ComponentBench [19] shows the same choice moving task success by 34.2 "
+                   "ComponentBench [21] shows the same choice moving task success by 34.2 "
                    "points.",
     }),
 
@@ -603,12 +603,11 @@ BODY = [
         "in particular, is a floor rather than a measurement of the product, and "
         "no number from that column should be quoted outside this paper.",
 
-        "The evaluation corpus is 22 chunks and the question set is 30 probes. It "
-        "discriminates between configurations, but the Wilson intervals in Table III "
-        "are wide and overlapping, so the retrieval comparison is directional rather "
-        "than significant. Nothing here establishes behaviour at 10⁵ chunks, and our "
-        "justification for a brute-force vector scan instead of an approximate index "
-        "is arithmetic, not a benchmark.",
+        "The evaluation corpus is 22 chunks and the question set is 30 probes. The "
+        "Wilson intervals in Table III are wide and overlapping, so the retrieval "
+        "comparison is directional rather than significant. Nothing here establishes "
+        "behaviour at 10⁵ chunks, and our justification for a brute-force vector "
+        "scan is arithmetic, not a benchmark.",
 
         "Nothing has run inside the packaged application: we compile and test "
         "the real Tauri crate, but no cargo tauri build has been executed here "
@@ -619,7 +618,7 @@ BODY = [
         "untested.",
 
         "Accessibility metadata coverage is an unmeasured precondition for our "
-        "automation results. LUMOS [20] makes the same observation generally, "
+        "automation results. LUMOS [22] makes the same observation generally, "
         "and notes that coverage of that metadata determines whether the "
         "approach works at all.",
 
@@ -679,6 +678,14 @@ BODY = [
      "depends only on open-weight models under permissive licences, and it makes "
      "no claim of the kind a proprietary assistant would be tempted to make."),
 
+    ("h1s", "AUTHOR BIOGRAPHY"),
+
+    ("p",
+     "Kuldeep Yadav is an independent developer and researcher working on "
+     "local-first AI systems. He designed and built Orion end to end, from the "
+     "Rust retrieval engine to the Tauri desktop shell, and maintains the "
+     "benchmark suite and reproducible build reported here."),
+
     ("h1", "REFERENCES"),
 
     ("refs", None),
@@ -689,109 +696,82 @@ BODY = [
 # --------------------------------------------------------------------------
 
 REFERENCES = [
-    "[1] G. V. Cormack, C. L. A. Clarke, and S. Büttcher, “Reciprocal Rank Fusion "
-    "outperforms Condorcet and individual Rank Learning Methods,” in Proc. 32nd "
-    "ACM Int. Conf. Research and Development in Information Retrieval (SIGIR), "
-    "2009, pp. 758–759.",
-
-    "[2] S. Robertson and E. Zaragoza, “The Probabilistic Relevance Framework: BM25 "
-    "and Beyond,” Foundations and Trends in Information Retrieval, vol. 3, no. 4, "
-    "2009, pp. 333–389.",
-
-    "[3] P. Lewis et al., “Retrieval-Augmented Generation for Knowledge-Intensive "
-    "NLP Tasks,” in Advances in Neural Information Processing Systems (NeurIPS), "
-    "2020, pp. 9459–9474.",
-
-    "[4] N. Reimers and I. Gurevych, “Sentence-BERT: Sentence Embeddings using "
-    "Siamese BERT-Networks,” in Proc. Conf. Empirical Methods in Natural Language "
-    "Processing (EMNLP-IJCNLP), 2019, pp. 3982–3992.",
-
-    "[5] S. Xiao, Z. Liu, P. Zhang, N. Muennighoff, et al., “C-Pack: Packaged "
-    "Resources To Advance General Chinese Embedding,” arXiv:2309.07597, 2023.",
-
-    "[6] V. Santhanam, P. Selvaraju, A. Yellapragada, et al., “DistilBERT — A "
-    "Distilled Version of BERT,” arXiv:2010.01184, 2020.",
-
-    "[7] V. Karpukhin, O. Khattab, D. Piao, et al., “Dense Passage Retrieval for "
-    "Open-Domain Question Answering,” in Proc. Conf. Empirical Methods in Natural "
-    "Language Processing (EMNLP), 2020, pp. 6769–6781.",
-
-    "[8] T. Malkov and D. Yashunin, “Efficient and Robust Approximate Nearest "
-    "Neighbor Search Using Hierarchical Navigable Small World Graphs,” IEEE Trans. "
-    "Pattern Anal. Mach. Intell., vol. 42, no. 4, 2020, pp. 824–836.",
-
-    "[9] K. Greshake, S. Abdelnabi, S. Mishra, C. Endres, T. Holz, and M. Fritz, "
-    "“Not What You’ve Signed Up For: Compromising Real-World LLM-Integrated "
-    "Applications with Indirect Prompt Injection,” in Proc. 16th ACM Workshop on "
-    "Artificial Intelligence and Security (AISec), 2023, pp. 79–90.",
-
-    "[10] J. Yi, Y. Xie, B. Zhu, E. Kiciman, G. Sun, X. Xie, and F. Wu, "
-    "“Benchmarking and Defending Against Indirect Prompt Injection Attacks on "
-    "Large Language Models,” arXiv:2312.14197, 2023.",
-
-    "[11] E. Debenedetti, J. Zhang, M. Balunović, L. Beurer-Kellner, M. Fischer, "
-    "and F. Tramèr, “AgentDojo: A Dynamic Environment to Evaluate Prompt Injection "
-    "Attacks and Defenses for LLM Agents,” in Advances in Neural Information "
-    "Processing Systems (NeurIPS) Datasets and Benchmarks Track, 2024.",
-
-    "[12] T. Chen, S. Li, H. Zhang, et al., “AWQ: Activation-aware Weight "
-    "Quantization for LLM Compression and Acceleration,” in Proc. Conf. on Machine "
-    "Learning and Systems (MLSys), 2024.",
-
-    "[13] T. Dettmers, N. Shazeer, M. Andreev, et al., “LLM.int8(): 8-bit Matrix "
-    "Multiplication for LLMs at Scale,” arXiv:2208.07339, 2022.",
-
-    "[14] J. Frantar, S. Ashkboos, S. Hooper, et al., “GPTQ: Accurate Post-Training "
+    "J. Frantar, S. Ashkboos, S. Hooper, et al., “GPTQ: Accurate Post-Training "
     "Quantization for Generative Pre-trained Transformers,” in Int. Conf. on "
     "Learning Representations (ICLR), 2023.",
-
-    "[15] T. Dettmers, A. Pagnoni, S. Holtzman, and Y. Yang, “QLoRA: Efficient "
+    "T. Chen, S. Li, H. Zhang, et al., “AWQ: Activation-aware Weight "
+    "Quantization for LLM Compression and Acceleration,” in Proc. Conf. on "
+    "Machine Learning and Systems (MLSys), 2024.",
+    "T. Dettmers, N. Shazeer, M. Andreev, et al., “LLM.int8(): 8-bit Matrix "
+    "Multiplication for LLMs at Scale,” arXiv:2208.07339, 2022.",
+    "T. Dettmers, A. Pagnoni, S. Holtzman, and Y. Yang, “QLoRA: Efficient "
     "Finetuning of Quantized LLMs,” arXiv:2305.14314, 2023.",
-
-    "[16] Meta AI, “The Llama 3 Herd of Models,” arXiv:2407.21783, 2024.",
-
-    "[17] Y. Ji, W. Chen, X. Xie, et al., “FlexInfer: Breaking Memory Constraint "
+    "Meta AI, “The Llama 3 Herd of Models,” arXiv:2407.21783, 2024.",
+    "Y. Ji, W. Chen, X. Xie, et al., “FlexInfer: Breaking Memory Constraint "
     "via Flexible and Efficient Offloading for On-Device LLM Inference,” "
     "arXiv:2503.03777, 2025.",
-
-    "[18] Z. Shen, Y. He, Z. Wang, Y. Zhang, G. Sun, W. Ye, and A. Li, “EdgeLoRA: "
+    "Z. Shen, Y. He, Z. Wang, Y. Zhang, G. Sun, W. Ye, and A. Li, “EdgeLoRA: "
     "An Efficient Multi-Tenant LLM Serving System on Edge Devices,” "
     "arXiv:2507.01438, 2025.",
-
-    "[19] “ComponentBench: Diagnosing Component-Level Failures in Computer-Use "
-    "Agents,” arXiv:2608.18307, 2026.",
-
-    "[20] “LUMOS: A Semantic Operating-System Layer for Accessibility-Grounded AI "
-    "Agents,” arXiv:2606.30697, 2026.",
-
-    "[21] OWASP Foundation, “OWASP Top 10 for Large Language Model Applications,” "
+    "S. Robertson and E. Zaragoza, “The Probabilistic Relevance Framework: "
+    "BM25 and Beyond,” Foundations and Trends in Information Retrieval, vol. "
+    "3, no. 4, 2009, pp. 333–389.",
+    "N. Reimers and I. Gurevych, “Sentence-BERT: Sentence Embeddings using "
+    "Siamese BERT-Networks,” in Proc. Conf. Empirical Methods in Natural "
+    "Language Processing (EMNLP-IJCNLP), 2019, pp. 3982–3992.",
+    "S. Xiao, Z. Liu, P. Zhang, N. Muennighoff, et al., “C-Pack: Packaged "
+    "Resources To Advance General Chinese Embedding,” arXiv:2309.07597, 2023.",
+    "V. Santhanam, P. Selvaraju, A. Yellapragada, et al., “DistilBERT — A "
+    "Distilled Version of BERT,” arXiv:2010.01184, 2020.",
+    "V. Karpukhin, O. Khattab, D. Piao, et al., “Dense Passage Retrieval for "
+    "Open-Domain Question Answering,” in Proc. Conf. Empirical Methods in "
+    "Natural Language Processing (EMNLP), 2020, pp. 6769–6781.",
+    "T. Malkov and D. Yashunin, “Efficient and Robust Approximate Nearest "
+    "Neighbor Search Using Hierarchical Navigable Small World Graphs,” IEEE "
+    "Trans. Pattern Anal. Mach. Intell., vol. 42, no. 4, 2020, pp. 824–836.",
+    "P. Lewis et al., “Retrieval-Augmented Generation for Knowledge-Intensive "
+    "NLP Tasks,” in Advances in Neural Information Processing Systems "
+    "(NeurIPS), 2020, pp. 9459–9474.",
+    "G. V. Cormack, C. L. A. Clarke, and S. Büttcher, “Reciprocal Rank Fusion "
+    "outperforms Condorcet and individual Rank Learning Methods,” in Proc. "
+    "32nd ACM Int. Conf. Research and Development in Information Retrieval "
+    "(SIGIR), 2009, pp. 758–759.",
+    "K. Greshake, S. Abdelnabi, S. Mishra, C. Endres, T. Holz, and M. Fritz, "
+    "“Not What You’ve Signed Up For: Compromising Real-World LLM-Integrated "
+    "Applications with Indirect Prompt Injection,” in Proc. 16th ACM Workshop "
+    "on Artificial Intelligence and Security (AISec), 2023, pp. 79–90.",
+    "J. Yi, Y. Xie, B. Zhu, E. Kiciman, G. Sun, X. Xie, and F. Wu, "
+    "“Benchmarking and Defending Against Indirect Prompt Injection Attacks on "
+    "Large Language Models,” arXiv:2312.14197, 2023.",
+    "E. Debenedetti, J. Zhang, M. Balunović, L. Beurer-Kellner, M. Fischer, "
+    "and F. Tramèr, “AgentDojo: A Dynamic Environment to Evaluate Prompt "
+    "Injection Attacks and Defenses for LLM Agents,” in Advances in Neural "
+    "Information Processing Systems (NeurIPS) Datasets and Benchmarks Track, "
+    "2024.",
+    "OWASP Foundation, “OWASP Top 10 for Large Language Model Applications,” "
     "2025.",
-
-    "[22] National Institute of Standards and Technology, “Artificial Intelligence "
+    "National Institute of Standards and Technology, “Artificial Intelligence "
     "Risk Management Framework (AI RMF 1.0),” NIST AI 100-1, 2023.",
-
-    "[23] P. J. Denning, “The Working Set Model for Program Behavior,” Commun. "
-    "ACM, vol. 11, no. 3, 1968, pp. 152–166.",
-
-    "[24] ggml-org, “llama.cpp: LLM inference in C/C++,” software repository, "
-    "2023–2026. [Online]. Available: https://github.com/ggml-org/llama.cpp",
-
-    "[25] Tauri Team, “Tauri: Build smaller, faster, and more secure desktop "
+    "“ComponentBench: Diagnosing Component-Level Failures in Computer-Use "
+    "Agents,” arXiv:2608.18307, 2026.",
+    "“LUMOS: A Semantic Operating-System Layer for Accessibility-Grounded AI "
+    "Agents,” arXiv:2606.30697, 2026.",
+    "Tauri Team, “Tauri: Build smaller, faster, and more secure desktop "
     "applications with a web frontend,” software documentation, 2024–2026. "
     "[Online]. Available: https://tauri.app",
-
-    "[26] SQLite Project, “SQLite Full-Text Search Version 5 (FTS5),” software "
+    "ggml-org, “llama.cpp: LLM inference in C/C++,” software repository, "
+    "2023–2026. [Online]. Available: https://github.com/ggml-org/llama.cpp",
+    "SQLite Project, “SQLite Full-Text Search Version 5 (FTS5),” software "
     "documentation, 2024. [Online]. Available: https://sqlite.org/fts5.html",
-
-    "[27] asg017, “sqlite-vec: Vector search for SQLite,” software repository, "
+    "asg017, “sqlite-vec: Vector search for SQLite,” software repository, "
     "2024–2026. [Online]. Available: https://github.com/asg017/sqlite-vec",
-
-    "[28] National Institute of Standards and Technology, “Secure Hash Standard "
+    "Microsoft, “Windows AppContainer,” platform documentation, 2024. "
+    "[Online]. Available: "
+    "https://learn.microsoft.com/windows/win32/secauthz/appcontainer-isolation",
+    "P. J. Denning, “The Working Set Model for Program Behavior,” Commun. ACM, "
+    "vol. 11, no. 3, 1968, pp. 152–166.",
+    "P. J. Denning, “Virtual Memory,” ACM Comput. Surv., vol. 2, no. 3, 1970, "
+    "pp. 149–160.",
+    "National Institute of Standards and Technology, “Secure Hash Standard "
     "(SHS),” FIPS PUB 180-4, 2015.",
-
-    "[29] Microsoft, “Windows AppContainer,” platform documentation, 2024. "
-    "[Online]. Available: https://learn.microsoft.com/windows/win32/secauthz/appcontainer-isolation",
-
-    "[30] P. J. Denning, “Virtual Memory,” ACM Comput. Surv., vol. 2, no. 3, "
-    "1970, pp. 149–160.",
 ]

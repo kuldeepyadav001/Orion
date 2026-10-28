@@ -32,6 +32,10 @@ from reportlab.pdfbase.pdfmetrics import stringWidth  # noqa: E402
 
 import paper_content as C  # noqa: E402
 
+# The abstract is a single IEEE-style paragraph, but accept a list too.
+ABSTRACT_TEXT = (C.ABSTRACT if isinstance(C.ABSTRACT, str)
+                 else " ".join(C.ABSTRACT))
+
 from docx import Document  # noqa: E402
 from docx.shared import Pt, Inches, RGBColor  # noqa: E402
 from docx.enum.text import (WD_ALIGN_PARAGRAPH, WD_LINE_SPACING,  # noqa: E402
@@ -79,14 +83,14 @@ STYLE = {
     "h1":      _style(SERIF, 10.0, 11.5, 4.5, 1.5, "left", True),
     "h2":      _style(SERIF, 9.8, 11.0, 3.2, 1.2, "left", True),
     "h1s":     _style(SERIF, 9.4, 10.5, 3.0, 1.2, "left", True),
-    "p":       _style(SERIF, 9.0, 10.4, 0.0, 1.5, "justify", False),
+    "p":       _style(SERIF, 9.0, 10.2, 0.0, 1.6, "justify", False),
     "mono":    _style(MONO, 7.0, 8.2, 1.5, 3.0, "left", False),
     "caption": _style(SERIF, 7.6, 9.1, 2.5, 0.8, "left", False),
     "table":   _style(SERIF, 7.2, 8.3, 0.0, 1.2, "left", False),
     # every bullet line sits 0.19in in from the margin
     "refs":    _style(SERIF, 7.6, 8.2, 0.0, 0.5, "justify", False,
                       indent=0.17, first_w=TEXT_W, rest_w=TEXT_W - 0.17),
-    "bullet":  _style(SERIF, 9.0, 10.4, 0.0, 1.8, "justify", False,
+    "bullet":  _style(SERIF, 9.0, 10.2, 0.0, 1.4, "justify", False,
                       indent=0.19, first_w=TEXT_W, rest_w=TEXT_W),
     "eq":      _style(SERIF, 9.2, 11.0, 3.0, 1.2, "center", False),
     "eqnote":  _style(SERIF, 7.6, 9.0, 0.0, 2.5, "center", False),
@@ -172,7 +176,7 @@ def build_items():
     add("authors", ", ".join(C.AUTHORS))
     add("affil", C.AFFILIATION)
 
-    abstract_text = " ".join(C.ABSTRACT)
+    abstract_text = ABSTRACT_TEXT
     add("abstract", "Abstract—" + abstract_text)
     add("keywords", "Index Terms—" + C.KEYWORDS)
 
@@ -538,7 +542,7 @@ def build_docx(path):
     para(doc, C.TITLE, "title")
     para(doc, ", ".join(C.AUTHORS), "authors")
     para(doc, C.AFFILIATION, "affil")
-    para(doc, "Abstract—" + " ".join(C.ABSTRACT), "abstract")
+    para(doc, "Abstract—" + ABSTRACT_TEXT, "abstract")
     para(doc, "Index Terms—" + C.KEYWORDS, "keywords")
 
     # Nomenclature
@@ -718,7 +722,7 @@ def build_html_mirror(path):
     out.append(f"<p class='title'>{_esc(C.TITLE)}</p>")
     out.append(f"<p class='authors'>{_esc(', '.join(C.AUTHORS))}</p>")
     out.append(f"<p class='affil'>{_esc(C.AFFILIATION)}</p>")
-    out.append(f"<p class='abs'>Abstract\u2014{_esc(' '.join(C.ABSTRACT))}</p>")
+    out.append(f"<p class='abs'>Abstract\u2014{_esc(ABSTRACT_TEXT)}</p>")
     out.append(f"<p class='kw'>Index Terms\u2014{_esc(C.KEYWORDS)}</p>")
     out.append(f"<p class='cap'>TABLE I. NOMENCLATURE.</p>")
     out.append("<table>")
@@ -839,7 +843,7 @@ def main():
         (payload if isinstance(payload, str) else " ".join(payload))
         for k, payload in C.BODY if k in ("p", "h1", "h2", "bullets")
     )
-    abstract_text = " ".join(C.ABSTRACT)
+    abstract_text = ABSTRACT_TEXT
     all_text = C.TITLE + " " + abstract_text + " " + body_text + " " + " ".join(C.REFERENCES)
 
     words_body = len(body_text.split())
@@ -922,6 +926,30 @@ def main():
           if re.match(r"^\[\d\.\d+, \d\.\d+\]$", c)]
     n_refs = len(C.REFERENCES)
 
+    # order of first citation
+    _parts = []
+    for _k, _p in C.BODY:
+        if _k in ("p", "h1", "h2", "h1s", "caption"):
+            _parts.append(_p)
+        elif _k == "bullets":
+            _parts.extend(_p)
+        elif _k == "fig":
+            _parts.append(_p["caption"])
+    _body_for_cit = " ".join(_parts)
+    _first = {}
+    for _m in re.finditer(r"\[(\d+)\]", _body_for_cit):
+        _n = int(_m.group(1))
+        if _n not in _first:
+            _first[_n] = _m.start()
+    cit_order = sorted(_first, key=lambda n: _first[n])
+
+    figs_cited = sum(1 for i in range(1, len(figs) + 1)
+                     if re.search(r"[Ff]ig(?:ure)?\.?\s*%d\b" % i, _body_for_cit))
+    tbls_cited = sum(1 for t_ in ("II", "III", "IV", "V", "VI")
+                     if re.search(r"Table\s+%s\b" % t_, _body_for_cit))
+    eqs_cited = sum(1 for n in range(1, len(eqs) + 1)
+                    if re.search(r"\(%d\)" % n, _body_for_cit))
+
     checks = [
         ("numbered equations", len(eqs) >= 3,
          f"{len(eqs)} equations, (1)-({eqs[-1]['num']})"),
@@ -954,6 +982,29 @@ def main():
          f"{overlap_old:.2f}%"),
         ("AI-phrase scan", not ai_hits,
          f"{len(ai_hits)} hits; burstiness {burst:.3f}"),
+
+        # ---- IEEE submission-compliance checks ----
+        ("references in citation order", cit_order == list(range(1, n_refs + 1)),
+         "numbered in order of first appearance"),
+        ("every figure cited in the text", figs_cited == len(figs),
+         f"{figs_cited}/{len(figs)} figures referenced"),
+        ("every table cited in the text", tbls_cited >= len(tbls),
+         f"{tbls_cited}/{len(tbls)} tables referenced"),
+        ("every equation referenced in the text", eqs_cited == len(eqs),
+         f"{eqs_cited}/{len(eqs)} equations referenced"),
+        ("index terms alphabetical",
+         [k.strip() for k in C.KEYWORDS.split(",")] ==
+         sorted((k.strip() for k in C.KEYWORDS.split(",")), key=str.lower),
+         f"{len(C.KEYWORDS.split(','))} terms, sorted"),
+        ("abstract one paragraph, 150-250 words",
+         isinstance(C.ABSTRACT, str) and 150 <= len(C.ABSTRACT.split()) <= 250,
+         f"{len(C.ABSTRACT.split())} words, 1 paragraph"),
+        ("figure caption style 'Fig. N.'",
+         all(f["caption"].startswith("Fig. %d." % (i + 1))
+             for i, f in enumerate(figs)),
+         ", ".join(f["caption"][:7] for f in figs)),
+        ("author biography", any("BIOGRAPHY" in h for h in heads),
+         "author biography present"),
     ]
     all_ok = True
     for name, ok, detail in checks:
