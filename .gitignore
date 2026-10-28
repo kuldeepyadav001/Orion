@@ -62,3 +62,6 @@ docs/*.pptx
 docs/*.pdf
 scripts/*[pP][aA][pP][eE][rR]*
 
+
+# local scratch
+.commit-message.txt

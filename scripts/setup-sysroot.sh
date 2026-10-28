@@ -26,7 +26,7 @@
 
 set -euo pipefail
 
-SYSROOT="${ORION_SYSROOT:-$HOME/sysroot}"
+SYSROOT="${ORION_SYSROOT:-${ORION_BUILD_ROOT:-/usr/local/orion-build}/sysroot}"
 DEBS="$SYSROOT/debs"
 ROOT="$SYSROOT/root"
 MIRROR_MAIN="http://deb.debian.org/debian/pool/main"
@@ -217,28 +217,75 @@ PYEOF
 
   cat > "$DEBS/.fetch.sh" <<'FETCHEOF'
 #!/bin/bash
+# Fetch one .deb, preferring the exact version the index names.
+#
+#   $1 = "pool/path\tsha256\tfilename"
+#   $2 = the debs directory
+#
+# The index and the pool drift apart: a point release can be superseded
+# and removed from the pool while the index still names it. When that
+# happens the exact URL 404s, so fall back to the newest file the pool
+# still holds for the same package. A substituted file is recorded, and
+# the substitution is reported by the caller — it is a patch release of
+# the same upstream version, not a different library.
 IFS=$'\t' read -r path sha name <<< "$1"
 out="$2/$name"
 [ -f "$out" ] && exit 0
+
+verify() {
+  [ "$(sha256sum "$1" | cut -d' ' -f1)" = "$sha" ]
+}
+
 for base in "http://deb.debian.org/debian" \
             "http://security.debian.org/debian-security" \
             "http://deb.debian.org/debian-security"; do
-  if curl -sSL --fail --retry 2 -o "$out.tmp" "$base/$path" 2>/dev/null; then
-    if [ "$(sha256sum "$out.tmp" | cut -d' ' -f1)" = "$sha" ]; then
+  if curl -sSL --fail --retry 2 -o "$out.tmp" "$base/$path" 2>/dev/null && verify "$out.tmp"; then
+    mv "$out.tmp" "$out"
+    exit 0
+  fi
+  rm -f "$out.tmp"
+done
+
+# Fallback: the pool has a newer point release of the same package.
+prefix="${name%%_*}"
+dir="$(dirname "$path")"
+for base in "http://deb.debian.org/debian" \
+            "http://security.debian.org/debian-security"; do
+  cand=$(curl -s "$base/$dir/" 2>/dev/null \
+    | grep -oE "${prefix}_[^\"]*_(amd64|all)\.deb" | sort -V | tail -1)
+  [ -n "$cand" ] || continue
+  if curl -sSL --fail --retry 2 -o "$out.tmp" "$base/$dir/$cand" 2>/dev/null; then
+    if dpkg-deb -I "$out.tmp" >/dev/null 2>&1; then
       mv "$out.tmp" "$out"
+      echo "$name -> $cand" >> "$2/.substituted"
       exit 0
     fi
   fi
   rm -f "$out.tmp"
 done
-exit 1
+
+echo "$name" >> "$2/.failed"
+exit 0
 FETCHEOF
   chmod +x "$DEBS/.fetch.sh"
+  rm -f "$DEBS/.failed" "$DEBS/.substituted"
 
   echo "  downloading ..."
-  xargs -P 16 -d '\n' -I{} "$DEBS/.fetch.sh" "{}" "$DEBS" < "$DEBS/.fetchlist"
+  # `set -e` is active, so the pipeline's status is explicitly discarded:
+  # a single unresolvable package must not abort the whole build.
+  xargs -P 16 -d '\n' -I{} "$DEBS/.fetch.sh" "{}" "$DEBS" < "$DEBS/.fetchlist" || true
 
   rm -f "$DEBS/.index" "$DEBS/.fetchlist" "$DEBS/.fetch.sh"
+  if [ -s "$DEBS/.substituted" ]; then
+    echo "  NOTE: $(wc -l < "$DEBS/.substituted") package(s) substituted with a newer point release:"
+    sed 's/^/    /' "$DEBS/.substituted"
+  fi
+  rm -f "$DEBS/.substituted"
+  if [ -s "$DEBS/.failed" ]; then
+    echo "  WARNING: $(wc -l < "$DEBS/.failed") package(s) could not be fetched:"
+    sed 's/^/    /' "$DEBS/.failed"
+  fi
+  rm -f "$DEBS/.failed"
   echo "  downloaded: $(ls "$DEBS"/*.deb 2>/dev/null | wc -l) .deb files"
 else
   echo "  apt-get unavailable — falling back to pool scraping."
