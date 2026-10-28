@@ -74,5 +74,9 @@ scripts/*[pP][aA][pP][eE][rR]*
 !docs/build_research_paper.py
 !docs/paper_content.py
 !docs/verify_paper_docx.py
+!docs/build_paper_figures.py
+!docs/fig1_architecture.png
+!docs/fig2_retrieval.png
+!docs/fig3_context.png
 
 __pycache__/

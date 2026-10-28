@@ -34,7 +34,8 @@ import paper_content as C  # noqa: E402
 
 from docx import Document  # noqa: E402
 from docx.shared import Pt, Inches, RGBColor  # noqa: E402
-from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING  # noqa: E402
+from docx.enum.text import (WD_ALIGN_PARAGRAPH, WD_LINE_SPACING,  # noqa: E402
+                             WD_TAB_ALIGNMENT)
 from docx.enum.table import WD_TABLE_ALIGNMENT  # noqa: E402
 from docx.enum.section import WD_SECTION  # noqa: E402
 from docx.oxml.ns import qn  # noqa: E402
@@ -58,7 +59,7 @@ MONO = "Courier New"
 # Word gives every table cell a left and right inset. The layout model has
 # to subtract it or it under-counts the lines inside a cell.
 CELL_PAD = 0.06          # inches, per side
-CELL_VPAD = 1.2          # points, above and below the cell text
+CELL_VPAD = 1.0          # points, above and below the cell text
 
 # font name per style, used by the layout model
 def _style(font, size, lead, before, after, align, bold, indent=0.0,
@@ -70,22 +71,26 @@ def _style(font, size, lead, before, after, align, bold, indent=0.0,
 
 
 STYLE = {
-    "title":   _style(SERIF, 14.0, 16.4, 0.0, 3.5, "center", True),
+    "title":   _style(SERIF, 14.0, 16.4, 0.0, 3.0, "center", True),
     "authors": _style(SERIF, 10.0, 12.0, 0.0, 0.5, "center", False),
-    "affil":   _style(SERIF, 8.6, 10.4, 0.0, 5.0, "center", False),
-    "abstract": _style(SERIF, 8.8, 10.6, 0.0, 2.5, "justify", False),
-    "keywords": _style(SERIF, 8.8, 10.6, 0.0, 7.0, "justify", False),
-    "h1":      _style(SERIF, 10.0, 12.2, 5.5, 2.0, "left", True),
-    "h2":      _style(SERIF, 9.8, 11.6, 4.0, 1.5, "left", True),
-    "p":       _style(SERIF, 9.5, 11.3, 0.0, 3.1, "justify", False),
-    "mono":    _style(MONO, 7.4, 8.6, 1.5, 5.0, "left", False),
-    "caption": _style(SERIF, 8.0, 9.6, 3.0, 1.2, "left", False),
-    "table":   _style(SERIF, 7.8, 9.3, 0.0, 1.5, "left", False),
+    "affil":   _style(SERIF, 8.6, 10.4, 0.0, 4.0, "center", False),
+    "abstract": _style(SERIF, 8.4, 9.8, 0.0, 1.6, "justify", False),
+    "keywords": _style(SERIF, 8.4, 9.8, 0.0, 4.0, "justify", False),
+    "h1":      _style(SERIF, 10.0, 11.5, 4.5, 1.5, "left", True),
+    "h2":      _style(SERIF, 9.8, 11.0, 3.2, 1.2, "left", True),
+    "h1s":     _style(SERIF, 9.4, 10.5, 3.0, 1.2, "left", True),
+    "p":       _style(SERIF, 9.0, 10.4, 0.0, 1.5, "justify", False),
+    "mono":    _style(MONO, 7.0, 8.2, 1.5, 3.0, "left", False),
+    "caption": _style(SERIF, 7.6, 9.1, 2.5, 0.8, "left", False),
+    "table":   _style(SERIF, 7.2, 8.3, 0.0, 1.2, "left", False),
     # every bullet line sits 0.19in in from the margin
-    "refs":    _style(SERIF, 8.0, 9.4, 0.0, 0.9, "justify", False,
+    "refs":    _style(SERIF, 7.6, 8.2, 0.0, 0.5, "justify", False,
                       indent=0.17, first_w=TEXT_W, rest_w=TEXT_W - 0.17),
-    "bullet":  _style(SERIF, 9.5, 11.3, 0.0, 2.2, "justify", False,
+    "bullet":  _style(SERIF, 9.0, 10.4, 0.0, 1.8, "justify", False,
                       indent=0.19, first_w=TEXT_W, rest_w=TEXT_W),
+    "eq":      _style(SERIF, 9.2, 11.0, 3.0, 1.2, "center", False),
+    "eqnote":  _style(SERIF, 7.6, 9.0, 0.0, 2.5, "center", False),
+    "figcap":  _style(SERIF, 7.6, 9.1, 2.5, 4.0, "center", False),
 }
 RL_FONT = {
     (SERIF, False): "Times-Roman",
@@ -100,6 +105,17 @@ def _font_key(style):
     if f == MONO:
         return (MONO, style["bold"])
     return (SERIF, style["bold"])
+
+
+def nomenclature_rows():
+    """Two term/definition pairs per table row."""
+    terms = C.NOMENCLATURE
+    rows = []
+    for i in range(0, len(terms), 2):
+        left = terms[i]
+        right = terms[i + 1] if i + 1 < len(terms) else ("", "")
+        rows.append([left[0], left[1], right[0], right[1]])
+    return rows
 
 
 def wrap_lines(text, style, width_in=None):
@@ -160,17 +176,50 @@ def build_items():
     add("abstract", "Abstract—" + abstract_text)
     add("keywords", "Index Terms—" + C.KEYWORDS)
 
+    # Nomenclature (TABLE I)
+    add("caption", "TABLE I. NOMENCLATURE.", keep=True)
+    nom = {"cols": ["Term", "Definition", "Term", "Definition"],
+           "rows": nomenclature_rows(),
+           "widths": [0.14, 0.36, 0.14, 0.36], "rule": 2}
+    cols = nom["cols"]
+    widths = [w * TEXT_W for w in nom["widths"]]
+    st = STYLE["table"]
+    hdr_lines = max(len(wrap_lines(c, st, width_in=widths[i] - CELL_PAD))
+                    for i, c in enumerate(cols))
+    items.append((hdr_lines * st["lead"] + 2 * CELL_VPAD, None, True, "row",
+                  "table", len(cols)))
+    for row in nom["rows"]:
+        rl = max(len(wrap_lines(c, st, width_in=widths[i] - CELL_PAD))
+                 for i, c in enumerate(row))
+        items.append((rl * st["lead"] + 2 * CELL_VPAD, None, False, "row",
+                      "table", len(cols)))
+    items.append((3.0, None, False, "gap", "table", 0))
+
     for kind, payload in C.BODY:
         if kind == "h1":
             add("h1", payload, keep=True)
         elif kind == "h2":
             add("h2", payload, keep=True)
+        elif kind == "h1s":
+            add("h1s", payload, keep=True)
         elif kind == "p":
             add("p", payload)
         elif kind == "mono":
             add("mono", payload)
         elif kind == "caption":
             add("caption", payload, keep=True)
+        elif kind == "eq":
+            spec = payload
+            add("eq", spec["text"], keep=True)
+            if spec.get("note"):
+                add("eqnote", spec["note"])
+        elif kind == "fig":
+            spec = payload
+            cap_lines = len(wrap_lines(spec["caption"], STYLE["figcap"]))
+            h = (spec["height_in"] * 72.0
+                 + STYLE["figcap"]["before"] + cap_lines * STYLE["figcap"]["lead"]
+                 + STYLE["figcap"]["after"] + 2.0)
+            items.append((h, spec["caption"], True, "fig", "fig", 0))
         elif kind == "bullets":
             for i, b in enumerate(payload):
                 add("bullet", "•  " + b)
@@ -302,6 +351,55 @@ def para(doc, text, style_name, indent=0.0, first=0.0, align=None,
     pPr.append(wc)
     r = p.add_run(text)
     set_run(r, st["size"], bold=st["bold"], italic=italic, font=st["font"])
+    return p
+
+
+def add_equation(doc, spec):
+    """IEEE style: equation centred, number flush right, on one line."""
+    st = STYLE["eq"]
+    p = doc.add_paragraph()
+    pf = p.paragraph_format
+    pf.space_before = Pt(st["before"])
+    pf.space_after = Pt(0)
+    pf.line_spacing_rule = WD_LINE_SPACING.EXACTLY
+    pf.line_spacing = Pt(st["lead"])
+    pf.alignment = WD_ALIGN_PARAGRAPH.LEFT
+    pf.tab_stops.add_tab_stop(Inches(TEXT_W / 2.0), WD_TAB_ALIGNMENT.CENTER)
+    pf.tab_stops.add_tab_stop(Inches(TEXT_W), WD_TAB_ALIGNMENT.RIGHT)
+    r = p.add_run("\t" + spec["text"] + "\t(" + str(spec["num"]) + ")")
+    set_run(r, st["size"])
+    if spec.get("note"):
+        np = doc.add_paragraph()
+        npf = np.paragraph_format
+        npf.space_before = Pt(0)
+        npf.space_after = Pt(STYLE["eqnote"]["after"])
+        npf.line_spacing_rule = WD_LINE_SPACING.EXACTLY
+        npf.line_spacing = Pt(STYLE["eqnote"]["lead"])
+        npf.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        nr = np.add_run(spec["note"])
+        set_run(nr, STYLE["eqnote"]["size"])
+    return p
+
+
+def add_figure(doc, spec, base_dir):
+    path = os.path.join(base_dir, spec["file"])
+    p = doc.add_paragraph()
+    pf = p.paragraph_format
+    pf.space_before = Pt(2)
+    pf.space_after = Pt(0)
+    pf.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    r = p.add_run()
+    r.add_picture(path, width=Inches(spec["width_in"]))
+    st = STYLE["figcap"]
+    cp = doc.add_paragraph()
+    cpf = cp.paragraph_format
+    cpf.space_before = Pt(st["before"])
+    cpf.space_after = Pt(st["after"])
+    cpf.line_spacing_rule = WD_LINE_SPACING.EXACTLY
+    cpf.line_spacing = Pt(st["lead"])
+    cpf.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    cr = cp.add_run(spec["caption"])
+    set_run(cr, st["size"])
     return p
 
 
@@ -443,17 +541,29 @@ def build_docx(path):
     para(doc, "Abstract—" + " ".join(C.ABSTRACT), "abstract")
     para(doc, "Index Terms—" + C.KEYWORDS, "keywords")
 
+    # Nomenclature
+    para(doc, "TABLE I. NOMENCLATURE.", "caption", keep_next=True)
+    add_table(doc, {"cols": ["Term", "Definition", "Term", "Definition"],
+                    "rows": nomenclature_rows(),
+                    "widths": [0.14, 0.36, 0.14, 0.36], "rule": 2})
+
     for kind, payload in C.BODY:
         if kind == "h1":
             para(doc, payload, "h1", keep_next=True)
         elif kind == "h2":
             para(doc, payload, "h2", keep_next=True)
+        elif kind == "h1s":
+            para(doc, payload, "h1s", keep_next=True)
         elif kind == "p":
             para(doc, payload, "p")
         elif kind == "mono":
             para(doc, payload, "mono")
         elif kind == "caption":
             para(doc, payload, "caption", keep_next=True)
+        elif kind == "eq":
+            add_equation(doc, payload)
+        elif kind == "fig":
+            add_figure(doc, payload, HERE)
         elif kind == "bullets":
             for b in payload:
                 para(doc, "•  " + b, "bullet", indent=0.19)
@@ -559,6 +669,10 @@ def build_html_mirror(path):
                f"font-weight:bold;padding-top:{st['h1']['before']}pt;"
                f"margin:0 0 {st['h1']['after']}pt 0;"
                f"break-after:avoid;text-align:left;}}")
+    out.append(f"h3.hs{{font-size:{st['h1s']['size']}pt;line-height:{st['h1s']['lead']}pt;"
+               f"font-weight:bold;padding-top:{st['h1s']['before']}pt;"
+               f"margin:0 0 {st['h1s']['after']}pt 0;"
+               f"break-after:avoid;text-align:left;}}")
     out.append(f"h2{{font-size:{st['h2']['size']}pt;line-height:{st['h2']['lead']}pt;"
                f"font-weight:bold;font-style:italic;padding-top:{st['h2']['before']}pt;"
                f"margin:0 0 {st['h2']['after']}pt 0;"
@@ -581,6 +695,21 @@ def build_html_mirror(path):
                f"border:none;}}")
     out.append("th{font-weight:bold;border-bottom:0.5pt solid #000;}")
     out.append("tr{break-inside:avoid;}")
+    out.append(f".eq{{position:relative;text-align:center;padding-top:{st['eq']['before']}pt;"
+               f"margin:0 0 {st['eq']['after']}pt 0;font-size:{st['eq']['size']}pt;"
+               f"line-height:{st['eq']['lead']}pt;}}")
+    out.append(".eqnum{position:absolute;right:0;top:0;}")
+    out.append(f".eqnote{{font-size:{st['eqnote']['size']}pt;"
+               f"line-height:{st['eqnote']['lead']}pt;text-align:center;"
+               f"margin:0 0 {st['eqnote']['after']}pt 0;}}")
+    out.append(f".figcap{{font-size:{st['figcap']['size']}pt;"
+               f"line-height:{st['figcap']['lead']}pt;text-align:center;"
+               f"padding-top:{st['figcap']['before']}pt;"
+               f"margin:0 0 {st['figcap']['after']}pt 0;}}")
+    out.append(".figwrap{margin:2pt 0 0 0;text-align:center;}")
+    out.append(".figwrap img{width:100%;display:block;margin:0 auto;}")
+    out.append(f".bul{{padding-left:{st['bullet']['indent']}in;text-indent:0;"
+               f"margin:0 0 {st['bullet']['after']}pt 0;}}")
     out.append(f".ref{{font-size:{st['refs']['size']}pt;line-height:{st['refs']['lead']}pt;"
                f"margin:0 0 {st['refs']['after']}pt 0;"
                f"padding-left:{st['refs']['indent']}in;text-indent:-{st['refs']['indent']}in;}}")
@@ -591,22 +720,44 @@ def build_html_mirror(path):
     out.append(f"<p class='affil'>{_esc(C.AFFILIATION)}</p>")
     out.append(f"<p class='abs'>Abstract\u2014{_esc(' '.join(C.ABSTRACT))}</p>")
     out.append(f"<p class='kw'>Index Terms\u2014{_esc(C.KEYWORDS)}</p>")
+    out.append(f"<p class='cap'>TABLE I. NOMENCLATURE.</p>")
+    out.append("<table>")
+    out.append("<tr>" + "".join(
+        f"<th style='width:{w*100:.3f}%'>{_esc(c)}</th>"
+        for c, w in zip(["Term", "Definition", "Term", "Definition"],
+                        [0.14, 0.36, 0.14, 0.36])) + "</tr>")
+    for row in nomenclature_rows():
+        out.append("<tr>" + "".join(f"<td>{_esc(c)}</td>" for c in row) + "</tr>")
+    out.append("</table>")
+    out.append("<div style='height:3pt'></div>")
 
     for kind, payload in C.BODY:
         if kind == "h1":
             out.append(f"<h1>{_esc(payload)}</h1>")
         elif kind == "h2":
             out.append(f"<h2>{_esc(payload)}</h2>")
+        elif kind == "h1s":
+            out.append(f"<h3 class='hs'>{_esc(payload)}</h3>")
         elif kind == "p":
             out.append(f"<p>{_esc(payload)}</p>")
         elif kind == "mono":
             out.append(f"<pre class='mono'>{_esc(payload)}</pre>")
         elif kind == "caption":
             out.append(f"<p class='cap'>{_esc(payload)}</p>")
+        elif kind == "eq":
+            spec = payload
+            out.append(f"<p class='eq'>{_esc(spec['text'])}"
+                       f"<span class='eqnum'>({spec['num']})</span></p>")
+            if spec.get("note"):
+                out.append(f"<p class='eqnote'>{_esc(spec['note'])}</p>")
+        elif kind == "fig":
+            spec = payload
+            out.append(f"<p class='figwrap'><img src='{spec['file']}' "
+                       f"style='width:100%'></p>")
+            out.append(f"<p class='figcap'>{_esc(spec['caption'])}</p>")
         elif kind == "bullets":
             for b in payload:
-                out.append(f"<p style='padding-left:0.19in;text-indent:0'>"
-                           f"&#8226;&nbsp; {_esc(b)}</p>")
+                out.append(f"<p class='bul'>&#8226;&nbsp; {_esc(b)}</p>")
         elif kind == "table":
             spec = payload
             cols = spec["cols"]
@@ -618,7 +769,7 @@ def build_html_mirror(path):
             for row in spec["rows"]:
                 out.append("<tr>" + "".join(f"<td>{_esc(c)}</td>" for c in row) + "</tr>")
             out.append("</table>")
-            out.append(f"<p style='margin:0 0 3pt 0;line-height:3pt'>&nbsp;</p>")
+            out.append("<div style='height:3pt'></div>")
         elif kind == "refs":
             for r in C.REFERENCES:
                 out.append(f"<p class='ref'>{_esc(r)}</p>")
@@ -711,8 +862,11 @@ def main():
         if ov > ref_overlap:
             ref_overlap = ov
             ref_worst = r[:40]
-    # quoted material is only ever the title of a cited work
+    # Long quoted spans are a plagiarism signal only when the quoted text is
+    # borrowed from a cited work. Our own short quoted phrases are fine.
     quoted = re.findall(r"“([^”]{25,})”", body_text)
+    quoted_borrowed = [q for q in quoted
+                       if ngram_overlap(q, " ".join(C.REFERENCES), n=4) > 0]
 
     print("=" * 66)
     print("ORION RESEARCH PAPER - build report")
@@ -751,7 +905,63 @@ def main():
     print(f"  6-gram overlap vs old draft: {overlap_old:.2f}%")
     print(f"  6-gram overlap vs references: {ref_overlap:.2f}%  (worst: {ref_worst})")
     print(f"  long quoted spans in body  : {len(quoted)} "
-          f"(each is a cited work's title)")
+          f"(borrowed from a cited work: {len(quoted_borrowed)})")
+
+    # ------------------------------------------------------------------
+    # Publication-completeness audit
+    # ------------------------------------------------------------------
+    print("-" * 66)
+    print("PUBLICATION-COMPLETENESS AUDIT")
+    print("-" * 66)
+    eqs = [p for k, p in C.BODY if k == "eq"]
+    figs = [p for k, p in C.BODY if k == "fig"]
+    tbls = [p for k, p in C.BODY if k == "table"]
+    heads = [p for k, p in C.BODY if k in ("h1", "h1s")]
+    rq = re.findall(r"RQ\d", body_text)
+    ci = [c for p in tbls for r in p["rows"] for c in r
+          if re.match(r"^\[\d\.\d+, \d\.\d+\]$", c)]
+    n_refs = len(C.REFERENCES)
+
+    checks = [
+        ("numbered equations", len(eqs) >= 3,
+         f"{len(eqs)} equations, (1)-({eqs[-1]['num']})"),
+        ("tables (testbed + results + defects)", len(tbls) >= 4,
+         f"{len(tbls) + 1} tables including nomenclature"),
+        ("testbed / configuration table",
+         any("testbed" in (p["cols"] + [" ".join(r) for r in p["rows"]])[0].lower()
+             or any("Host OS" in " ".join(r) for r in p["rows"]) for p in tbls),
+         "host, CPU, RAM, toolchain, corpus, k"),
+        ("explicit research questions", len(set(rq)) >= 3,
+         f"{len(set(rq))} research questions: {', '.join(sorted(set(rq)))}"),
+        ("statistical treatment (n + CI)",
+         len(ci) >= 4 and re.search(r"n = \d+", body_text) is not None,
+         f"{len(ci)} Wilson 95% intervals, "
+         + (re.search(r"n = \d+", body_text) or type("", (), {"group": lambda self, i: "n"})()).group(0)),
+        ("real figures (not ASCII art)", len(figs) >= 2,
+         f"{len(figs)} PNG figures: " + ", ".join(f["file"] for f in figs)),
+        ("nomenclature", len(C.NOMENCLATURE) >= 4,
+         f"{len(C.NOMENCLATURE)} defined terms"),
+        ("back matter", all(any(h.strip().startswith(w) for h in heads)
+                            for w in ("ACKNOWLEDGMENT", "CONFLICT OF INTEREST",
+                                      "DATA AND CODE AVAILABILITY",
+                                      "ETHICS AND BROADER IMPACT")),
+         "acknowledgment, conflict of interest, data/code availability, ethics"),
+        ("references", n_refs == 30, f"{n_refs} references"),
+        ("exactly six pages", pages == 6, f"{pages} pages"),
+        ("no borrowed long quotes", len(quoted_borrowed) == 0,
+         f"{len(quoted)} quoted phrases, 0 borrowed"),
+        ("6-gram overlap vs prior draft", overlap_old < 1.0,
+         f"{overlap_old:.2f}%"),
+        ("AI-phrase scan", not ai_hits,
+         f"{len(ai_hits)} hits; burstiness {burst:.3f}"),
+    ]
+    all_ok = True
+    for name, ok, detail in checks:
+        all_ok = all_ok and ok
+        print(f"  [{'PASS' if ok else 'FAIL'}] {name:<38} {detail}")
+    print("-" * 66)
+    print(f"  COMPLETENESS: {'ALL CHECKS PASS' if all_ok else 'CHECKS FAILED'}")
+    audit_ok = all_ok
     print("=" * 66)
 
     html_path = os.path.join(HERE, "_paper_layout_check.html")
@@ -765,6 +975,8 @@ def main():
 
     build_docx(OUT)
     print(f"  wrote {OUT}  ({os.path.getsize(OUT)/1024:.0f} KB)")
+    if not audit_ok:
+        print("  WARNING: publication-completeness audit has failures")
     return pages
 
 
