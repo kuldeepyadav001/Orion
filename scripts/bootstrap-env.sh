@@ -144,10 +144,21 @@ fi
 
 echo
 echo "=== 6/6 Sidecar binaries ==="
-if [ -d "$REPO/src-tauri/binaries" ]; then
-  echo "  already present"
+# The llama.cpp sidecar lives outside the workspace and is linked in, so the
+# Tauri's build script can resolve it without the workspace carrying the
+# download. Without it the build fails with "resource path
+# `binaries/llama-server-x86_64-unknown-linux-gnu` doesn't exist".
+TRIPLE="x86_64-unknown-linux-gnu"
+case "$(uname -s)" in Linux) ;; *) TRIPLE="" ;; esac
+if [ -n "$TRIPLE" ] && [ -x "$ORION_BUILD_ROOT/sidecars/llama-server-$TRIPLE" ]; then
+  if [ ! -e "$REPO/src-tauri/binaries" ]; then
+    ln -s "$ORION_BUILD_ROOT/sidecars" "$REPO/src-tauri/binaries"
+    echo "  linked src-tauri/binaries -> $ORION_BUILD_ROOT/sidecars"
+  else
+    echo "  already present"
+  fi
 else
-  echo "  absent - run scripts/fetch-sidecars.sh if the app needs to launch"
+  echo "  absent - run scripts/fetch-sidecars.sh to download llama-server"
 fi
 
 echo

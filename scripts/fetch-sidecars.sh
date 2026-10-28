@@ -6,13 +6,24 @@
 # Tauri resolves sidecars by target triple, so the suffix is mandatory.
 # These binaries are NOT committed — see .gitignore.
 #
+# WHERE THEY ARE INSTALLED
+#
+# The binaries go to $ORION_BUILD_ROOT/sidecars and src-tauri/binaries
+# becomes a symlink to that directory. The archive unpacks to ~7 MB, which
+# is small, but the workspace snapshot has a hard budget of 10,000 files
+# and 128 MB, and every file placed there is a file the snapshot has to
+# carry. Keeping the download out of $HOME and linking it in means the
+# sidecars are always available without ever costing the workspace.
+#
 # Usage:  ./scripts/fetch-sidecars.sh [version]
 
 set -euo pipefail
 
 VERSION="${1:-b4585}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DEST="$ROOT/src-tauri/binaries"
+export ORION_BUILD_ROOT="${ORION_BUILD_ROOT:-/usr/local/orion-build}"
+DEST="$ORION_BUILD_ROOT/sidecars"
+LINK="$ROOT/src-tauri/binaries"
 mkdir -p "$DEST"
 
 TRIPLE="$(rustc -vV | awk '/^host:/ {print $2}')"
@@ -96,6 +107,13 @@ EOF
   exit 1
 fi
 echo "==> copied $LIBCOUNT shared librar$([ "$LIBCOUNT" -eq 1 ] && echo y || echo ies)"
+
+# Point the in-tree path at the out-of-tree install.
+if [ ! -e "$LINK" ] || [ -L "$LINK" ]; then
+  rm -rf "$LINK"
+  ln -s "$DEST" "$LINK"
+  echo "==> linked $LINK -> $DEST"
+fi
 
 # Tauri's sidecar mechanism copies ONLY the executable into the target
 # directory, leaving its libraries behind in src-tauri/binaries. On Windows

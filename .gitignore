@@ -9,6 +9,9 @@ src-tauri/gen/
 
 # Bundled sidecar binaries + model weights (never commit these)
 src-tauri/binaries/
+# The same path is a symlink to the out-of-tree sidecar install; the
+# trailing-slash pattern above does not match a symlink.
+src-tauri/binaries
 models/
 *.gguf
 *.bin
