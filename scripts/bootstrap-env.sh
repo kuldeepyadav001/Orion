@@ -108,12 +108,28 @@ fi
 
 echo
 echo "=== 3/6 Cargo registry ==="
+# A partially-extracted crate fails with "can't find library `cairo_sys`,
+# rename file to src/lib.rs". That is a truncated extraction, not a broken
+# crate.
+#
+# Do NOT decide this from the presence of a src/ directory. Some crates keep
+# their source at the package root - cssparser-macros ships lib.rs directly -
+# so "no src/ directory" is not evidence of damage. The tarball is the only
+# reliable reference: if the .crate file contains Rust sources and the
+# extracted copy does not, the extraction is truncated.
 if [ -d "$CARGO_HOME_DIR/registry/src" ]; then
   bad=0
   for manifest in "$CARGO_HOME_DIR"/registry/src/*/*/Cargo.toml; do
     [ -f "$manifest" ] || continue
     dir="$(dirname "$manifest")"
-    [ -d "$dir/src" ] || { echo "  truncated: $(basename "$dir")"; bad=1; }
+    name="$(basename "$dir")"
+    [ -n "$(find "$dir" -maxdepth 3 -name '*.rs' -print -quit)" ] && continue
+    tarball="$(find "$CARGO_HOME_DIR/registry/cache" -maxdepth 2 -name "$name.crate" -print -quit 2>/dev/null)"
+    [ -f "$tarball" ] || continue
+    if tar -tzf "$tarball" 2>/dev/null | grep -q '\.rs$'; then
+      echo "  truncated: $name"
+      bad=1
+    fi
   done
   if [ "$bad" -eq 1 ]; then
     rm -rf "$CARGO_HOME_DIR/registry/src"
