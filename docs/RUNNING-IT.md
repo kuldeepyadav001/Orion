@@ -225,6 +225,40 @@ opens no socket. See the voice section of `docs/PROJECT-STATE.md`.
 
 ---
 
+## Step 5c — Measuring it yourself
+
+The numbers in `docs/PROJECT-STATE.md` were produced by two harnesses that
+ship with the project. They need no weights of their own beyond the ones
+you have already fetched.
+
+**Retrieval quality against a live embedding model.** This starts the
+embedding server, scores the 30-question suite three ways, prints Wilson
+confidence intervals and a paired comparison, and stops the server again:
+
+```bash
+./scripts/run-eval.sh
+./scripts/run-eval.sh --k 6 --no-headings   # ablation
+./scripts/run-eval.sh --verbose            # per-question table
+```
+
+**Retrieval latency and the headless cold-start phases:**
+
+```bash
+cd src-tauri
+cargo run --release --bin orion_bench
+cargo run --release --bin orion_bench -- --chunks 1000,10000,25000
+```
+
+**Model latency** — cold start, time to first token, generation rate:
+
+```bash
+node scripts/bench-model.mjs ~/.local/share/orion/models/qwen2.5-0.5b-instruct-q4_k_m.gguf
+```
+
+On Windows the model path is `%APPDATA%\orion\models\`.
+
+---
+
 ## Step 6 — Run it
 
 ```bash

@@ -42,16 +42,30 @@
 | **Target hardware** | 8.0 GB physical RAM, 5.72 GB usable after iGPU reservation |
 | **Hard ceiling** | ≤ 2.0 GiB resident model RAM; ≤ 3B quantized (Q4_K_M); one model in RAM at a time |
 | **Milestones** | M0–M10 complete, M9 and M10 deployed and certified |
-| **Rust tests** | **515 passed / 0 failed** (`cargo test --lib`) |
+| **Rust tests** | **543 passed / 0 failed** (`cargo test --lib`) |
 | **JS assertions** | **54 passed / 0 failed** (`node scripts/test-suite.mjs`) |
 | **Lint** | 0 warnings, 0 errors (oxlint, 19 files) |
-| **Build** | Vite production bundle clean |
+| **Build** | Vite production bundle clean; Rust release binary builds (21 MB) |
+| **Retrieval quality** | **recall@4 0.962** against a live embedding model — the first statistically significant retrieval result in this project (§7.1) |
+| **Retrieval latency** | **13.0 ms** at 25,000 chunks, end to end (§7.6) |
+| **Model latency** | cold load **409 ms**, **31.6 tok/s** (Qwen2.5-0.5B Q4_K_M) on a 2-core host (§7.7) |
 | **Security posture** | Two-domain capability broker, 0.0% BIPIA attack success rate, zero egress |
-| **Codebase** | 25,271 LOC Rust across 51 files; 8,595 LOC JS across 19 files |
+| **Codebase** | 27,431 LOC Rust across 54 files; 8,595 LOC JS across 19 files |
 
 **Current phase:** all milestones are delivered and verified. The next work is
 post-M10 hardening, the Tier 2–5 deployment progression, and the Production
 Multi-Agent transition described in §2.4.
+
+**What changed since the last update.** The retrieval path was rebuilt around
+a real embedding model rather than a stand-in, and the measurements that came
+out of that contradicted a design decision: reciprocal-rank fusion was
+diluting a better retriever, and the production default is now dense-first
+ordering with one reserved lexical slot. A benchmark harness was added and
+found the retrieval scan was three times slower than it needed to be, and
+that the top-k selection underneath it was returning the *worst* candidates.
+Three build profiles could not be built at all inside the project's own
+memory budget; all three are fixed. Details in §7.1, §7.6, §7.7, §8.10,
+§8.11 and §8.12.
 
 ---
 
@@ -225,10 +239,13 @@ pass/fail/absent. Database (5) carried from M0, including the Serina regression.
 | Ingestion entry point | `ingest/mod.rs` | path → `IngestedDocument`, 64 MB cap |
 | SHA-256 | `hashing.rs` | opaque document ids |
 | Embeddings | `rag/embed.rs` | bge-small-en-v1.5, 384-dim, dedicated sidecar |
-| Hybrid search | `rag/search.rs` | BM25 + cosine, fused with RRF |
+| Hybrid search | `rag/search.rs` | BM25 + dense vectors, **dense-first ordering** |
 | Persistence | `rag/store.rs` | SQLite FTS5 + vector BLOBs, one file |
 | Grounded prompting | `rag/context.rs` | numbered sources, injection hardening, citations |
 | Evaluation | `rag/eval.rs` | 30-question scored suite — **the M2 exit gate** |
+| Statistics | `rag/stats.rs` | paired comparison, sign test, bootstrap CI, Wilson interval |
+| Live evaluation | `src/bin/orion_eval.rs` | scores the suite against a live embedding server |
+| Performance harness | `src/bin/orion_bench.rs` | retrieval latency at scale, cold-start phases |
 
 **Security posture — retrieved document text is untrusted data, never
 instructions.** Four layers:
@@ -256,16 +273,23 @@ tested and inert.
 - **Brute-force vector scan, no ANN index.** 384 dims over 100k chunks is
   ~38M multiply-adds — single-digit milliseconds. A personal corpus does not
   reach the size where approximate search pays for its complexity, and exact
-  search eliminates a class of silent recall bugs.
+  search eliminates a class of silent recall bugs. **This was arithmetic, so
+  it was measured**: 13.0 ms end to end at 25,000 chunks, 0.37 µs per chunk
+  scanned (§7.6).
 - **Contentless FTS5 table** (`content=''`) — text stored once in `chunks`,
   not duplicated into the index. Roughly halves database size.
 - **Separate embedding sidecar.** `llama-server` will not serve embeddings and
   chat from one process; sharing would serialise every embed behind every
   generated token. The embedding model is ~90 MB, so two processes is cheap
   even at Tier T1.
-- **RRF over score normalisation.** BM25 scores and cosine similarities are
-  not on comparable scales and normalising them is fragile. Fusing ranks is
-  scale-free.
+- **Dense-first ordering, not rank fusion.** This replaced RRF, and the
+  reason is a measurement rather than a preference: against a real embedding
+  model, fusion scores 0.885 recall@4 while the dense retriever alone scores
+  0.962 (§7.1). Fusing ranks is scale-free, but scale-free does not mean
+  free — a chunk both retrievers like outranks a chunk only the stronger one
+  liked. One slot is still reserved for the lexical ranking, because an
+  exact identifier is matched with near certainty by FTS5 and only
+  probabilistically by a sentence-embedding model.
 - **Re-ingestion is delete-then-insert.** Stale chunks are worse than missing
   ones, because stale chunks get cited.
 
@@ -899,15 +923,21 @@ milestones:
 |---|---|---|---|
 | **Compilation and linting** | Oxlint 0 warnings / Vite clean build | **PASSED** | `npm run lint` · `npm run build` |
 | **Automated logic suite** | 54/54 unit assertions green | **PASSED** | `node scripts/test-suite.mjs` |
-| **Rust unit suite** | 515/515 unit tests green | **PASSED** | `cargo test --lib` |
+| **Rust unit suite** | 543/543 unit tests green | **PASSED** | `cargo test --lib` |
 | **Rust static analysis** | Clippy clean under `-D warnings` | **PASSED** | `cargo clippy --all-targets -- -D warnings` |
+| **Release build** | Rust release binary links and runs on the sysroot | **PASSED** | `cargo build --release --bin orion` |
+| **Live embedding model** | bge-small-en-v1.5 served by llama-server, 384 dims | **PASSED** | `scripts/run-eval.sh` |
+| **Retrieval quality** | recall@4 ≥ 0.90 against a live model | **PASSED** | `scripts/run-eval.sh` — 0.962 |
+| **Retrieval latency** | end-to-end search under 50 ms at 25,000 chunks | **PASSED** | `cargo run --release --bin orion_bench` — 13.0 ms |
+| **Model latency** | cold load under 1 s, generation measured | **PASSED** | `scripts/bench-model.mjs` — 409 ms, 31.6 tok/s |
+| **Cold start, headless phases** | database + config inside their budgets | **PASSED** | `cargo run --release --bin orion_bench` |
 | **Hardware budget** | Model memory ceiling ≤ 2.0 GiB on the 8 GB target | **PASSED** | M10 hardware verification |
 | **Security containment** | Two-domain broker 0.0% BIPIA attack success rate | **PASSED** | M10 penetration testing |
 | **Orphan elimination** | Windows Job Object `KILL_ON_JOB_CLOSE` active | **PASSED** | M10 process containment |
 | **Air-gap integrity** | 100% localhost `127.0.0.1` binding | **PASSED** | M10 egress verification |
 | **Native dependency closure** | 739 Debian packages, 10/10 pkg-config, 10/10 link libs, 0 dangling `.so` symlinks | **PASSED** | `scripts/setup-sysroot.sh` |
 | **Registry integrity** | Crate truncation detected by comparison against the `.crate` tarball | **PASSED** | `54b4f78` |
-| **Codebase size** | 25,271 LOC Rust (51 files), 8,595 LOC JS (19 files), 493 `#[test]` fns / 515 cases | **PASSED** | repository survey |
+| **Codebase size** | 27,431 LOC Rust (54 files), 8,595 LOC JS (19 files), 521 `#[test]` fns / 543 cases | **PASSED** | repository survey |
 
 **Toolchain.** `source scripts/rust-env.sh` then `source scripts/sysroot-env.sh`
 before any cargo command in `src-tauri`. `scripts/bootstrap-env.sh` restores the
@@ -1034,46 +1064,94 @@ handbooks, a contract, an invoice, a runbook), k = 4. Four questions are
 unanswerable and are **excluded from these averages** — averages are over the
 26 answerable questions.
 
+#### Measured against the real embedding model
+
+`bge-small-en-v1.5-q8_0`, served by `llama-server --embedding --pooling cls`
+on 127.0.0.1, reached through the same `rag::embed::Embedder` client the
+application uses. Reproduce with `scripts/run-eval.sh`.
+
+| Configuration | recall@4 | MRR | precision@4 | recall 95% CI |
+|---|---|---|---|---|
+| **Dense-3 + lexical-1 (production)** | **0.962** | **0.804** | 0.250 | [0.811, 0.993] |
+| Dense only | 0.962 | 0.804 | 0.260 | [0.811, 0.993] |
+| Dense-2 + lexical-2 | 0.962 | 0.808 | 0.250 | [0.811, 0.993] |
+| RRF 0.5 / 2.0 (vector-leaning) | 0.923 | 0.772 | 0.250 | [0.759, 0.979] |
+| RRF 0.8 / 1.0 (**previous default**) | 0.885 | 0.760 | 0.240 | [0.710, 0.960] |
+| BM25 only | 0.731 | 0.635 | 0.301 | [0.539, 0.863] |
+
+**Paired comparison, same 26 questions, bootstrap over 10,000 resamples:**
+
+| Comparison | Δ recall@4 | 95% CI | W/L/T | sign test p | Verdict |
+|---|---|---|---|---|---|
+| Dense vs BM25 | **+0.231** | [+0.077, +0.385] | 6/0/20 | **0.031** | **significant** |
+| Dense-3+lex-1 vs BM25 | **+0.231** | [+0.077, +0.385] | 6/0/20 | **0.031** | **significant** |
+| Dense-3+lex-1 vs previous RRF default | +0.077 | [+0.000, +0.192] | 2/0/24 | 0.500 | directional |
+
+This is the **first statistically supported retrieval claim in this project**.
+Dense retrieval beats keyword retrieval on recall with a confidence interval
+that excludes zero and a sign test at p = 0.031.
+
+Recall by probe category (dense-3 + lexical-1):
+
+| Probe | recall@4 | Before, with the pseudo-embedder | What it tests |
+|---|---|---|---|
+| Disambiguation | 1.000 | 1.000 | A superseded 2019 handbook must not outrank the current one |
+| Exact | 1.000 | 0.857 | Invoice numbers, account codes, PO references |
+| HeadingScoped | 1.000 | 0.833 | The answer lives under a heading whose words are absent from the body |
+| Paraphrase | 0.625 | 0.500 | Query wording differs entirely from the document |
+
+#### What changed, and why the old numbers were wrong
+
+The figures this section used to carry came from `pseudo_embed`, a hashed
+bag-of-words projection that matches vocabulary and never meaning. It was
+never a quality claim, and the document said so — but the gap it left was
+large enough to invert a design decision:
+
+* The old hybrid (RRF 0.8/1.0) scored **0.769** recall against the
+  pseudo-embedder's **0.692**, which said "hybrid beats both retrievers, so
+  keep fusing".
+* Against the real model, dense scores **0.962** and the *same* fusion
+  scores **0.885** — the fusion is now the **worst** of the three reasonable
+  configurations.
+
+The RRF weights were a guess made when the dense side was weak. Against a
+strong dense retriever, fusing it with a weaker lexical retriever **dilutes**
+it: a chunk both retrievers like outranks a chunk only the semantic model
+liked, and the latter falls out of the four-slot window. Production now uses
+**dense-first ordering** (`rag::search::dense_first_order`) with one slot
+reserved for the lexical ranking, so an exact identifier is still reachable
+through FTS5 while the ordering stays semantic.
+
+#### The historical numbers, kept for the record
+
+Measured with `pseudo_embed` (the pseudo-embedder baseline, not a product
+figure):
+
 | Configuration | recall@4 | MRR | precision@4 |
 |---|---|---|---|
-| **Hybrid (BM25 + vectors)** | **0.769** | **0.667** | 0.202 |
+| Hybrid (BM25 + vectors) | 0.769 | 0.667 | 0.202 |
 | BM25 only | 0.731 | 0.635 | 0.301 |
 | Vectors only | 0.692 | 0.571 | 0.183 |
 | Hybrid, heading trail removed | 0.615 | 0.494 | 0.154 |
 
-Recall by probe category (hybrid):
-
-| Probe | recall@4 | What it tests |
-|---|---|---|
-| Disambiguation | 1.000 | A superseded 2019 handbook must not outrank the current one |
-| Exact | 0.857 | Invoice numbers, account codes, PO references |
-| HeadingScoped | 0.833 | The answer lives under a heading whose words are absent from the body |
-| Paraphrase | 0.500 | Query wording differs entirely from the document |
-
-**What these numbers prove.** Hybrid beats either retriever alone on recall and
-MRR. Not by a landslide, but consistently, and the two retrievers fail on
-*different* questions — which is the entire argument for fusing them. Removing
-the heading trail drops recall from 0.769 to 0.615 and collapses HeadingScoped
-recall from 0.833 to 0.167. The heading-prefix decision is now measured, not
-asserted.
-
-**What they do not prove.** The dense side here is `pseudo_embed`, a hashed
-bag-of-words stand-in, not a real model. It cannot connect "holiday" to
-"annual leave", which is exactly why Paraphrase sits at 0.500. **The honest
-read is: Paraphrase 0.500 is a floor set by the fake embedder, not a
-measurement of the product.** Re-run against a live embedding server before
-quoting any number outside this document.
+The heading trail is still worth what it was worth: removing it dropped
+recall from 0.769 to 0.615 and collapsed HeadingScoped recall from 0.833 to
+0.167. Against the real model the heading trail is worth less in relative
+terms — HeadingScoped is at 1.000 with it — but the ablation has not been
+re-run against the live model and the decision stands on the older
+measurement.
 
 **Known failures worth keeping.**
 
-- **Q12 "what is the bank account 60817244"** — BM25 alone finds this (Exact
-  1.000); hybrid loses it at k = 4 because pseudo-embedder noise crowds it out.
-  This is fusion working as designed on a bad dense signal, and should
-  disappear with a real embedder. If it survives, the fix is a score floor on
-  the dense side, not a weight change.
-- **Q17 "how do I terminate the services agreement"** — fails in every
-  configuration. The chunk says "bring this arrangement to an end"; nothing
-  lexical connects. A genuine semantic-only question.
+- **Q3 "what happens if someone is having a baby"** — fails in every
+  configuration, including dense-only. The chunk says "Primary caregivers
+  receive eighteen weeks at full pay"; nothing lexical connects and the
+  semantic model does not reach the parental-leave chunk inside four slots.
+  A genuine remaining weakness of the embedding model, not of the fusion.
+- **Q17 "how do I terminate the services agreement"** — fails in the
+  keyword-only configuration but is retrieved by dense and by every
+  dense-first configuration. The chunk says "bring this arrangement to an
+  end". This is the case the lexical slot exists for.
 
 **Metric correction.** The first version of the harness scored unanswerable
 questions as "retrieved nothing = 1.0". Every retriever scored 0.000 on all
@@ -1131,6 +1209,101 @@ and every crate is audit surface in an offline security product.
 | LLM first token | ~0.5–2 s | depends on context length |
 | LLM full reply | seconds | ~10 tok/s on target |
 | `text → speech` | ~0.1–0.5 s | not yet measured |
+
+### 7.6 Retrieval performance at scale (M2)
+
+The decision to store vectors as BLOBs in SQLite and scan them was justified
+by arithmetic, not by a measurement. `src-tauri/src/bin/orion_bench.rs` now
+measures it, on a synthetic corpus of realistic shape (20 chunks per
+document, clustered topic vectors, real FTS5 indexing), release build, on
+this host (2 cores, 1.9 GiB RAM).
+
+| Corpus | ingest | search p50 | p95 | lexical only | semantic only |
+|---|---|---|---|---|---|
+| 1,000 chunks | 0.058 ms/chunk | **0.8 ms** | 0.9 ms | 0.3 ms | 0.4 ms |
+| 10,000 chunks | 0.054 ms/chunk | **5.4 ms** | 6.3 ms | 1.5 ms | 3.7 ms |
+| 25,000 chunks | 0.056 ms/chunk | **13.0 ms** | 16.0 ms | 3.6 ms | 9.3 ms |
+
+Disk cost is **~2,174 bytes per chunk** (1,536 of which is the 384-dim
+float32 vector); a 25,000-chunk library is **51.8 MiB**.
+
+**The first measurement was much worse, and it found three defects.** The
+scan originally materialised the whole corpus as `Vec<f32>` (one allocation
+per chunk per query), computed a full cosine for every vector, and sorted the
+entire corpus. A controlled A/B in the same binary, same data, same build:
+
+| Corpus | Previous scan | New scan | Speed-up |
+|---|---|---|---|
+| 1,000 | 1.1 ms | 0.4 ms | 2.5× |
+| 10,000 | 10.7 ms | 3.7 ms | 2.9× |
+| 25,000 | 27.8 ms | 9.3 ms | 3.0× |
+
+What changed: the scan is now a single pass that scores each row's blob in
+place and keeps only the best `limit` candidates in a bounded heap; the
+similarity is a dot product rather than a cosine (every stored vector is
+L2-normalised on write, and a schema migration normalised what earlier
+versions wrote); and the database is memory-mapped so the blob is read
+without a copy.
+
+**What this does not prove.** The corpus is synthetic. Its size, chunk
+structure and query shape are realistic, but its text is not a real user's
+documents, and a real library will have longer chunks, more boilerplate and
+more near-duplicates. The scaling is linear and the constant is now small
+(0.37 µs per chunk), so the extrapolation is safe; the absolute latency for
+a real library is not measured.
+
+### 7.7 Local model latency (M1, M3)
+
+Measured with `scripts/bench-model.mjs`, which starts `llama-server` the way
+the application does — loopback, ephemeral port, bearer token, 4096-token
+context, two threads — and streams a 64-token completion.
+
+| Model | GGUF size | Cold start (weights mapped, `/health` 200) | First token | Warm TTFT | Generation |
+|---|---|---|---|---|---|
+| Qwen2.5-0.5B-Instruct Q4_K_M | 491 MB | **409 ms** | 230 ms | 34 ms | **31.6 tok/s** |
+| Qwen2.5-1.5B-Instruct Q4_K_M | 1,117 MB | **508 ms** | 703 ms | 90 ms | **11.9 tok/s** |
+
+Host: 2 × Xeon @ 2.60 GHz, 1.9 GiB RAM. The product's target is a Ryzen 5
+7520U with 8 GB, which is faster per core and has more memory bandwidth, so
+these are a **lower bound**.
+
+Three things this establishes that were previously assumptions:
+
+1. **The cold-start budget is not threatened by the model.** The M3 gate
+   requires the window in under one second; the model load is 409–508 ms and
+   it happens *after* the window is shown, which is exactly why the model is
+   deferred. Cold load barely grew between 491 MB and 1,117 MB because the
+   GGUF is memory-mapped and the pages are faulted in as they are used.
+2. **Generation scales roughly linearly with parameter count**, so the
+   Tier-1 target of Qwen2.5-3B-Instruct Q4_K_M (the model the tier
+   catalogue ships) should land near **6 tok/s and ~180 ms TTFT** on this
+   host. That is an *extrapolation*, not a measurement, and it is labelled
+   as one.
+3. **A 0.5B model is not a substitute for the 3B one.** The Tier-1 catalogue
+   must not be quietly downgraded to make the numbers look good.
+
+### 7.8 Cold start, measured phase by phase (M3)
+
+`src-tauri/src/bin/orion_bench.rs` measures the phases that do not need a
+window. The application records all five in its own startup trace
+(`presence::StartupTrace`), which is written to the log on every launch, so
+the two remaining phases are observable in the field even though they cannot
+be produced here.
+
+| Phase | Budget | Measured | Status |
+|---|---|---|---|
+| Runtime init | 250 ms | not measurable headlessly | application records it |
+| Database (fresh file + migration ladder) | 150 ms | **1.4 ms** | **measured** |
+| Database (existing file) | 150 ms | **0.2 ms** | **measured** |
+| Config (hardware profile) | 100 ms | **40.1 ms** | **measured** |
+| Tray and hotkey | 150 ms | needs a desktop session | application records it |
+| Window show | 300 ms | needs a desktop session | application records it |
+| **Sum of the budgets** | **950 ms** | | gate is 1000 ms |
+
+The two measured phases use 3% of their combined budget. The database phase
+is two orders of magnitude inside its allowance because the schema is a
+handful of `CREATE TABLE` statements and SQLite opens a file in
+microseconds.
 
 ---
 
@@ -1302,12 +1475,114 @@ Windows import, and voice normalisation / noise floor / continuous capture.
   left an empty `root/`. Fixed with `|| true` and a `.failed` list.
 - **The panic-hook race** described in §8.4.
 
+### 8.10 M2 — the fusion was diluting the better retriever
+
+Found by measurement, not by a test. The reciprocal-rank fusion weights
+(`bm25 0.8 / vector 1.0`) were a guess made when the dense side was the
+pseudo-embedder and therefore weak. Against a real embedding model the
+guess inverted the result:
+
+| Configuration | recall@4 with the real model |
+|---|---|
+| Dense only | 0.962 |
+| RRF 0.5 / 2.0 | 0.923 |
+| RRF 0.8 / 1.0 (the default) | 0.885 |
+| BM25 only | 0.731 |
+
+The mechanism: RRF rewards a chunk that *both* retrievers like, so a chunk
+that only the semantic model ranked highly falls out of the four-slot
+window. Production now uses dense-first ordering with one reserved lexical
+slot (`rag::search::dense_first_order`), and `RagStore::search`'s `limit` is
+the prompt size rather than a wider candidate pool — because `build_context`
+only ever used the first four hits, so the pool of eight was fetched and
+discarded, and a lexical hit at position 7 would never have reached the
+prompt.
+
+### 8.11 M2 — the top-k selection was inverted
+
+Writing the unit tests for the new bounded top-k selection found that the
+heap kept the **worst** candidates: the replacement condition was reversed,
+so a candidate replaced the worst entry only when it was *worse* than it.
+The tie-break also preferred the higher id.
+
+This was not a performance defect; it was a **correctness** defect that
+would have returned the least relevant chunks as the most relevant, and no
+integration test caught it because the integration path had not been
+rewritten yet. Both are fixed, and there is now a test for each: the
+selection keeps the best candidates in order, and ties break on the lower
+id regardless of input order.
+
+### 8.12 Toolchain — the build could not be run at all
+
+Three separate build defects, all found the same way: by trying to run the
+thing.
+
+1. **The debug build was killed by the OOM reaper while compiling `gtk`.**
+   The cause was rustc's debug-info generation, not GTK: `debuginfo = 1`
+   across 256 codegen units turns the build into several gigabytes of DWARF
+   for the generated bindings. The dev profile is now `debug = 0`,
+   `codegen-units = 16` — which fits inside the project's own 8 GB target
+   envelope and cut the build from an OOM death to 48 seconds.
+2. **The release build could not be built at all.** `lto = true` with
+   `codegen-units = 1` was killed by the OOM reaper while linking
+   `orion_lib`. The profile is now `lto = "thin"`, `codegen-units = 16`.
+3. **`opt-level = "s"` was the wrong trade for this product.** Size
+   optimisation disables the vectorisation of exactly the loops that
+   dominate the latency path — the retrieval scan. The release profile is
+   now `opt-level = 3`. The release binary is 21 MB.
+
+A project whose build does not fit inside its own memory budget cannot
+claim that its software runs comfortably inside it. That is the whole
+reason the profiles were changed rather than worked around.
+
 ---
 
 ## 9. ARCHITECTURE DECISIONS
 
 Significant, hard-to-reverse choices with their reasoning. Format: context →
 alternatives → decision → consequences → reversal cost.
+
+### ADR-009 — dense-first retrieval ordering, not reciprocal-rank fusion
+
+**Context.** Orion retrieves with two retrievers over the same corpus: BM25
+through SQLite FTS5, and dense vectors through a `bge-small-en-v1.5` embedding
+model. The two produce rankings on incomparable scales. Reciprocal Rank
+Fusion was the original answer: fuse the *ranks*, which is scale-free, with
+weights (`bm25 0.8 / vector 1.0`) that were a guess made when the dense side
+was a hashed bag-of-words stand-in.
+
+**Alternatives.** (a) keep RRF and re-tune the weights, (b) dense only, (c)
+dense-first with a reserved lexical slot, (d) run both retrievers and let the
+generator decide.
+
+**Decision.** (c). The semantic ranking leads; one slot of the prompt window
+is reserved for the best lexically-retrieved chunk that the semantic ranking
+did not already return. `RagStore::search`'s `limit` is the prompt size, not
+a candidate pool.
+
+**Evidence.** Measured against a live embedding model on the 26 answerable
+questions of the M2 suite: dense 0.962 recall@4, RRF 0.8/1.0 0.885, RRF
+0.5/2.0 0.923, BM25 0.731. The fusion weights were not merely untuned, they
+were pointing the wrong way: RRF rewards a chunk both retrievers like, which
+pushes a chunk only the stronger retriever liked out of the window. (a) was
+measured and is worse than (c); (b) scores the same recall but has no
+protection for exact identifiers, which a sentence-embedding model matches
+only probabilistically while FTS5 matches them almost perfectly; (d) puts a
+ranking decision inside a 3B model that cannot do it.
+
+**Consequences.** The dense retriever must actually be running for the
+ordering to be meaningful; without it the store degrades cleanly to
+keyword-only. The fusion code is kept in `rag::search` because the evaluation
+harness still uses it to score the strategy it replaced. One slot of four is
+given to a lexical retriever, so a corpus where dense retrieval is weak
+loses a quarter of its prompt window — the cost of the insurance is visible
+and bounded.
+
+**Reversal:** cheap. `dense_first_order` is one function, and the evaluation
+harness can score any ordering against the same suite. The reason to change
+it again would be a corpus where dense retrieval is measurably worse than
+lexical, which the current suite does not show and a larger, real library
+might.
 
 ### ADR-008 — persist the user turn before generation
 
@@ -1453,19 +1728,32 @@ document.
 
 - **In-app download with progress UI.** Models install via
   `scripts/fetch-model.sh`; the manager reports state but does not yet fetch.
-- **Post-load tok/s benchmark** and automatic step-down — needs real weights.
-- **Runtime GUI verification.** No display server, GTK/WebKit or weights in
-  the CI environment. Compile- and logic-verified only.
+- **Post-load tok/s benchmark** is now measured (§7.7): 31.6 tok/s for
+  Qwen2.5-0.5B Q4_K_M and 11.9 tok/s for Qwen2.5-1.5B Q4_K_M on a 2-core
+  host. **Automatic step-down** — dropping to a smaller model when the
+  measured rate is too low — is still not implemented.
+- **Runtime GUI verification.** No display server, so the window, tray and
+  hotkey have never been seen. The application now compiles and links
+  against the real sysroot (debug and release) and the Tauri glue compiles
+  for the first time, but it has still never been run.
 - **`nvidia-smi` GPU detection** — no GPU to test against.
 
 ### From M2
 
-- Nothing has run inside the Tauri app; no `cargo tauri build` in a sandbox
-  without `libwebkit2gtk-4.1-dev` or a display server.
-- No real embedding model has been loaded. Every dense number in §7.1 comes
-  from `pseudo_embed`.
-- No performance measurement on a real corpus — the brute-force scan
-  justification is arithmetic, not a benchmark.
+- **The application has never been *run*.** The release binary builds and
+  links against the 739-package sysroot, and `cargo test --lib` exercises
+  every module including `presence::tauri_glue.rs` — which had never been
+  compiled before this cycle — but there is no display server, so the window,
+  the tray icon and the global hotkey have never been seen. The two desktop
+  phases of the cold-start budget are consequently still unmeasured here.
+- **The retrieval corpus is synthetic.** §7.6 measures the scan against
+  generated documents of realistic size and shape, not against a real
+  user's library. The scaling is linear and the constant is now small, so
+  the extrapolation is safe; the absolute latency for a real library is
+  not measured.
+- The evaluation corpus is 22 chunks. A 22-chunk corpus is easy for every
+  retriever; the relative strength of dense and lexical retrieval on a
+  library of thousands of chunks is not established by it.
 - PDF extraction was verified against a `reportlab`-generated file. Real-world
   PDFs are far more varied: multi-column layouts, tables, ligatures and
   embedded subset fonts are untested and all likely to degrade quality.
@@ -1474,18 +1762,14 @@ document.
 
 ### From M3
 
-- `tauri_glue.rs` **has never been compiled** in the CI environment. It was
-  parsed with `rustc` to rule out syntax errors, and every API was verified by
-  reading the vendored crate sources (`on_shortcut`, `ShortcutEvent`,
-  `TrayIconEvent::Click`, `Menu::with_items`, `show_menu_on_left_click`,
-  `tauri-plugin-single-instance::init`) against tauri 2.11.5,
-  tauri-plugin-global-shortcut 2.3.2 and tauri-plugin-single-instance 2.4.4.
-  **Expect it to need fixes on first real build.** It is isolated behind the
-  `tauri-glue` feature so the tested logic below it compiles independently.
-- Also unverified: tray icon rendering, whether `Win+O` actually registers on
-  Windows, real cold-start timings, and every drop interaction against a real
-  file manager.
-- **The cold-start budgets in §3.4 are a design contract, not a measurement.**
+- **Tray icon rendering, whether `Win+O` actually registers on Windows, and
+  every drop interaction against a real file manager** are still unverified —
+  they need a desktop session.
+- **Two of the five cold-start phases are now measured** (§7.8): the database
+  phase at 1.4 ms against a 150 ms budget, and the config phase at 40.1 ms
+  against 100 ms. Runtime init, tray and hotkey, and window show are
+  recorded by the application's own startup trace on every launch, but
+  cannot be produced headlessly.
 
 ### From M4
 
@@ -1500,15 +1784,22 @@ document.
 
 ### Cross-cutting
 
-- The retrieval comparison is **directional, not significant** — the Wilson
-  95% intervals on the retrieval configurations overlap at n = 26, and the
-  per-question outcomes were not retained, so no paired test is possible.
+- The retrieval comparison is now **statistically supported** for the headline
+  claim — dense beats BM25 on recall@4 with a bootstrap interval that excludes
+  zero and a sign test at p = 0.031 (§7.1). The comparison against the
+  *previous* fusion default is still directional (+0.077, CI [+0.000, +0.192],
+  p = 0.500): two questions out of 26 is what separates them, and that is not
+  enough to call it significant at n = 26.
 - The evaluation host has **1.9 GiB of RAM against the 5.7 GiB usable budget**
-  the product is designed for, so the recorded figures are a lower bound on the
-  target hardware.
+  the product is designed for, on **2 slow cores against a Ryzen 5 7520U**.
+  Every recorded figure is a lower bound on the target hardware.
 - The build environment in this workspace was reset by a snapshot, so the Rust
   toolchain under `/usr/local/orion-build` must be restored with
   `scripts/bootstrap-env.sh` before `cargo` will run.
+- **Clippy is not installed in the restored toolchain**, so the clippy gate in
+  §5 was last run against the previous toolchain. The compiler's own
+  warnings are clean (`cargo build` emits none), but the clippy gate should
+  be re-run once the component is available.
 
 ---
 

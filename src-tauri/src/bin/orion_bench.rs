@@ -371,7 +371,7 @@ fn measure_scale(total_chunks: usize, chunk_size: usize, query_count: usize) {
     let mut total = Stats::new();
     let mut lex = Stats::new();
     let mut dense = Stats::new();
-    let mut semantic = Stats::new();
+    let mut legacy = Stats::new();
 
     for (q, qv) in &queries {
         let t = Instant::now();
@@ -386,9 +386,25 @@ fn measure_scale(total_chunks: usize, chunk_size: usize, query_count: usize) {
         let t = Instant::now();
         let _ = store.dense_only(qv, 4);
         dense.push(t.elapsed());
+
+        // The previous implementation, for comparison: materialise the whole
+        // corpus, compute a full cosine for every vector, then sort the
+        // whole thing. Same machine, same data, same binary — the only
+        // difference is the algorithm.
         let t = Instant::now();
-        let _ = store.search(q, qv, 4);
-        semantic.push(t.elapsed());
+        let corpus = store.all_vectors().expect("all vectors");
+        let mut scored: Vec<(i64, f32)> = corpus
+            .iter()
+            .map(|(id, v)| (*id, orion_lib::rag::search::cosine(qv, v)))
+            .filter(|(_, s)| *s > 0.0)
+            .collect();
+        scored.sort_by(|a, b| {
+            b.1.partial_cmp(&a.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(a.0.cmp(&b.0))
+        });
+        let _ = scored.iter().take(4).count();
+        legacy.push(t.elapsed());
     }
 
     println!(
@@ -403,7 +419,17 @@ fn measure_scale(total_chunks: usize, chunk_size: usize, query_count: usize) {
         "    lexical only: p50 {:.1} ms | semantic only: p50 {:.1} ms | combined: p50 {:.1} ms",
         ms(lex.p(0.50)),
         ms(dense.p(0.50)),
-        ms(semantic.p(0.50))
+        ms(total.p(0.50))
+    );
+    println!(
+        "    previous scan (materialise + cosine + full sort): p50 {:.1} ms  \
+         -> {:.1}x slower",
+        ms(legacy.p(0.50)),
+        if legacy.p(0.50) > Duration::ZERO {
+            legacy.p(0.50).as_secs_f64() / dense.p(0.50).max(Duration::from_nanos(1)).as_secs_f64()
+        } else {
+            0.0
+        }
     );
 
     let _ = std::fs::remove_dir_all(dir);

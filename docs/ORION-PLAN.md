@@ -2,8 +2,20 @@
 
 **A private, offline-first personal AI that lives on your machine, talks, sees your documents, and acts on your behalf.**
 
-**Date:** 2026-09-10 · **State:** `DESIGNING` · **Predecessor:** Serina (archived reference)
-**Status:** plan + decision gates. Nothing built yet.
+**Date:** 2026-09-10 · **Revised:** 2026-10-30 · **State:** `DELIVERED` · **Predecessor:** Serina (archived reference)
+**Status:** this is the **original plan**, kept as the record of what was
+decided and why. It is not a state document — for what has actually been
+built, measured and left open, read
+[`PROJECT-STATE.md`](PROJECT-STATE.md). Where the two disagree, the plan is
+a plan and the state file is the truth.
+
+**What changed since this plan was written.** All eleven milestones (M0–M10)
+are built and verified; §8 and §10 have been reconciled against what was
+actually delivered. The two places where the build diverged from the plan
+were the **release point** (the plan said ship at M6; the work continued to
+M10) and the **retrieval strategy** (the plan said hybrid fusion; measurement
+against a real embedding model showed dense-first ordering is better — see
+ADR-009 in the state file).
 
 ---
 
@@ -334,8 +346,8 @@ opt-in warning screen.**
 | M | Milestone | Proves | Evidence |
 |---|---|---|---|
 | **M0** | Tauri + llama-server + SQLite + streaming chat | the shell works | fresh machine, offline chat |
-| **M1** | C++ Inference Engine & Hardware Profiler | sub-second startup & tiering | 8/16/32 GB VMs each pick correctly, memory ceiling <= 2.0 GB |
-| **M2** | Hybrid RAG Engine (FTS5 BM25 + dense BGE-small vectors + lead chunk fallback) | grounded retrieval | **30-question eval set, scored** |
+| **M1** | C++ Inference Engine & Hardware Profiler | sub-second startup & tiering | ✅ 8/16/32 GB VMs each pick correctly, memory ceiling <= 2.0 GB. Generation measured: **31.6 tok/s** (0.5B Q4_K_M), **11.9 tok/s** (1.5B), cold load 409–508 ms |
+| **M2** | Hybrid RAG Engine (FTS5 BM25 + dense BGE-small vectors + lead chunk fallback) | grounded retrieval | ✅ 30-question eval set scored against a **live** `bge-small-en-v1.5`: recall@4 **0.962** (previous fusion default: 0.885). Paired sign test vs BM25 p = 0.031 |
 | **M3** | Desktop HUD & Presence (Ctrl+Shift+0 daemon, tray overlay) | reach | cold-start <1 s |
 | **M4** | Voice Loop (Whisper edge STT + neural Piper TTS) | duplex speech loop | measured round-trip per tier |
 | **M5** | **Capability Broker + 4-tier sandbox (T0–T3)** | safety *before* power | red-team: injected PDF cannot fire a tool |
@@ -351,8 +363,17 @@ opt-in warning screen.**
 - **Salted PIN Lock & React ErrorBoundary:** SHA-256 salted PIN screen lock, 8-minute inactivity timer, and top-level React diagnostic `ErrorBoundary`.
 
 **M5 before M7–M10 is non-negotiable.** The boundary gets built before anything can write.
+That ordering was kept: M5 shipped before M7, and the M5 broker is the control
+that lets M7–M10 do anything at all.
 
-**Release at M6, not M10.** Get real users on the safe half while the dangerous half matures.
+**Release at M6, not M10 — as written, this plan assumed the build would stop
+at M6.** It did not. All of M0–M10 is delivered and verified, so the release
+point is now a distribution decision rather than a scope decision: the
+installer is built (M6), the dangerous half is behind a two-domain capability
+broker with a 0.0% BIPIA attack success rate (M5, M10), and what remains
+before a public release is packaging and a desktop-session test, not more
+features. **Release at M6 was a scope-risk mitigation that the schedule has
+since overtaken; the risk it was managing is now managed by M5 instead.**
 
 ---
 
@@ -376,17 +397,44 @@ order. It is not achievable all at once.
 
 ---
 
-## 10. Decisions needed (G1–G7)
+## 10. Decision gates — closed (G1–G7)
 
-1. **G1 Name/repo** — confirm `orion`, fresh repo, Serina archived with a pointer?
-2. **G2 Core language** — Rust-only (recommended) or Python sidecar for faster start?
-3. **G3 OS priority** — Linux+Windows first (recommended), or macOS in v1?
-4. **G4 Release point** — ship at M6 without actions (recommended), or hold for M10?
-5. **G5 Voice depth** — push-to-talk hotkey only for v1, or wake word from the start?
-   *(Recommend hotkey first: always-on mic is a privacy + battery + false-trigger problem.)*
-6. **G6 Email** — read/triage/draft only (recommended), or auto-send with rules?
-7. **G7 Your hardware** — what are you developing on? It sets the default tier and what I can
-   realistically ask you to test.
+These were open when the plan was written. All seven are now settled; the
+answers are recorded here so the reasoning survives.
+
+1. **G1 Name/repo** — **closed: Orion**, a fresh repository
+   (`github.com/kuldeepyadav001/Orion`), with Serina kept as an archived
+   public reference. The plan's reasoning was right and the outcome was as
+   expected.
+2. **G2 Core language** — **closed: Rust-only, no Python sidecar.** Locked in
+   as ADR-002. The reasoning — one language for the whole core, no IPC
+   boundary between Rust and Python to defend — held up.
+3. **G3 OS priority** — **closed: Linux and Windows first**, macOS not in v1.
+   The Windows installer and packaging scripts exist; the Windows-specific
+   work (Job Objects, AppContainer, `Win+O` hotkey, PIN auto-lock) is
+   implemented but has only been exercised on Linux.
+4. **G4 Release point** — **closed by circumstance, not by decision.** The
+   plan recommended shipping at M6 without actions; the build continued to
+   M10 instead. See §8 for what that changed. If the release is cut now, it
+   is cut at M10 with the broker and the egress firewall already in place.
+5. **G5 Voice depth** — **closed: push-to-talk first, wake word deferred.**
+   The recommendation was followed and it was the right call: an always-on
+   microphone is a privacy, battery and false-trigger problem, and the
+   candidate wake-word engine (`oww-rs`) was never run, so shipping it
+   untested would have been worse than not shipping it.
+6. **G6 Email** — **closed: read, triage and draft only. Never auto-send.**
+   Rule R-5 is enforced in the broker, and the M5 quarantine keeps an
+   injected email in a separate domain where it cannot reach a tool.
+   This was the single most dangerous item on the original list and it was
+   resolved conservatively.
+7. **G7 Hardware** — **closed: 8 GB physical, 5.7 GiB usable after iGPU
+   reservation**, with a ≤ 2.0 GiB resident model ceiling and a ≤ 3B
+   quantised model. The tier matrix, the residency router and the
+   single-model-in-RAM rule are all built against it.
+
+**No gates remain open.** What is still open is listed in the state file's
+[Known Gaps](PROJECT-STATE.md#11-known-gaps--what-is-not-yet-verified)
+section, and it is a list of measurements, not of decisions.
 
 ---
 
@@ -402,6 +450,10 @@ order. It is not achievable all at once.
 - **Read and respond to email: read yes, auto-respond no.** Draft-and-review. An inbox is an
   unauthenticated input channel from the entire internet; wiring it to an agent that can act
   is the single most dangerous thing on your list.
-- **Everything at once: no.** M5 (the boundary) before M7–M10 (the power), and ship at M6.
+- **Everything at once: no.** M5 (the boundary) before M7–M10 (the power). That
+  ordering was kept, and the build went on to M10 anyway.
 
-Awaiting G1–G7.
+---
+
+*Revised 2026-10-30 against the delivered build. Current state:
+[`PROJECT-STATE.md`](PROJECT-STATE.md).*

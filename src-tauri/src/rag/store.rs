@@ -506,6 +506,35 @@ impl<'a> RagStore<'a> {
         Ok(hits)
     }
 
+    /// Every stored vector, decoded.
+    ///
+    /// This exists for the benchmark, which compares the streaming scan in
+    /// `vector_candidates` against the previous implementation — one that
+    /// materialised the whole corpus and sorted it. It is deliberately the
+    /// expensive shape: it is what the scan no longer does.
+    pub fn all_vectors(&self) -> Result<Vec<(i64, Vec<f32>)>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, embedding FROM chunks WHERE embedding IS NOT NULL")
+            .map_err(|e| OrionError::Db(format!("cannot prepare vector scan: {e}")))?;
+        let rows = stmt
+            .query_map([], |r| {
+                let id: i64 = r.get(0)?;
+                let blob: Vec<u8> = r.get(1)?;
+                Ok((id, blob))
+            })
+            .map_err(|e| OrionError::Db(format!("vector scan failed: {e}")))?;
+        let mut out = Vec::new();
+        for row in rows.flatten() {
+            if let Ok(v) = from_blob(&row.1) {
+                if v.len() == EMBED_DIM {
+                    out.push((row.0, v));
+                }
+            }
+        }
+        Ok(out)
+    }
+
     /// Keyword-only retrieval, for measuring and testing the lexical path
     /// on its own.
     ///

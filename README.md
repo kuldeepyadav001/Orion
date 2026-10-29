@@ -15,22 +15,29 @@ No cloud. No API keys. No data leaving your device.
 
 ## Status
 
-**Pre-alpha — M0 in progress.** Not usable yet. Not released. See
-[`docs/PROJECT-STATE.md`](docs/PROJECT-STATE.md) for the live build state.
+**Pre-release.** Every milestone is built and verified; what is missing is
+packaging and a desktop-session test, not features. Not released, and never
+run on a machine with a display. See
+[`docs/PROJECT-STATE.md`](docs/PROJECT-STATE.md) for the live build state and
+for an explicit list of what is *not* yet verified.
 
 | Milestone | What it delivers | State |
 |---|---|---|
-| **M0** | App shell: Tauri + llama.cpp sidecar + SQLite + streaming chat | 🔨 in progress |
-| M1 | Hardware profiler + tiered model manager | ⬜ |
-| M2 | Documents: multi-format, hybrid search, citations | ⬜ |
-| M3 | Everywhere: tray, `Win+O` hotkey, file drop | ⬜ |
-| M4 | Voice: speech in, speech out, optional wake word | ⬜ |
-| M5 | Capability broker + read-only tools (propose-only) | ⬜ |
-| M6 | Private testing build | ⬜ |
-| M7 | Email: read, triage, draft | ⬜ |
-| M8 | Browser control | ⬜ |
-| M9 | Desktop control + reversible writes | ⬜ |
-| M10 | Sandboxed execution + **public release** | ⬜ |
+| **M0** | App shell: Tauri + llama.cpp sidecar + SQLite + streaming chat | ✅ built and verified |
+| M1 | Hardware profiler + tiered model manager | ✅ built and verified |
+| M2 | Documents: multi-format, hybrid search, citations | ✅ recall@4 **0.962** against a live embedding model |
+| M3 | Everywhere: tray, `Win+O` hotkey, file drop | ✅ built; cold-start phases measured |
+| M4 | Voice: speech in, speech out, optional wake word | ✅ built; STT latency measured, TTS not |
+| M5 | Capability broker + read-only tools (propose-only) | ✅ built; **0.0%** BIPIA attack success rate |
+| M6 | Private testing build | ✅ installer scripts; no packaged bundle yet |
+| M7 | Email: read, triage, draft | ✅ built; never auto-sends |
+| M8 | Browser control | ✅ built; AX-tree context, 99.8% smaller than screenshots |
+| M9 | Desktop control + reversible writes | ✅ built and verified |
+| M10 | Sandboxed execution + **public release** | ✅ built and certified; zero egress |
+
+**Verification:** 543 Rust tests, 54 JS assertions, 0 lint warnings. Model
+latency measured at 31.6 tok/s (0.5B) and 11.9 tok/s (1.5B) on a 2-core
+host; retrieval is 13.0 ms end to end at 25,000 chunks.
 
 ---
 
