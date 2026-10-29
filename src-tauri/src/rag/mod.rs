@@ -13,9 +13,11 @@ pub mod context;
 pub mod embed;
 pub mod eval;
 pub mod search;
+pub mod stats;
 pub mod store;
 
 pub use context::{build_context, Citation, GroundedContext, GROUNDED_SYSTEM_PROMPT};
 pub use embed::{EmbedConfig, EmbedKind, Embedder, EMBED_DIM, EMBED_MODEL_ID};
 pub use search::Hit;
+pub use stats::{compare_paired, wilson_interval, PairedComparison};
 pub use store::RagStore;

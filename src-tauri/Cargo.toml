@@ -100,11 +100,21 @@ voice = ["dep:cpal"]
 
 # Dev profile tuned for low-RAM machines (8 GB dev laptop).
 # Fast incremental builds matter more than runtime speed during development.
+#
+# `debug` and `codegen-units` were changed from 1 / 256 to 0 / 16 because the
+# first full `cargo test --lib` was killed by the OOM reaper while compiling
+# `gtk` (the GTK3 bindings Tauri pulls in on Linux). The cause was rustc's
+# debug-info generation, not GTK: `debuginfo = 1` across 256 codegen units
+# turns the build into several GB of DWARF for the generated bindings.
+#
+# With `debug = 0` the build fits inside the project's own 8 GB target
+# envelope. Backtraces still carry function names and line numbers; only
+# variable inspection in a debugger is lost.
 [profile.dev]
 opt-level = 0
-debug = 1
+debug = 0
 incremental = true
-codegen-units = 256
+codegen-units = 16
 lto = false
 
 [profile.release]

@@ -54,7 +54,15 @@ pub const EMBED_MODEL_REPO: &str = "CompendiumLabs/bge-small-en-v1.5-gguf";
 pub const EMBED_DIM: usize = 384;
 
 /// How many chunks to retrieve per question before assembling context.
-const SEARCH_LIMIT: usize = 8;
+/// How many chunks to retrieve.
+///
+/// This is the *prompt* size, not a wider candidate pool: `build_context`
+/// takes the first `CONTEXT_TOP_K` hits and ignores the rest, so a larger
+/// pool was never used — it only cost SQLite work. It also has to match the
+/// prompt size, because the retrieval order reserves one of these slots for
+/// the lexical ranking; a lexical hit sitting at position 7 of an 8-candidate
+/// pool would never reach the 4-chunk prompt.
+const SEARCH_LIMIT: usize = CONTEXT_TOP_K;
 
 /// How many of those actually reach the prompt.
 const CONTEXT_TOP_K: usize = 4;

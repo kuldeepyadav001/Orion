@@ -24,6 +24,8 @@
 //! should comfortably achieve on a corpus this size; if a change drops them,
 //! the change is wrong, not the threshold.
 
+use std::collections::HashMap;
+
 use crate::rag::search::{reciprocal_rank_fusion, vector_rank, Bm25, Ranked};
 
 /// What kind of retrieval failure a question probes.
@@ -51,6 +53,59 @@ pub struct EvalQuestion {
     pub probe: Probe,
 }
 
+/// One question's outcome, retained rather than summed away.
+///
+/// An average alone cannot distinguish "hybrid wins on 3 questions" from
+/// "hybrid wins by 0.04 on 26 questions", and it cannot support a *paired*
+/// test at all. Keeping the per-question numbers is what makes the
+/// difference between a directional claim and a statistical one — see
+/// [`compare_paired`].
+#[derive(Debug, Clone)]
+pub struct QuestionOutcome {
+    pub id: u32,
+    pub question: &'static str,
+    pub probe: Probe,
+    /// 1.0 when at least one relevant chunk was retrieved.
+    pub recall: f32,
+    /// 1 / (1 + rank of the first relevant chunk), 0.0 when there was none.
+    pub reciprocal_rank: f32,
+    /// Fraction of the returned window that was relevant.
+    pub precision: f32,
+    /// The chunk ids actually returned, in rank order.
+    pub retrieved: Vec<i64>,
+    /// 0-based positions within `retrieved` that held a relevant chunk.
+    pub hit_positions: Vec<usize>,
+}
+
+impl QuestionOutcome {
+    /// The value of a chosen metric for this question.
+    pub fn metric(&self, m: Metric) -> f32 {
+        match m {
+            Metric::Recall => self.recall,
+            Metric::Mrr => self.reciprocal_rank,
+            Metric::Precision => self.precision,
+        }
+    }
+}
+
+/// Which per-question number a comparison is about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Metric {
+    Recall,
+    Mrr,
+    Precision,
+}
+
+impl Metric {
+    pub fn label(self) -> &'static str {
+        match self {
+            Metric::Recall => "recall@k",
+            Metric::Mrr => "MRR",
+            Metric::Precision => "precision@k",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct EvalReport {
     pub total: usize,
@@ -63,6 +118,9 @@ pub struct EvalReport {
     pub precision_at_k: f32,
     pub failures: Vec<(u32, &'static str, Probe)>,
     pub by_probe: Vec<(Probe, f32)>,
+    /// Per-question outcomes, in question order. Retained so that two
+    /// configurations can be compared with a paired test.
+    pub outcomes: Vec<QuestionOutcome>,
 }
 
 impl EvalReport {
@@ -87,6 +145,27 @@ impl EvalReport {
             for (id, q, p) in &self.failures {
                 s.push_str(&format!("  Q{id:<3} [{p:?}] {q}\n"));
             }
+        }
+        s
+    }
+
+    /// Render the per-question outcome table. This is the raw data a paired
+    /// comparison is computed from, so it is printed rather than summarised.
+    pub fn render_outcomes(&self) -> String {
+        let mut s = String::new();
+        s.push_str("id   probe          recall    mrr      prec     retrieved\n");
+        for o in &self.outcomes {
+            let hits: Vec<String> = o.hit_positions.iter().map(|p| p.to_string()).collect();
+            s.push_str(&format!(
+                "Q{:<3} {:<14} {:.3}     {:.3}    {:.3}    {:?} hits@{:?}\n",
+                o.id,
+                format!("{:?}", o.probe),
+                o.recall,
+                o.reciprocal_rank,
+                o.precision,
+                o.retrieved,
+                hits
+            ));
         }
         s
     }
@@ -391,6 +470,7 @@ where
     let mut precision_sum = 0.0;
     let mut failures = Vec::new();
     let mut unanswerable = 0usize;
+    let mut outcomes: Vec<QuestionOutcome> = Vec::new();
 
     let mut probe_scores: Vec<(Probe, f32, usize)> = Vec::new();
 
@@ -439,6 +519,17 @@ where
             failures.push((q.id, q.question, q.probe));
         }
 
+        outcomes.push(QuestionOutcome {
+            id: q.id,
+            question: q.question,
+            probe: q.probe,
+            recall,
+            reciprocal_rank: rr,
+            precision,
+            retrieved: got,
+            hit_positions: hit_positions,
+        });
+
         recall_sum += recall;
         rr_sum += rr;
         precision_sum += precision;
@@ -467,6 +558,7 @@ where
             .into_iter()
             .map(|(p, sum, count)| (p, sum / count as f32))
             .collect(),
+        outcomes,
     }
 }
 
@@ -507,10 +599,52 @@ pub fn pseudo_embed(text: &str, dim: usize) -> Vec<f32> {
     crate::rag::embed::normalize(v)
 }
 
+/// The fixture corpus as `(chunk_id, indexed_text)` pairs.
+///
+/// The indexed text is the heading trail followed by the body, exactly what
+/// `RagStore` writes to FTS. Exposed so that a harness can embed the corpus
+/// with a *real* model instead of the pseudo-embedder.
+pub fn corpus_docs(use_headings: bool) -> Vec<(i64, String)> {
+    CORPUS
+        .iter()
+        .map(|(id, h, b)| {
+            let text = if use_headings {
+                indexed_text(h, b)
+            } else {
+                b.to_string()
+            };
+            (*id, text)
+        })
+        .collect()
+}
+
+/// The evaluation suite.
+pub fn questions() -> &'static [EvalQuestion] {
+    QUESTIONS
+}
+
 /// Build a hybrid retriever over `CORPUS` for tests.
+///
+/// The same struct serves two very different jobs:
+///
+/// * `Harness::new` builds the **pseudo** retriever — a hashed
+///   bag-of-words projection used to prove the fusion plumbing behaves. Its
+///   numbers are never a quality claim.
+/// * `Harness::from_vectors` builds the **real** retriever over vectors
+///   produced by a live embedding server (bge-small-en-v1.5). Its numbers
+///   are the ones the M2 gate is written against.
+///
+/// Keeping one struct for both means the retrieval code under test is the
+/// same code in both cases: only the vectors change.
 pub struct Harness {
     bm25: Bm25,
     vectors: Vec<(i64, Vec<f32>)>,
+    /// Query vectors, keyed by the exact question string. Pre-computed by
+    /// the caller so the retriever stays synchronous and the evaluation can
+    /// be run without an async context.
+    query_vectors: HashMap<String, Vec<f32>>,
+    /// Dimensionality of the corpus vectors.
+    dim: usize,
     /// When false, the heading trail is stripped from the indexed text — used
     /// to prove the heading trail is actually earning its place.
     pub use_headings: bool,
@@ -518,17 +652,7 @@ pub struct Harness {
 
 impl Harness {
     pub fn new(use_headings: bool) -> Self {
-        let docs: Vec<(i64, String)> = CORPUS
-            .iter()
-            .map(|(id, h, b)| {
-                let text = if use_headings {
-                    indexed_text(h, b)
-                } else {
-                    b.to_string()
-                };
-                (*id, text)
-            })
-            .collect();
+        let docs = corpus_docs(use_headings);
 
         let vectors = docs
             .iter()
@@ -538,7 +662,50 @@ impl Harness {
         Self {
             bm25: Bm25::new(docs),
             vectors,
+            query_vectors: HashMap::new(),
+            dim: 256,
             use_headings,
+        }
+    }
+
+    /// Build a harness over vectors produced by a real embedding model.
+    ///
+    /// `query_vectors` must contain an entry for every question that will be
+    /// asked; a missing entry falls back to the pseudo-embedder, which would
+    /// silently mix two vector spaces and produce nonsense similarities.
+    /// [`Harness::missing_query_vectors`] reports what is missing so the
+    /// caller can fail loudly instead.
+    pub fn from_vectors(
+        docs: Vec<(i64, String)>,
+        vectors: Vec<(i64, Vec<f32>)>,
+        query_vectors: HashMap<String, Vec<f32>>,
+        use_headings: bool,
+    ) -> Self {
+        let dim = vectors.first().map(|(_, v)| v.len()).unwrap_or(0);
+        Self {
+            bm25: Bm25::new(docs),
+            vectors,
+            query_vectors,
+            dim,
+            use_headings,
+        }
+    }
+
+    /// Questions that have no pre-computed query vector.
+    pub fn missing_query_vectors(&self, questions: &[EvalQuestion]) -> Vec<&'static str> {
+        questions
+            .iter()
+            .filter(|q| !self.query_vectors.contains_key(q.question))
+            .map(|q| q.question)
+            .collect()
+    }
+
+    /// The vector for a query: the pre-computed one when present, otherwise
+    /// a pseudo-embedder fallback in the same dimensionality.
+    fn query_vector(&self, q: &str) -> Vec<f32> {
+        match self.query_vectors.get(q) {
+            Some(v) => v.clone(),
+            None => pseudo_embed(q, self.dim),
         }
     }
 
@@ -551,28 +718,134 @@ impl Harness {
     }
 
     pub fn vector_only(&self, q: &str, k: usize) -> Vec<i64> {
-        let qv = pseudo_embed(q, 256);
+        let qv = self.query_vector(q);
         vector_rank(&qv, &self.vectors, k)
             .into_iter()
             .map(|r| r.chunk_id)
             .collect()
     }
 
-    pub fn hybrid(&self, q: &str, k: usize) -> Vec<i64> {
+    /// Reciprocal-rank fusion with explicit weights.
+    ///
+    /// The weights are a parameter rather than a constant so that they can
+    /// be chosen by measurement. The first version of this harness hard-coded
+    /// `WEIGHT_BM25 = 0.8` / `WEIGHT_VECTOR = 1.0`, a guess made when the
+    /// dense side was a pseudo-embedder and therefore weak. Against a real
+    /// embedding model that guess is not merely untuned, it is *wrong*: it
+    /// dilutes the stronger retriever. See `docs/PROJECT-STATE.md`.
+    pub fn rrf(&self, q: &str, k: usize, w_bm25: f32, w_vector: f32) -> Vec<i64> {
         let bm: Vec<Ranked> = self.bm25.search(q, 40);
-        let qv = pseudo_embed(q, 256);
+        let qv = self.query_vector(q);
         let vc = vector_rank(&qv, &self.vectors, 40);
 
         reciprocal_rank_fusion(
-            &[
-                ("bm25", bm, crate::rag::store::WEIGHT_BM25),
-                ("vector", vc, crate::rag::store::WEIGHT_VECTOR),
-            ],
+            &[("bm25", bm, w_bm25), ("vector", vc, w_vector)],
             k,
         )
         .into_iter()
         .map(|(id, _, _)| id)
         .collect()
+    }
+
+    /// The current production configuration.
+    pub fn hybrid(&self, q: &str, k: usize) -> Vec<i64> {
+        self.rrf(
+            q,
+            k,
+            crate::rag::store::WEIGHT_BM25,
+            crate::rag::store::WEIGHT_VECTOR,
+        )
+    }
+
+    /// Dense ranking with a guaranteed number of lexical slots.
+    ///
+    /// The semantic ranking keeps the leading `k - n_lexical` slots; `n_lexical`
+    /// of the top lexical hits that the semantic ranking did not already
+    /// return are then inserted, and any remaining slots are filled from the
+    /// semantic ranking.
+    ///
+    /// The reason to have this at all is the identifier case: a query naming
+    /// an exact error code is matched lexically with near certainty, and a
+    /// small sentence-embedding model is not guaranteed to rank that chunk
+    /// highly. Reserving a slot for the lexical ranking bounds that risk
+    /// without giving BM25 a vote in the ordering of everything else.
+    pub fn dense_mixed(&self, q: &str, k: usize, n_lexical: usize) -> Vec<i64> {
+        let qv = self.query_vector(q);
+        let dense: Vec<i64> = vector_rank(&qv, &self.vectors, 40)
+            .into_iter()
+            .map(|r| r.chunk_id)
+            .collect();
+        let lexical: Vec<i64> = self
+            .bm25
+            .search(q, 40)
+            .into_iter()
+            .map(|r| r.chunk_id)
+            .collect();
+
+        let mut out: Vec<i64> = Vec::with_capacity(k);
+        let mut seen: std::collections::HashSet<i64> = std::collections::HashSet::new();
+
+        let semantic_slots = k.saturating_sub(n_lexical);
+        for id in dense.iter().take(semantic_slots) {
+            if out.len() >= k {
+                break;
+            }
+            if seen.insert(*id) {
+                out.push(*id);
+            }
+        }
+
+        let mut lexical_used = 0usize;
+        for id in &lexical {
+            if out.len() >= k || lexical_used >= n_lexical {
+                break;
+            }
+            if seen.insert(*id) {
+                out.push(*id);
+                lexical_used += 1;
+            }
+        }
+
+        for id in &dense {
+            if out.len() >= k {
+                break;
+            }
+            if seen.insert(*id) {
+                out.push(*id);
+            }
+        }
+
+        out
+    }
+
+    /// Dense-first retrieval: the semantic ranking is the result, and the
+    /// lexical ranking only fills slots the semantic ranking left empty.
+    ///
+    /// This is the opposite of fusion. Fusion asks "which document has the
+    /// best combined evidence?"; dense-first asks "what did the model think
+    /// was relevant, and did anything lexical contradict it?". When the
+    /// semantic model is good, the second question is the only one worth
+    /// asking, and fusion's answer to the first question can drag a
+    /// semantically-correct document out of the window.
+    pub fn dense_first(&self, q: &str, k: usize) -> Vec<i64> {
+        let qv = self.query_vector(q);
+        let mut out: Vec<i64> = vector_rank(&qv, &self.vectors, k)
+            .into_iter()
+            .map(|r| r.chunk_id)
+            .collect();
+
+        if out.len() < k {
+            let mut seen: std::collections::HashSet<i64> = out.iter().copied().collect();
+            for id in self.bm25.search(q, 40).into_iter().map(|r| r.chunk_id) {
+                if out.len() >= k {
+                    break;
+                }
+                if seen.insert(id) {
+                    out.push(id);
+                }
+            }
+        }
+        out
     }
 }
 

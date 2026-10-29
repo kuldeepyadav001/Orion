@@ -16,7 +16,7 @@ use rusqlite::{params, Connection};
 use crate::error::{OrionError, Result};
 use crate::ingest::IngestedDocument;
 use crate::rag::embed::{from_blob, to_blob, EMBED_DIM, EMBED_MODEL_ID};
-use crate::rag::search::{reciprocal_rank_fusion, sanitize_fts_query, vector_rank, Hit, Ranked};
+use crate::rag::search::{dense_first_order, sanitize_fts_query, vector_rank, Hit, Ranked};
 
 /// How many candidates each retriever contributes before fusion. Wider than
 /// the final result count on purpose — fusion can only reorder what it is
@@ -28,6 +28,16 @@ pub const CANDIDATES_PER_RETRIEVER: usize = 40;
 /// queries containing exact identifiers, where it wins outright anyway.
 pub const WEIGHT_VECTOR: f32 = 1.0;
 pub const WEIGHT_BM25: f32 = 0.8;
+
+/// How many of the prompt's chunk slots are reserved for the lexical
+/// ranking.
+///
+/// The semantic ranking is the better retriever once a real embedding model
+/// is loaded — measured recall@4 of 0.962 against 0.885 for the fusion it
+/// replaced — but an exact identifier is matched with near certainty by the
+/// FTS index and only probabilistically by a sentence-embedding model. One
+/// reserved slot bounds that risk at no measured cost.
+pub const LEXICAL_SLOTS: usize = 1;
 
 /// Schema version for the RAG tables, tracked separately from the chat schema
 /// so the two can evolve independently.
@@ -365,27 +375,35 @@ impl<'a> RagStore<'a> {
 
     /// Hybrid search. `query_vec` is the embedded question; `query` is its
     /// raw text for keyword matching.
+    ///
+    /// `limit` is the number of chunks that will be placed in the prompt, not
+    /// a wider candidate pool. The ordering reserves `LEXICAL_SLOTS` of
+    /// those positions for the lexical ranking, so a pool wider than the
+    /// prompt would push the lexical hit out of the window entirely. The
+    /// caller is responsible for passing the prompt's own size.
+    ///
+    /// Ordering is dense-first rather than fused; see
+    /// [`crate::rag::search::dense_first_order`] for the measurement that
+    /// decided it and for the comparison against RRF.
+    ///
+    /// When no embedding model is available `query_vec` is empty, the
+    /// semantic ranking is empty, and the result degrades cleanly to a
+    /// keyword-only search.
     pub fn search(&self, query: &str, query_vec: &[f32], limit: usize) -> Result<Vec<Hit>> {
         let bm25 = self.bm25_candidates(query, CANDIDATES_PER_RETRIEVER)?;
         let vectors = self.vector_candidates(query_vec, CANDIDATES_PER_RETRIEVER)?;
 
-        // Keep each retriever's own top score before fusion discards it.
-        // These are the only absolute signals available: RRF output is a
-        // function of rank, so it cannot distinguish "best match in a strong
-        // field" from "least bad match in a library of one".
+        // Keep each retriever's own top score. These are the only absolute
+        // signals available: a rank-based score cannot distinguish "best
+        // match in a strong field" from "least bad match in a library of
+        // one", and the relevance gate needs the distinction.
         let top_bm25 = bm25.first().map(|r| r.score).unwrap_or(0.0);
         let top_cosine = vectors.first().map(|r| r.score).unwrap_or(0.0);
 
-        let fused = reciprocal_rank_fusion(
-            &[
-                ("bm25", bm25, WEIGHT_BM25),
-                ("vector", vectors, WEIGHT_VECTOR),
-            ],
-            limit,
-        );
+        let ordered = dense_first_order(&bm25, &vectors, limit, LEXICAL_SLOTS);
 
-        let mut hits = Vec::with_capacity(fused.len());
-        for (chunk_id, score, sources) in fused {
+        let mut hits = Vec::with_capacity(ordered.len());
+        for (chunk_id, score, sources) in ordered {
             if let Some(mut hit) = self.load_hit(chunk_id)? {
                 hit.score = score;
                 hit.top_bm25 = top_bm25;

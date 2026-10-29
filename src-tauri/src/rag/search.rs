@@ -97,6 +97,117 @@ pub fn reciprocal_rank_fusion(
     fused
 }
 
+/// Order candidates **dense-first**, reserving `lexical_slots` for the
+/// lexical ranking.
+///
+/// ## Why this replaced Reciprocal Rank Fusion
+///
+/// The first version of Orion fused the two rankings with RRF at weights
+/// `bm25 0.8 / vector 1.0`. Those weights were a guess, made when the dense
+/// side was a hashed bag-of-words projection and therefore weak. Measured
+/// against a real embedding model (`bge-small-en-v1.5-q8_0`) on the 30-question
+/// evaluation suite, the guess turned out to be wrong in a way that cost real
+/// recall:
+///
+/// | strategy                | recall@4 | MRR   | precision@4 |
+/// |-------------------------|----------|-------|-------------|
+/// | BM25 only               | 0.731    | 0.635 | 0.301       |
+/// | dense only              | **0.962**| 0.804 | 0.260       |
+/// | RRF (0.8 / 1.0)         | 0.885    | 0.760 | 0.240       |
+/// | RRF (0.5 / 2.0)         | 0.923    | 0.772 | 0.250       |
+/// | dense-first (this)      | **0.962**| 0.804 | 0.260       |
+/// | dense-3 + lexical-1     | **0.962**| 0.804 | 0.250       |
+///
+/// Paired over the same 26 answerable questions, dense beat BM25 on recall
+/// with a bootstrap interval that excludes zero ([+0.077, +0.385]) and a sign
+/// test p of 0.031; dense-first beat the RRF fusion it replaced by +0.077
+/// recall, though that difference alone is not significant at n = 26.
+///
+/// The mechanism is visible in the failure list: fusion boosts a chunk that
+/// both retrievers like, which pushes a chunk that *only* the semantic model
+/// liked out of the window. Fusing a strong retriever with a weaker one
+/// dilutes the strong one.
+///
+/// ## The reserved lexical slot
+///
+/// One slot is still reserved for the lexical ranking. An exact identifier —
+/// an error code, a policy number, a version string — is matched with near
+/// certainty by the FTS index and only probabilistically by a
+/// sentence-embedding model, and a real user's library is far larger than the
+/// 20-chunk evaluation corpus. The reservation costs nothing measurable
+/// (recall stays at 0.962) and bounds that risk.
+///
+/// `lexical_slots` is counted from the *context window*, not from the
+/// candidate pool: a lexical hit placed at position 7 of an 8-candidate pool
+/// would never reach a 4-chunk prompt.
+pub fn dense_first_order(
+    bm25: &[Ranked],
+    vectors: &[Ranked],
+    limit: usize,
+    lexical_slots: usize,
+) -> Vec<(i64, f32, Vec<&'static str>)> {
+    if limit == 0 {
+        return Vec::new();
+    }
+
+    let vector_ids: std::collections::HashSet<i64> =
+        vectors.iter().map(|r| r.chunk_id).collect();
+    let lexical_ids: std::collections::HashSet<i64> = bm25.iter().map(|r| r.chunk_id).collect();
+
+    // A chunk both retrievers found is the strongest signal there is.
+    let provenance = |id: i64| -> Vec<&'static str> {
+        let by_vector = vector_ids.contains(&id);
+        let by_lexical = lexical_ids.contains(&id);
+        match (by_vector, by_lexical) {
+            (true, true) => vec!["bm25", "vector"],
+            (true, false) => vec!["vector"],
+            (false, true) => vec!["bm25"],
+            (false, false) => Vec::new(),
+        }
+    };
+
+    let mut seen: std::collections::HashSet<i64> = std::collections::HashSet::new();
+    let mut out: Vec<(i64, f32, Vec<&'static str>)> = Vec::with_capacity(limit);
+
+    // 1. The semantic ranking leads.
+    let semantic_slots = limit.saturating_sub(lexical_slots);
+    for r in vectors.iter().take(semantic_slots) {
+        if out.len() >= limit {
+            break;
+        }
+        if seen.insert(r.chunk_id) {
+            out.push((r.chunk_id, r.score, provenance(r.chunk_id)));
+        }
+    }
+
+    // 2. The reserved lexical slots, best lexical hit first.
+    let mut lexical_used = 0usize;
+    for r in bm25 {
+        if lexical_used >= lexical_slots || out.len() >= limit {
+            break;
+        }
+        if seen.insert(r.chunk_id) {
+            out.push((r.chunk_id, r.score, provenance(r.chunk_id)));
+            lexical_used += 1;
+        }
+    }
+
+    // 3. Fill any remaining slots from the semantic ranking, then from the
+    //    lexical one. The lexical fallback matters when there is no
+    //    embedding model at all: the reserved slot must not be the *only*
+    //    slot the keyword index is allowed to fill.
+    for r in vectors.iter().chain(bm25.iter()) {
+        if out.len() >= limit {
+            break;
+        }
+        if seen.insert(r.chunk_id) {
+            out.push((r.chunk_id, r.score, provenance(r.chunk_id)));
+        }
+    }
+
+    out
+}
+
 /// Cosine similarity between two equal-length vectors.
 pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() || a.is_empty() {
@@ -298,6 +409,75 @@ mod tests {
     }
 
     /* ---------- fusion ---------- */
+
+    fn ranked(ids: &[i64]) -> Vec<Ranked> {
+        ids.iter()
+            .enumerate()
+            .map(|(rank, id)| Ranked {
+                chunk_id: *id,
+                rank,
+                score: 1.0 - (rank as f32 * 0.1),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn dense_first_puts_the_semantic_ranking_first() {
+        let bm25 = ranked(&[10, 11]);
+        let vectors = ranked(&[1, 2, 3]);
+        let out = dense_first_order(&bm25, &vectors, 4, 1);
+        let ids: Vec<i64> = out.iter().map(|(id, _, _)| *id).collect();
+        assert_eq!(ids, vec![1, 2, 3, 10], "semantic leads, one lexical slot follows");
+    }
+
+    #[test]
+    fn dense_first_reserves_the_lexical_slot_inside_the_window() {
+        let bm25 = ranked(&[10, 11, 12]);
+        let vectors = ranked(&[1, 2, 3, 4, 5]);
+        // Five slots, one reserved: four semantic, one lexical.
+        let out = dense_first_order(&bm25, &vectors, 5, 1);
+        let ids: Vec<i64> = out.iter().map(|(id, _, _)| *id).collect();
+        assert_eq!(ids, vec![1, 2, 3, 4, 10]);
+        assert!(
+            !ids[..4].contains(&10),
+            "the lexical hit must land inside the prompt window, not after it"
+        );
+    }
+
+    #[test]
+    fn dense_first_marks_a_chunk_found_by_both_retrievers() {
+        let bm25 = ranked(&[7]);
+        let vectors = ranked(&[7, 1]);
+        let out = dense_first_order(&bm25, &vectors, 2, 1);
+        assert_eq!(out[0].2, vec!["bm25", "vector"]);
+    }
+
+    #[test]
+    fn dense_first_degrades_to_keyword_only_without_an_embedding_model() {
+        let bm25 = ranked(&[10, 11, 12]);
+        let out = dense_first_order(&bm25, &[], 4, 1);
+        let ids: Vec<i64> = out.iter().map(|(id, _, _)| *id).collect();
+        assert_eq!(ids, vec![10, 11, 12]);
+        assert!(out.iter().all(|(_, _, s)| s == &vec!["bm25"]));
+    }
+
+    #[test]
+    fn dense_first_never_repeats_a_chunk() {
+        let bm25 = ranked(&[1, 2, 3]);
+        let vectors = ranked(&[1, 2, 3, 4]);
+        let out = dense_first_order(&bm25, &vectors, 6, 2);
+        let mut ids: Vec<i64> = out.iter().map(|(id, _, _)| *id).collect();
+        let before = ids.len();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), before, "a chunk must appear once");
+    }
+
+    #[test]
+    fn dense_first_of_an_empty_library_is_empty() {
+        assert!(dense_first_order(&[], &[], 4, 1).is_empty());
+        assert!(dense_first_order(&ranked(&[1]), &[], 0, 1).is_empty());
+    }
 
     #[test]
     fn fusion_rewards_agreement_between_retrievers() {
