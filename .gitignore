@@ -56,27 +56,13 @@ npm-debug.log*
 # on one platform.
 src-tauri/Cargo.lock
 
-# Private research papers & enterprise presentations (untracked)
-docs/*[pP][aA][pP][eE][rR]*
-docs/*[pP][rR][eE][sS][eE][nN][tT][aA][tT][iI][oO][nN]*
-docs/*[rR][eE][sS][eE][aA][rR][cC][hH]*
+# Local documents and generated artefacts (untracked)
 docs/*.docx
 docs/*.pptx
 docs/*.pdf
-scripts/*[pP][aA][pP][eE][rR]*
 
 
 # local scratch
 .commit-message.txt
-
-# The paper source is code, not a deliverable binary: it must be versioned
-# so the .docx can be rebuilt and audited.
-!docs/build_research_paper.py
-!docs/paper_content.py
-!docs/verify_paper_docx.py
-!docs/build_paper_figures.py
-!docs/fig1_architecture.png
-!docs/fig2_retrieval.png
-!docs/fig3_context.png
 
 __pycache__/
