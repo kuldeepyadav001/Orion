@@ -76,4 +76,5 @@ across boundaries.
 **Dev profile tuned for 8 GB.** `opt-level=0`, `lto=false`, `codegen-units=256`,
 `incremental=true`. Release uses `opt-level="s"` + LTO + strip for a small binary.
 
-See [`DECISIONS.md`](DECISIONS.md) for the reasoning behind each.
+See the architecture-decisions section of
+[`PROJECT-STATE.md`](PROJECT-STATE.md) for the reasoning behind each.

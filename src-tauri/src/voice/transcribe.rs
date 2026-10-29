@@ -3,9 +3,9 @@
 //! ## Why the CLI and not the server
 //!
 //! `whisper-server` exists and speaks HTTP, which would match the
-//! `llama-server` pattern already used here. The probe in
-//! `docs/M4-VOICE-FINDINGS.md` rejected it on security grounds, and the
-//! reasoning is worth keeping next to the code:
+//! `llama-server` pattern already used here. The probe recorded in the voice
+//! section of `docs/PROJECT-STATE.md` rejected it on security grounds, and
+//! the reasoning is worth keeping next to the code:
 //!
 //! * It has **no authentication at all**. `llama-server` takes `--api-key`
 //!   and Orion generates a per-session token; `whisper-server --help` lists
@@ -422,7 +422,8 @@ mod tests {
     #[test]
     fn transcription_does_not_use_the_http_server() {
         // whisper-server has no authentication and binds beyond loopback
-        // despite --host; see the module docs and M4-VOICE-FINDINGS.md.
+        // despite --host; see the module docs and the voice section of
+        // docs/PROJECT-STATE.md.
         // Structural guard so a future change cannot quietly reintroduce an
         // unauthenticated network service into an offline-first product.
         // Production code only, comments stripped. The module docs explain

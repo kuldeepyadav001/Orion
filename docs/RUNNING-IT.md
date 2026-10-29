@@ -221,7 +221,7 @@ missing instead of doing nothing.
 authentication of any kind and does not honour `--host` — started on
 127.0.0.1 it also binds the LAN interface, so it would expose an
 unauthenticated transcription service to anyone on your network. The CLI
-opens no socket. See `docs/M4-VOICE-FINDINGS.md`.
+opens no socket. See the voice section of `docs/PROJECT-STATE.md`.
 
 ---
 

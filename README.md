@@ -83,8 +83,9 @@ One app. One database file. Sidecars spawned on `127.0.0.1` with a per-session t
 | STT / TTS | whisper.cpp / Piper | No Python runtime anywhere |
 | Browser | Playwright (accessibility tree) | Deterministic refs, not pixel guessing |
 
-Full reasoning in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and
-[`docs/DECISIONS.md`](docs/DECISIONS.md).
+Full reasoning in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and the
+architecture-decisions section of
+[`docs/PROJECT-STATE.md`](docs/PROJECT-STATE.md).
 
 ---
 
@@ -164,10 +165,9 @@ Targets Windows and Linux first; macOS support lands after v1.
 
 | Document | Purpose |
 |---|---|
-| [`docs/PROJECT-STATE.md`](docs/PROJECT-STATE.md) | Live state, risks, next actions |
+| [`docs/PROJECT-STATE.md`](docs/PROJECT-STATE.md) | **Master state record** — milestones, verification, measured results, defect history, decisions, known gaps |
 | [`docs/ORION-PLAN.md`](docs/ORION-PLAN.md) | Full plan, scope, milestones |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | System design |
-| [`docs/DECISIONS.md`](docs/DECISIONS.md) | Decision log with rationale |
 | [`docs/SECURITY.md`](docs/SECURITY.md) | Threat model, reporting |
 
 ---

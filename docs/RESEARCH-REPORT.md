@@ -150,7 +150,7 @@ Backup becomes "copy one file." Uninstall becomes "delete one folder."
 Redis's job (session cache) does not exist when there's no network hop.
 
 If you ever exceed ~100k chunks, LanceDB is the documented migration target. Note it in
-DECISIONS.md and move on.
+the decision log in `PROJECT-STATE.md` and move on.
 
 Keep Postgres **only** if you genuinely intend multi-user. For a personal AI you do not.
 

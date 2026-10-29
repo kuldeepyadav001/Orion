@@ -48,7 +48,7 @@ esac
 # whisper-cli, NOT whisper-server. The server has no authentication of any
 # kind and does not honour --host: started on 127.0.0.1 it also binds the LAN
 # interface, so it exposes an unauthenticated transcription service to the
-# local network. See docs/M4-VOICE-FINDINGS.md.
+# local network. See the voice section of docs/PROJECT-STATE.md.
 BIN="$(find "$TMP/x" -type f -name "whisper-cli${EXT}" | head -1)"
 if [ -z "$BIN" ]; then
   echo "whisper-cli${EXT} not found inside the archive" >&2
