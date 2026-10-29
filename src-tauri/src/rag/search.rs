@@ -369,28 +369,138 @@ pub fn tokenize(s: &str) -> Vec<String> {
 }
 
 /// Rank vectors by cosine similarity to a query vector.
-pub fn vector_rank(query: &[f32], corpus: &[(i64, Vec<f32>)], limit: usize) -> Vec<Ranked> {
-    let mut scored: Vec<(i64, f32)> = corpus
-        .iter()
-        .map(|(id, v)| (*id, cosine(query, v)))
-        .filter(|(_, s)| *s > 0.0)
-        .collect();
+/// Dot product of two L2-normalised vectors.
+///
+/// For normalised inputs this *is* the cosine similarity, and it is three
+/// times cheaper: the norms are not recomputed for every candidate. Every
+/// vector Orion stores is normalised on the way in (`RagStore::upsert_document`
+/// normalises, and the schema migration normalises what older versions
+/// wrote), so the similarity can be a plain dot product.
+pub fn dot_normalized(a: &[f32], b: &[f32]) -> f32 {
+    if a.len() != b.len() || a.is_empty() {
+        return 0.0;
+    }
+    let mut dot = 0.0f32;
+    for i in 0..a.len() {
+        dot += a[i] * b[i];
+    }
+    dot
+}
 
-    scored.sort_by(|a, b| {
-        b.1.partial_cmp(&a.1)
+/// Dot product against a little-endian f32 blob, without decoding it into a
+/// vector first.
+///
+/// `f32::from_le_bytes` is a bit pattern copy that the compiler turns into a
+/// single load on a little-endian host, so this costs the same as reading a
+/// `&[f32]` while staying entirely safe Rust and allocating nothing.
+pub fn dot_normalized_le_bytes(a: &[f32], bytes: &[u8]) -> f32 {
+    if bytes.len() != a.len() * 4 {
+        return 0.0;
+    }
+    let mut dot = 0.0f32;
+    for (x, c) in a.iter().zip(bytes.chunks_exact(4)) {
+        dot += x * f32::from_le_bytes([c[0], c[1], c[2], c[3]]);
+    }
+    dot
+}
+
+/// A scored candidate, ordered so that the *worst* one sorts highest.
+///
+/// `BinaryHeap` is a max-heap, and a bounded top-k selection wants to pop
+/// the worst candidate first, so the ordering is deliberately reversed.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Scored {
+    id: i64,
+    score: f32,
+}
+
+impl Eq for Scored {}
+
+impl Ord for Scored {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        // The score comparison is reversed so that a *higher* score compares
+        // as less — better candidates sort lower, which is what turns this
+        // into the min-heap a bounded top-k needs. The tie-break follows
+        // the same convention: a lower id is better, so it compares as
+        // less too.
+        other
+            .score
+            .partial_cmp(&self.score)
             .unwrap_or(std::cmp::Ordering::Equal)
-            .then(a.0.cmp(&b.0))
+            .then_with(|| self.id.cmp(&other.id))
+    }
+}
+
+impl PartialOrd for Scored {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+/// Select the `limit` highest-scoring candidates from a stream.
+///
+/// A full sort is O(n log n) on every query. A bounded heap is O(n log k) and
+/// never allocates more than `limit` entries. At 25,000 chunks that is the
+/// difference between a query that takes most of a second and one that takes
+/// a few milliseconds.
+pub fn top_k_by_score<I>(candidates: I, limit: usize) -> Vec<Ranked>
+where
+    I: IntoIterator<Item = (i64, f32)>,
+{
+    if limit == 0 {
+        return Vec::new();
+    }
+    let mut heap: std::collections::BinaryHeap<Scored> = std::collections::BinaryHeap::new();
+
+    for (id, score) in candidates {
+        if score <= 0.0 {
+            continue;
+        }
+        let s = Scored { id, score };
+        if heap.len() < limit {
+            heap.push(s);
+        } else if let Some(worst) = heap.peek() {
+            // `Scored` orders better candidates as *less*, so the heap's
+            // greatest element is the worst one kept. The candidate replaces
+            // it only when it is strictly better: `s < worst`.
+            if s < *worst {
+                heap.pop();
+                heap.push(s);
+            }
+        }
+    }
+
+    let mut items: Vec<Scored> = heap.into_iter().collect();
+    // The heap pops the worst first; the result must be best first.
+    items.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.id.cmp(&b.id))
     });
-    scored
+
+    items
         .into_iter()
-        .take(limit)
         .enumerate()
-        .map(|(rank, (chunk_id, score))| Ranked {
-            chunk_id,
+        .map(|(rank, s)| Ranked {
+            chunk_id: s.id,
             rank,
-            score,
+            score: s.score,
         })
         .collect()
+}
+
+pub fn vector_rank(query: &[f32], corpus: &[(i64, Vec<f32>)], limit: usize) -> Vec<Ranked> {
+    // The corpus vectors are L2-normalised (the embedder normalises, and
+    // the store normalises again on write), so the dot product is the
+    // cosine similarity.
+    let q = crate::rag::embed::normalize(query.to_vec());
+    top_k_by_score(
+        corpus
+            .iter()
+            .map(|(id, v)| (*id, dot_normalized(&q, v))),
+        limit,
+    )
 }
 
 #[cfg(test)]
@@ -477,6 +587,62 @@ mod tests {
     fn dense_first_of_an_empty_library_is_empty() {
         assert!(dense_first_order(&[], &[], 4, 1).is_empty());
         assert!(dense_first_order(&ranked(&[1]), &[], 0, 1).is_empty());
+    }
+
+    #[test]
+    fn dot_product_matches_cosine_for_normalised_vectors() {
+        let a = crate::rag::embed::normalize(vec![0.3, 0.9, 0.1, 0.4]);
+        let b = crate::rag::embed::normalize(vec![0.8, 0.2, 0.6, 0.1]);
+        assert!((dot_normalized(&a, &b) - cosine(&a, &b)).abs() < 1e-6);
+        assert!((dot_normalized(&a, &a) - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn dot_product_against_a_blob_matches_the_dot_product() {
+        let a = crate::rag::embed::normalize(vec![0.3, 0.9, 0.1, 0.4]);
+        let b = crate::rag::embed::normalize(vec![0.8, 0.2, 0.6, 0.1]);
+        let bytes = crate::rag::embed::to_blob(&b);
+        assert!((dot_normalized_le_bytes(&a, &bytes) - dot_normalized(&a, &b)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn dot_product_against_a_malformed_blob_is_zero_not_a_panic() {
+        let a = crate::rag::embed::normalize(vec![0.3, 0.9]);
+        assert_eq!(dot_normalized_le_bytes(&a, &[1, 2, 3]), 0.0);
+        assert_eq!(dot_normalized_le_bytes(&a, &[]), 0.0);
+    }
+
+    #[test]
+    fn top_k_keeps_the_best_candidates_and_orders_them() {
+        let candidates = vec![(1i64, 0.1f32), (2, 0.9), (3, 0.5), (4, 0.7), (5, 0.2)];
+        let top = top_k_by_score(candidates.into_iter(), 3);
+        let ids: Vec<i64> = top.iter().map(|r| r.chunk_id).collect();
+        assert_eq!(ids, vec![2, 4, 3], "best first, and only the best three");
+        assert_eq!(top[0].rank, 0);
+        assert_eq!(top[1].rank, 1);
+    }
+
+    #[test]
+    fn top_k_of_nothing_is_nothing() {
+        assert!(top_k_by_score(Vec::<(i64, f32)>::new().into_iter(), 5).is_empty());
+        assert!(top_k_by_score(vec![(1i64, 0.5f32)].into_iter(), 0).is_empty());
+    }
+
+    #[test]
+    fn top_k_drops_non_positive_scores() {
+        let top = top_k_by_score(vec![(1i64, 0.0f32), (2, -0.5), (3, 0.2)].into_iter(), 5);
+        let ids: Vec<i64> = top.iter().map(|r| r.chunk_id).collect();
+        assert_eq!(ids, vec![3]);
+    }
+
+    #[test]
+    fn top_k_breaks_ties_deterministically() {
+        let a = top_k_by_score(vec![(9i64, 0.5f32), (2, 0.5), (5, 0.5)].into_iter(), 2);
+        let b = top_k_by_score(vec![(5i64, 0.5f32), (9, 0.5), (2, 0.5)].into_iter(), 2);
+        let ids_a: Vec<i64> = a.iter().map(|r| r.chunk_id).collect();
+        let ids_b: Vec<i64> = b.iter().map(|r| r.chunk_id).collect();
+        assert_eq!(ids_a, ids_b, "the same input must give the same output");
+        assert_eq!(ids_a, vec![2, 5], "ties break on the lower id");
     }
 
     #[test]

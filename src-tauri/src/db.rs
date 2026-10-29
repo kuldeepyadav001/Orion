@@ -120,6 +120,16 @@ impl Db {
             .map_err(|e| OrionError::Db(format!("cannot enable foreign keys: {e}")))?;
         conn.pragma_update(None, "synchronous", "NORMAL")
             .map_err(|e| OrionError::Db(format!("cannot set synchronous: {e}")))?;
+        // Memory-map the database. The retrieval scan reads every stored
+        // vector on every query, and a vector is 1,536 bytes: at 25,000
+        // chunks that is 38 MB copied through the page cache per query.
+        // With mmap the blob is read in place, with no copy at all.
+        //
+        // The cap keeps a runaway library from mapping unbounded memory;
+        // beyond 256 MB SQLite falls back to ordinary reads, which is
+        // slower but still correct.
+        conn.pragma_update(None, "mmap_size", 268_435_456i64)
+            .map_err(|e| OrionError::Db(format!("cannot set mmap_size: {e}")))?;
         // Prevent SQLITE_BUSY crashes under concurrent async background operations:
         conn.busy_timeout(std::time::Duration::from_millis(5000))
             .map_err(|e| OrionError::Db(format!("cannot set busy_timeout: {e}")))?;

@@ -117,10 +117,21 @@ incremental = true
 codegen-units = 16
 lto = false
 
+# `opt-level = 3`, not "s".
+#
+# The release profile was size-optimised, which was the wrong trade for this
+# product: Orion's latency path is the retrieval scan, and size optimisation
+# disables the vectorisation of exactly the loops that dominate it.
+#
+# `lto = "thin"` and `codegen-units = 16` replace fat LTO and a single
+# codegen unit. The previous combination could not be built at all inside
+# the project's own memory envelope: the release build was killed by the OOM
+# reaper while linking `orion_lib`. Thin LTO gives up very little of the
+# optimisation that fat LTO gives and costs a fraction of the memory.
 [profile.release]
-opt-level = "s"
-lto = true
-codegen-units = 1
+opt-level = 3
+lto = "thin"
+codegen-units = 16
 strip = true
 # NOT panic = "abort".
 #
