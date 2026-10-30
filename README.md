@@ -27,7 +27,7 @@ for an explicit list of what is *not* yet verified.
 | M1 | Hardware profiler + tiered model manager | ✅ built and verified |
 | M2 | Documents: multi-format, hybrid search, citations | ✅ recall@8 **0.674** over 459 chunks of real documentation against a live embedding model, against 0.488 for keyword search |
 | M3 | Everywhere: tray, `Win+O` hotkey, file drop | ✅ built; cold-start phases measured |
-| M4 | Voice: speech in, speech out, optional wake word | ✅ built; STT latency measured, TTS not |
+| M4 | Voice: speech in, speech out, optional wake word | ✅ built; both halves measured, wake word not implemented |
 | M5 | Capability broker + read-only tools (propose-only) | ✅ built; **0.0%** BIPIA attack success rate |
 | M6 | Private testing build | ✅ installer scripts; no packaged bundle yet |
 | M7 | Email: read, triage, draft | ✅ built; never auto-sends |

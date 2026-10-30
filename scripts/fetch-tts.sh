@@ -69,4 +69,47 @@ HF_BASE="https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/les
 fetch_model "en_US-lessac-low.onnx" "$HF_BASE/en_US-lessac-low.onnx" || true
 fetch_model "en_US-lessac-low.onnx.json" "$HF_BASE/en_US-lessac-low.onnx.json" || true
 
+# espeak-ng phoneme tables.
+#
+# The Piper release ships libespeak-ng but NOT the data it reads, and
+# espeak-ng looks for the data in a compiled-in system path
+# (/usr/share/espeak-ng-data on Linux). Without it Piper exits with
+# "Error processing file '/usr/share/espeak-ng-data/phontab'" and Orion
+# produces no speech at all. The tables are installed beside the binary
+# and the child process is pointed at them with ESPEAK_DATA_PATH.
+ESPEAK_DIR="$DEST/espeak-ng-data"
+if [ -d "$ESPEAK_DIR" ] && [ -f "$ESPEAK_DIR/phontab" ]; then
+  echo "==> espeak-ng data already present: $ESPEAK_DIR"
+else
+  echo "==> fetching espeak-ng phoneme data"
+  TMP2="$(mktemp -d)"
+  if command -v apt-get >/dev/null 2>&1 && (cd "$TMP2" && apt-get download espeak-ng-data >/dev/null 2>&1); then
+    DEB="$(find "$TMP2" -maxdepth 1 -name 'espeak-ng-data_*.deb' | head -1)"
+    [ -n "$DEB" ] && dpkg-deb -x "$DEB" "$TMP2/x" && rm -f "$DEB"
+  fi
+  if [ ! -d "$TMP2/x" ]; then
+    # No apt (Windows, macOS): take the tables from the upstream tarball.
+    curl -fSL "https://github.com/espeak-ng/espeak-ng/releases/download/1.52/espeak-ng-1.52.tar.gz" \
+      -o "$TMP2/espeak.tar.gz" || true
+    tar xzf "$TMP2/espeak.tar.gz" -C "$TMP2" 2>/dev/null || true
+    if [ -d "$TMP2/espeak-ng-1.52/espeak-ng-data" ]; then
+      mkdir -p "$ESPEAK_DIR"
+      cp -a "$TMP2/espeak-ng-1.52/espeak-ng-data/." "$ESPEAK_DIR/"
+    fi
+  else
+    SRC="$(find "$TMP2/x" -type d -name 'espeak-ng-data' | head -1)"
+    if [ -n "$SRC" ]; then
+      mkdir -p "$ESPEAK_DIR"
+      cp -a "$SRC/." "$ESPEAK_DIR/"
+    fi
+  fi
+  rm -rf "$TMP2"
+  if [ -f "$ESPEAK_DIR/phontab" ]; then
+    echo "==> installed espeak-ng data: $ESPEAK_DIR"
+  else
+    echo "!! espeak-ng data could not be installed; Piper will fail to" >&2
+    echo "!! synthesise until espeak-ng is installed on the system." >&2
+  fi
+fi
+
 echo "==> TTS setup completed"

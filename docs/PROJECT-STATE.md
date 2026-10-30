@@ -42,13 +42,14 @@
 | **Target hardware** | 8.0 GB physical RAM, 5.72 GB usable after iGPU reservation |
 | **Hard ceiling** | ≤ 2.0 GiB resident model RAM; ≤ 3B quantized (Q4_K_M); one model in RAM at a time |
 | **Milestones** | M0–M10 complete, M9 and M10 deployed and certified |
-| **Rust tests** | **543 passed / 0 failed** (`cargo test --lib`) |
+| **Rust tests** | **560 passed / 0 failed** (`cargo test --lib`) |
 | **JS assertions** | **54 passed / 0 failed** (`node scripts/test-suite.mjs`) |
 | **Lint** | 0 warnings, 0 errors (oxlint, 19 files) |
 | **Build** | Vite production bundle clean; Rust release binary builds (21 MB) |
 | **Retrieval quality** | **recall@8 0.674** over 459 chunks of real documentation against a live embedding model, against 0.488 for keyword search (§7.9). The 22-chunk gate suite is now saturated at 1.000 (§7.1) |
 | **Retrieval latency** | **13.0 ms** at 25,000 chunks, end to end (§7.6) |
 | **Model latency** | cold load **409 ms**, **31.6 tok/s** (Qwen2.5-0.5B Q4_K_M) on a 2-core host (§7.7) |
+| **Voice latency** | **331 ms** text → speech, **1,058 ms** speech → text, **1,389 ms** round trip, measured against the shipping binaries (§7.5) |
 | **Security posture** | Two-domain capability broker, 0.0% BIPIA attack success rate, zero egress |
 | **Codebase** | 27,431 LOC Rust across 54 files; 8,595 LOC JS across 19 files |
 
@@ -64,8 +65,12 @@ ordering with one reserved lexical slot. A benchmark harness was added and
 found the retrieval scan was three times slower than it needed to be, and
 that the top-k selection underneath it was returning the *worst* candidates.
 Three build profiles could not be built at all inside the project's own
-memory budget; all three are fixed. Details in §7.1, §7.6, §7.7, §8.10,
-§8.11 and §8.12.
+memory budget; all three are fixed. The voice loop was then run end to
+end for the first time, and the speech synthesiser turned out to be
+unable to speak at all on a machine without espeak-ng installed: the
+packaging script fetched Piper and its libraries but not the phoneme
+tables the library reads. Details in §7.1, §7.5, §7.6, §7.7, §8.10,
+§8.11, §8.12 and §8.14.
 
 ---
 
@@ -245,7 +250,7 @@ pass/fail/absent. Database (5) carried from M0, including the Serina regression.
 | Evaluation | `rag/eval.rs` | 30-question scored suite — **the M2 exit gate** |
 | Statistics | `rag/stats.rs` | paired comparison, sign test, bootstrap CI, Wilson interval |
 | Live evaluation | `src/bin/orion_eval.rs` | scores the suite against a live embedding server |
-| Real-corpus evaluation | `src/bin/orion_eval_real.rs` | 43 questions over 429 chunks of Orion's own docs (§7.9) |
+| Real-corpus evaluation | `src/bin/orion_eval_real.rs` | 43 questions over 459 frozen chunks of Orion's own docs (§7.9) |
 | Performance harness | `src/bin/orion_bench.rs` | retrieval latency at scale, cold-start phases |
 
 **Security posture — retrieved document text is untrusted data, never
@@ -286,7 +291,7 @@ tested and inert.
 - **Dense-first ordering, not rank fusion.** This replaced RRF, and the
   reason is a measurement rather than a preference: against a real embedding
   model, fusion scores 0.885 recall@4 while the dense retriever alone scores
-  1.000 (§7.1) — and on 429 chunks of real prose, 0.674 against 0.674 with
+  1.000 (§7.1) — and on 459 chunks of real prose, 0.674 against 0.674 with
   the same ordering (§7.9). Fusing ranks is scale-free, but scale-free does not mean
   free — a chunk both retrievers like outranks a chunk only the stronger one
   liked. One slot is still reserved for the lexical ranking, because an
@@ -510,10 +515,10 @@ that is pessimistic: ~1.8 s for 11 seconds of speech, and a typical command is
 2–3 seconds of audio, so under a second is realistic.
 
 ```
-speech -> text        ~0.5-1.8 s   measured
-LLM first token       ~0.5-2 s     depends on context length
-LLM full reply        seconds      ~10 tok/s on the target machine
-text -> speech        ~0.1-0.5 s   Piper; not yet measured
+speech -> text        1.06-1.50 s   measured (§7.5)
+LLM first token       ~0.5-2 s      depends on context length
+LLM full reply        seconds       ~10 tok/s on the target machine
+text -> speech        0.33-0.68 s   measured (§7.5)
 ```
 
 So the honest framing is: **voice input is fast; the wait is the model
@@ -933,6 +938,7 @@ milestones:
 | **Retrieval quality, real corpus** | hybrid beats keyword search on 459 chunks | **PASSED** | `scripts/run-eval.sh --real` — recall@8 0.674 vs 0.488; MRR and precision significant, recall directional |
 | **Retrieval latency** | end-to-end search under 50 ms at 25,000 chunks | **PASSED** | `cargo run --release --bin orion_bench` — 13.0 ms |
 | **Model latency** | cold load under 1 s, generation measured | **PASSED** | `scripts/bench-model.mjs` — 409 ms, 31.6 tok/s |
+| **Voice loop latency** | text → speech and speech → text measured against the shipping binaries | **PASSED** | `scripts/bench-voice.mjs` — 331 ms / 1,058 ms, round trip 1,389 ms (§7.5) |
 | **Cold start, headless phases** | database + config inside their budgets | **PASSED** | `cargo run --release --bin orion_bench` |
 | **Hardware budget** | Model memory ceiling ≤ 2.0 GiB on the 8 GB target | **PASSED** | M10 hardware verification |
 | **Security containment** | Two-domain broker 0.0% BIPIA attack success rate | **PASSED** | M10 penetration testing |
@@ -1086,7 +1092,7 @@ application uses. Reproduce with `scripts/run-eval.sh`.
 
 > **This suite is now saturated.** Every dense configuration scores 1.000,
 > so it can no longer tell a good retriever from a better one. The number
-> that describes the product is in **§7.9**: 0.674 recall@8 on 429 chunks
+> that describes the product is in **§7.9**: 0.674 recall@8 on 459 chunks
 > of Orion's own documentation. Read the two together — this one shows the
 > retrieval plumbing is correct, that one shows what it is worth.
 
@@ -1211,16 +1217,53 @@ and every crate is audit surface in an offline security product.
 
 ### 7.5 Voice latency (M4)
 
+The whole loop is now measured against the shipping binaries, with the
+shipping arguments. `scripts/bench-voice.mjs` synthesises speech with
+Piper, feeds the WAV to `whisper-cli` with the same flags the application
+uses (`-m -f -nt -l en -t -np --vad -vm`), and reports both halves.
+
+**Short utterance** — "Orion is ready.", 1.43 s of audio:
+
+| Stage | Cold | Warm | Realtime factor |
+|---|---|---|---|
+| `text → speech` (Piper) | 359 ms | **331 ms** | 0.23× |
+| `speech → text` (whisper.cpp) | 1,091 ms | **1,058 ms** | 0.74× |
+| **Round trip** | 1,450 ms | **1,389 ms** | — |
+
+**Full sentence** — 5.75 s of audio:
+
+| Stage | Cold | Warm | Realtime factor |
+|---|---|---|---|
+| `text → speech` (Piper) | 683 ms | **677 ms** | 0.12× |
+| `speech → text` (whisper.cpp) | 1,459 ms | **1,501 ms** | 0.26× |
+| **Round trip** | 2,142 ms | **2,179 ms** | — |
+
+"Cold" is the first run of the process and includes the model load; Piper
+loads its voice in 267 ms, whisper.cpp loads `ggml-tiny.en` in about
+1.1 s. The transcription is exact: the synthesised sentence comes back as
+*"Orion is a private, offline first personal assistant that runs entirely
+on your own machine."*
+
+The rest of the chain:
+
 | Stage | Latency | Status |
 |---|---|---|
 | `whisper-cli` cold, including model load | 2.08 s | measured |
-| `whisper-server` warm HTTP round trip | 1.77 s | measured |
+| `whisper-server` warm HTTP round trip | 1.77 s | measured (not the path Orion ships) |
 | Model load | 75 ms | measured |
 | Audio discarded by VAD | 25% | measured |
-| `speech → text` | ~0.5–1.8 s | measured |
+| `speech → text` | 1.06–1.50 s | measured |
 | LLM first token | ~0.5–2 s | depends on context length |
 | LLM full reply | seconds | ~10 tok/s on target |
-| `text → speech` | ~0.1–0.5 s | not yet measured |
+| `text → speech` | **331–677 ms** | measured |
+
+**Two honest caveats.** Piper writes a WAV file and does not stream, so
+the application cannot play the first 300 ms of a reply while the rest is
+still being synthesised; the number above is the time until the whole
+utterance exists, and for the shortest possible utterance ("Orion is
+ready.") that is 331 ms against a 300 ms criterion. And these are
+measured on the 2-core CI host, not on the Ryzen 5 7520U the product
+targets — on that machine both halves will be faster.
 
 ### 7.6 Retrieval performance at scale (M2)
 
@@ -1415,7 +1458,7 @@ prompt did not grow while the number of facts it can carry doubled.
   *exact* match reaches the prompt, which is cheap insurance against a
   small model missing an identifier. The cost is zero measurable questions
   on this suite, and the decision is recorded here so it can be revisited.
-- BM25 degrades as chunks grow (recall 0.442 at 429 chunks of ~485
+- BM25 degrades as chunks grow (recall 0.488 at 459 chunks of ~486
   characters, 0.326 at 209 chunks of ~833) because term statistics dilute;
   the hybrid absorbs this because the lexical signal is one reserved slot,
   not a vote in the ordering.
@@ -1727,6 +1770,45 @@ surface it. The general lesson is the one the project keeps re-learning:
 a test suite that only exercises the shape of the input will not find the
 defect that lives in the shape of the data.
 
+### 8.14 M4 — the speech synthesiser could not speak at all
+
+**Found by:** running the voice loop end to end instead of reasoning about
+it. `scripts/fetch-tts.sh` installs Piper and its shared libraries, and
+every unit test passed, because the tests assert on the *arguments* and
+the *text cleaning*, never on whether Piper can pronounce anything.
+
+**Symptom:**
+
+```
+[piper] [info] Loaded voice in 0.266810481 second(s)
+Error processing file '/usr/share/espeak-ng-data/phontab': No such file or directory.
+```
+
+Piper exits with status 1, writes no audio, and the application reports a
+TTS failure. On any machine without espeak-ng installed system-wide,
+Orion has no voice.
+
+**Cause.** The Piper release ships `libespeak-ng.so.1` but *not* the
+phoneme tables that library reads. espeak-ng looks for them in a
+compiled-in system path — `/usr/share/espeak-ng-data` on Linux — so the
+library was present and the data was not. The packaging script fetched
+the binary and the models and stopped there.
+
+**Fix.**
+
+- `scripts/fetch-tts.sh` now installs the espeak-ng tables next to the
+  Piper binary, as `espeak-ng-data/`. It takes them from the Debian
+  `espeak-ng-data` package where `apt-get` is available and falls back to
+  the upstream tarball otherwise.
+- `voice::tts::synthesize` points the child process at those tables with
+  `ESPEAK_DATA_PATH`, and only when they are actually there — a machine
+  with a system-wide espeak-ng keeps using the system copy.
+
+**Verification.** `scripts/bench-voice.mjs` runs the real binaries: Piper
+synthesises 5.75 s of audio in 677 ms warm and whisper.cpp transcribes it
+back to the exact original sentence. The unit suite gained a test for the
+lookup. Before this, the whole M4 TTS path was a belief.
+
 ---
 
 ## 9. ARCHITECTURE DECISIONS
@@ -1974,12 +2056,23 @@ document.
 
 - **Microphone capture.** No audio device in the CI environment. Recording,
   device selection, permissions and 16 kHz mono conversion are untested.
-- **The wake word.** `oww-rs` (a Rust port of openWakeWord on tract-onnx) is
-  the candidate, but nothing has been run.
+- **The wake word is not implemented.** This was previously recorded as
+  "`oww-rs` is the candidate, but nothing has been run", which understated
+  it: there is no wake-word model in the tree and no `oww-rs` dependency.
+  The trigger is the microphone button / talk key. The listener state
+  machine already has the right seam — `Listener::trigger()` returns
+  `BeginCapture` and the whole capture → VAD → transcribe → chat path runs
+  from it — so a detector can be added without touching the rest, but
+  nothing is wired and no accuracy claim can be made. Whether to build it
+  at all is an open product decision: a voice assistant that only answers
+  when pushed to talk is less useful than one that listens for a name.
 - **Windows behaviour.** The whole probe ran on Linux.
 - **Real latency on the target machine.** The CI CPU is not a Ryzen 5 7520U
-  with 1 GB free.
-- `text → speech` latency was never measured.
+  with 1 GB free. The numbers in §7.5 are a lower bound.
+- ~~`text → speech` latency was never measured.~~ **Closed.** Measured at
+  331–677 ms warm against the shipping Piper binary and model (§7.5), and
+  the TTS path was found to be *entirely broken* without espeak-ng's
+  phoneme tables — fixed in §8.14.
 
 ### Cross-cutting
 

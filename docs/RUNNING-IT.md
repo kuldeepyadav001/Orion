@@ -214,8 +214,21 @@ copy `whisper-cli.exe` **and every `.dll` beside it** into
 `src-tauri\binaries\` and also into `src-tauri\target\debug\`, then put
 `ggml-tiny.en.bin` and `ggml-silero-v5.1.2.bin` in `%APPDATA%\orion\models\`.
 
-Orion works without this. The microphone button will simply say what is
-missing instead of doing nothing.
+Speech *output* needs Piper and a voice model, about 60 MB:
+
+```bash
+./scripts/fetch-tts.sh
+```
+
+This one also installs espeak-ng's phoneme tables into
+`src-tauri\binaries\espeak-ng-data\`. Piper ships the espeak-ng library
+but not the tables that library reads, and without them Piper exits
+before producing a sound — the tables are what turn text into
+phonemes. Orion points Piper at them with `ESPEAK_DATA_PATH`.
+
+Orion works without either of these. The microphone button will simply
+say what is missing instead of doing nothing, and replies will be shown
+as text.
 
 **Why `whisper-cli` and not `whisper-server`:** the server has no
 authentication of any kind and does not honour `--host` — started on
@@ -242,8 +255,11 @@ confidence intervals and a paired comparison, and stops the server again:
 ```
 
 **Retrieval quality on a real corpus.** The suite above is 22 chunks, which
-every retriever can ace. This one scores 43 questions against 429 chunks of
-Orion's own documentation, with the ground truth given as text anchors:
+every retriever can ace. This one scores 43 questions against 459 chunks
+of Orion's own documentation, with the ground truth given as text
+anchors. The corpus is frozen in `eval/corpus/` so the numbers do not
+move when a document is edited — a benchmark whose corpus is a moving
+target cannot be compared against last week's result:
 
 ```bash
 ./scripts/run-eval.sh --real
@@ -272,6 +288,16 @@ node scripts/bench-model.mjs ~/.local/share/orion/models/qwen2.5-0.5b-instruct-q
 ```
 
 On Windows the model path is `%APPDATA%\orion\models\`.
+
+**Voice latency** — the whole loop, against the shipping binaries. It
+synthesises a sentence with Piper, transcribes it back with
+`whisper-cli`, and prints the cold and warm latency of each half:
+
+```bash
+node scripts/bench-voice.mjs
+node scripts/bench-voice.mjs --runs 5 --threads 4
+node scripts/bench-voice.mjs --text "Orion is ready."   # the shortest utterance
+```
 
 ---
 

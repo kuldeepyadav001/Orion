@@ -67,6 +67,28 @@ pub fn find_piper_model(models_dir: &Path) -> Option<PathBuf> {
         })
 }
 
+/// Where espeak-ng keeps its phoneme tables.
+///
+/// Piper phonemises text through espeak-ng, and espeak-ng reads its data
+/// from a compiled-in system path (`/usr/share/espeak-ng-data` on Linux).
+/// The Piper release ships the *library* but not the *data*, so a machine
+/// without espeak-ng installed gets
+/// `Error processing file '/usr/share/espeak-ng-data/phontab': No such
+/// file or directory` and no speech at all.
+///
+/// The data is therefore installed next to the binary by
+/// `scripts/fetch-tts.sh`, and the child process is pointed at it with
+/// `ESPEAK_DATA_PATH`.
+pub fn find_espeak_data(binary: &Path) -> Option<PathBuf> {
+    let dir = binary.parent()?;
+    let candidate = dir.join("espeak-ng-data");
+    if candidate.is_dir() {
+        Some(candidate)
+    } else {
+        None
+    }
+}
+
 /// Where the piper executable lives.
 pub fn find_piper_binary() -> PathBuf {
     if let Ok(p) = std::env::var("ORION_PIPER_PATH") {
@@ -219,6 +241,13 @@ pub async fn synthesize(
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
 
+    // Point espeak-ng at the phoneme tables that ship beside the binary.
+    // Without this, Piper exits before synthesising anything on a machine
+    // that does not have espeak-ng installed system-wide.
+    if let Some(data) = find_espeak_data(binary) {
+        cmd.env("ESPEAK_DATA_PATH", data);
+    }
+
     #[cfg(windows)]
     {
         cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
@@ -293,6 +322,23 @@ mod tests {
         let input = "The revenue grew by 15% [chunk:42] in Q3.";
         let cleaned = clean_for_speech(input);
         assert_eq!(cleaned, "The revenue grew by 15% in Q3.");
+    }
+
+    #[test]
+    fn finds_the_espeak_data_installed_beside_the_binary() {
+        let dir = std::env::temp_dir().join(format!("orion-tts-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("espeak-ng-data")).unwrap();
+        let binary = dir.join("piper");
+
+        let found = find_espeak_data(&binary);
+        assert_eq!(found.as_deref(), Some(dir.join("espeak-ng-data").as_path()));
+
+        // A binary with no tables beside it must not produce a path: the
+        // child then inherits whatever the system provides.
+        let bare = dir.join("elsewhere").join("piper");
+        assert!(find_espeak_data(&bare).is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
