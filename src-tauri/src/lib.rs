@@ -26,7 +26,8 @@ pub mod email;
 pub mod browser;
 pub mod search;
 pub mod automation;
-pub mod residency;
+pub mod prompt;
+mod residency;
 
 use std::sync::Arc;
 
@@ -46,9 +47,17 @@ use profiler::{HardwareProfile, Tier, TierRecommendation};
 
 /// How many past turns to replay into the model. Kept small deliberately:
 /// on an 8 GB machine the KV cache for a long history is a real memory cost.
+///
+/// This is a *count*, not a bound. The real bound is
+/// `HISTORY_CHAR_BUDGET`, applied below: a turn-count limit alone allowed
+/// forty thousand characters of history into a 4,096-token window.
 const HISTORY_LIMIT: usize = 20;
 
-const SYSTEM_PROMPT: &str = "You are Orion, an advanced personal AI workspace and JARVIS-class assistant running locally on the user's computer.\n\
+// The prompt budget itself lives in `prompt`: the window, the character
+// density, and the arithmetic that fits a question and a history into
+// it are defined and tested there.
+
+pub(crate) const SYSTEM_PROMPT: &str = "You are Orion, an advanced personal AI workspace and JARVIS-class assistant running locally on the user's computer.\n\
 Communicate with the analytical depth, structural clarity, and polish of an advanced conversational GPT model:\n\
 - Provide insightful, comprehensive, and well-organized responses.\n\
 - Structure answers logically: provide a direct answer or executive overview first, followed by well-organized sections using markdown headings (###), bold lead-ins for key points, and clean bullet points or numbered sequences.\n\
@@ -60,7 +69,7 @@ Communicate with the analytical depth, structural clarity, and polish of an adva
 - Clean Human Output: STRICTLY NEVER output 'Desktop Accessibility Snapshot', '[ref: @d0]' labels, or internal window bounding boxes to the user.\n\
 - Conclude complex answers with practical takeaways, next steps, or recommendations.";
 
-const WEB_GROUNDED_SYSTEM_PROMPT: &str = "You are Orion, an advanced personal AI workspace and JARVIS-class assistant.\n\
+pub(crate) const WEB_GROUNDED_SYSTEM_PROMPT: &str = "You are Orion, an advanced personal AI workspace and JARVIS-class assistant.\n\
 Live real-time web search findings have been retrieved for this request and are provided directly above the user's question.\n\
 Synthesize the live web findings thoroughly and accurately:\n\
 - Provide direct answers with the exact current numbers, stock prices, news, or factual details found.\n\
@@ -424,6 +433,34 @@ async fn send_message(
         now.format("%Y")
     );
     let full_system_prompt = format!("{system_prompt}\n\n{clock_context}");
+
+    // Everything except the history is now fixed, so the history gets
+    // whatever is left of the context window. Before this the history was
+    // capped by turn count alone, and a long conversation produced a
+    // prompt the model rejected outright.
+    let context_block = match (&grounded, &web_context) {
+        (Some(ctx), _) => ctx.sources_block.clone(),
+        (None, Some(web)) => web.clone(),
+        (None, None) => String::new(),
+    };
+    let fitted = prompt::fit(
+        full_system_prompt.chars().count(),
+        &context_block,
+        &message,
+        prompt::PROMPT_WINDOW_CHARS,
+        prompt::PROMPT_OVERHEAD_CHARS,
+    );
+    let message = fitted.message;
+    let context_block = fitted.context;
+    let clean_history = prompt::trim_history(&clean_history, fitted.history_chars);
+    tracing::debug!(
+        history_budget = fitted.history_chars,
+        history_turns = clean_history.len(),
+        message_truncated = fitted.message_truncated,
+        context_truncated = fitted.context_truncated,
+        "prompt budget"
+    );
+
     let mut msgs = vec![ChatMessage::system(&full_system_prompt)];
 
     if let Some(ctx) = &grounded {
@@ -442,7 +479,7 @@ async fn send_message(
 
         let prompt_with_sources = format!(
             "Context from your document library:\n\n{}\n\nQuestion: {}",
-            ctx.sources_block,
+            context_block,
             message
         );
 
@@ -456,7 +493,7 @@ async fn send_message(
             "answering with document context"
         );
         let _ = app.emit("chat://citations", ctx.citations.clone());
-    } else if let Some(web_block) = &web_context {
+    } else if web_context.is_some() {
         let prior_history = if !clean_history.is_empty() {
             &clean_history[..clean_history.len() - 1]
         } else {
@@ -473,7 +510,7 @@ async fn send_message(
         let query_str = search_intent_query.as_deref().unwrap_or(&message);
         let prompt_with_web = format!(
             "{}\nUser Question: {}\n\nInstructions: Synthesize the live web search findings above to answer directly with factual accuracy. Structure your response with markdown headings (###) and detailed analysis covering \"{}\". If a document (PDF, Excel, Word) was requested, write a complete, multi-section response specifically covering this topic so the document compiler extracts the correct subject.",
-            web_block,
+            context_block,
             message,
             query_str
         );

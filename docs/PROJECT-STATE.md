@@ -42,7 +42,7 @@
 | **Target hardware** | 8.0 GB physical RAM, 5.72 GB usable after iGPU reservation |
 | **Hard ceiling** | ≤ 2.0 GiB resident model RAM; ≤ 3B quantized (Q4_K_M); one model in RAM at a time |
 | **Milestones** | M0–M10 complete, M9 and M10 deployed and certified |
-| **Rust tests** | **560 passed / 0 failed** (`cargo test --lib`) |
+| **Rust tests** | **571 passed / 0 failed** (`cargo test --lib`) |
 | **JS assertions** | **54 passed / 0 failed** (`node scripts/test-suite.mjs`) |
 | **Lint** | 0 warnings, 0 errors (oxlint, 19 files) |
 | **Build** | Vite production bundle clean; Rust release binary builds (21 MB) |
@@ -930,7 +930,7 @@ milestones:
 |---|---|---|---|
 | **Compilation and linting** | Oxlint 0 warnings / Vite clean build | **PASSED** | `npm run lint` · `npm run build` |
 | **Automated logic suite** | 54/54 unit assertions green | **PASSED** | `node scripts/test-suite.mjs` |
-| **Rust unit suite** | 543/543 unit tests green | **PASSED** | `cargo test --lib` |
+| **Rust unit suite** | 571/571 unit tests green | **PASSED** | `cargo test --lib` |
 | **Rust static analysis** | Clippy clean under `-D warnings` | **PASSED** | `cargo clippy --all-targets -- -D warnings` |
 | **Release build** | Rust release binary links and runs on the sysroot | **PASSED** | `cargo build --release --bin orion` |
 | **Live embedding model** | bge-small-en-v1.5 served by llama-server, 384 dims | **PASSED** | `scripts/run-eval.sh` |
@@ -947,6 +947,7 @@ milestones:
 | **Native dependency closure** | 739 Debian packages, 10/10 pkg-config, 10/10 link libs, 0 dangling `.so` symlinks | **PASSED** | `scripts/setup-sysroot.sh` |
 | **Registry integrity** | Crate truncation detected by comparison against the `.crate` tarball | **PASSED** | `54b4f78` |
 | **Codebase size** | 27,431 LOC Rust (54 files), 8,595 LOC JS (19 files), 521 `#[test]` fns / 543 cases | **PASSED** | repository survey |
+| **Prompt budget** | the prompt always fits the 4,096-token window | **PASSED** | `cargo test --lib prompt::` — 11 tests |
 
 **Toolchain.** `source scripts/rust-env.sh` then `source scripts/sysroot-env.sh`
 before any cargo command in `src-tauri`. `scripts/bootstrap-env.sh` restores the
@@ -1809,6 +1810,56 @@ synthesises 5.75 s of audio in 677 ms warm and whisper.cpp transcribes it
 back to the exact original sentence. The unit suite gained a test for the
 lookup. Before this, the whole M4 TTS path was a belief.
 
+### 8.15 M2 — the conversation could outgrow the context window
+
+**Found by:** reading the prompt assembly rather than the tests. Nothing
+failed: every test passed, and the retrieval benchmark was green.
+
+**Symptom.** A long conversation stops answering. The engine runs with
+`--ctx-size 4096`, and the request is rejected by the model when the
+prompt exceeds the window — so the user sees an error and the thread
+dies, with no indication of why.
+
+**Cause.** The history was capped by *turn count*: twenty turns. A turn
+count is not a bound on anything. Orion's answers are structured
+documents of several thousand characters, so twenty of them could be
+forty thousand characters — five times the window. Nothing else in the
+prompt was bounded either: a user pasting a long log had the same
+failure, and the retrieved context (up to 6,000 characters) was added on
+top without a check.
+
+**Fix.** A new module, `prompt.rs`, owns the arithmetic:
+
+- The window is 4,096 tokens. At the *measured* density of real text
+  (§7.9 measured 3.52 characters per token for prose and 1.6 for dense
+  numeric tables) 3.0 characters per token is the conservative
+  conversion, giving a 12,288-character budget.
+- The fixed parts are measured at runtime: the system prompt, the
+  retrieved context, the question, and an 800-character reserve for the
+  chat template and the sentences wrapped around the context.
+- The priority when everything does not fit: the system prompt is never
+  cut; the question is cut only if it cannot fit even with no context at
+  all; the retrieved context absorbs the shortfall; the history gets
+  what is left.
+- The history is then trimmed by *character budget* rather than turn
+  count, newest turns first, whole turns only, with a single over-long
+  turn truncated rather than dropped so the budget stays a real bound.
+
+**Why it matters beyond the crash.** The budget also decides how much
+history the model sees at all. Before, twenty turns were sent and the
+model chose what to attend to; now it is sent what fits. On a 4,096-
+token window that is roughly 2,700 characters of history once the
+system prompt and the retrieved documents have taken their share — which
+is the right amount, because the alternative was a request the model
+refuses.
+
+**Verification.** Eleven tests in `prompt.rs`, including one that walks
+every message length against every context length and asserts the
+window is never exceeded, and one that asserts each of the three system
+prompts still leaves room for a question and some history — so a future
+edit that doubles the system prompt fails the build rather than the
+conversation.
+
 ---
 
 ## 9. ARCHITECTURE DECISIONS
@@ -2035,6 +2086,11 @@ document.
   of technical prose written by one author, not a mixed personal library
   of manuals, invoices and notes. The relative strength of dense and
   lexical retrieval on such a corpus is still an assumption.
+- ~~The conversation history had no character budget.~~ **Closed.** The
+  prompt is now fitted into the 4,096-token window by `prompt.rs`: the
+  fixed parts are measured, the question is cut last, the retrieved
+  context absorbs the shortfall and the history gets the remainder
+  (§8.15).
 - PDF extraction was verified against a `reportlab`-generated file. Real-world
   PDFs are far more varied: multi-column layouts, tables, ligatures and
   embedded subset fonts are untested and all likely to degrade quality.
