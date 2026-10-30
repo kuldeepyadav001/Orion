@@ -24,6 +24,14 @@ pub struct ResourceItem {
     pub filename: String,
     pub approx_size_mb: u64,
     pub installed: bool,
+    /// A file that has to accompany the main one.
+    ///
+    /// The Piper voice model is useless without its JSON configuration:
+    /// Piper aborts with "Model config doesn't exist" and writes no
+    /// audio. The configuration is a few kilobytes, so it is fetched
+    /// with the model rather than being left to chance.
+    pub companion_url: Option<String>,
+    pub companion_filename: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -84,7 +92,18 @@ impl DownloadManager {
 
         for mut item in items {
             let path = self.models_dir.join(&item.filename);
-            let exists = path.is_file() && std::fs::metadata(&path).map(|m| m.len() > 1024).unwrap_or(false);
+            let exists = path.is_file()
+                && std::fs::metadata(&path).map(|m| m.len() > 1024).unwrap_or(false);
+            // A resource with a companion is only usable when both are
+            // present. The voice model without its configuration aborts
+            // Piper, so treating it as installed would leave the user
+            // with a voice that cannot speak and nothing left to
+            // download.
+            let companion_ok = match &item.companion_filename {
+                Some(name) => self.models_dir.join(name).is_file(),
+                None => true,
+            };
+            let exists = exists && companion_ok;
             item.installed = exists;
 
             if exists {
@@ -133,6 +152,8 @@ impl DownloadManager {
                 filename: "qwen2.5-3b-instruct-q4_k_m.gguf".into(),
                 approx_size_mb: 2100,
                 installed: false,
+                companion_url: None,
+                companion_filename: None,
             },
         ];
 
@@ -146,6 +167,8 @@ impl DownloadManager {
                 filename: "qwen2.5-coder-3b-instruct-q4_k_m.gguf".into(),
                 approx_size_mb: 2100,
                 installed: false,
+                companion_url: None,
+                companion_filename: None,
             });
         } else if persona_id == "researcher" || persona_id == "analyst" {
             list.push(ResourceItem {
@@ -156,6 +179,8 @@ impl DownloadManager {
                 filename: "DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M.gguf".into(),
                 approx_size_mb: 1100,
                 installed: false,
+                companion_url: None,
+                companion_filename: None,
             });
         }
 
@@ -168,6 +193,8 @@ impl DownloadManager {
             filename: "bge-small-en-v1.5-q8_0.gguf".into(),
             approx_size_mb: 35,
             installed: false,
+            companion_url: None,
+            companion_filename: None,
         });
 
         // Speech recognition
@@ -179,6 +206,8 @@ impl DownloadManager {
             filename: "ggml-tiny.en.bin".into(),
             approx_size_mb: 75,
             installed: false,
+            companion_url: None,
+            companion_filename: None,
         });
 
         // Speech synthesis model
@@ -188,8 +217,11 @@ impl DownloadManager {
             category: "piper".into(),
             url: "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/lessac/medium/en_US-lessac-medium.onnx?download=true".into(),
             filename: "en_US-lessac-medium.onnx".into(),
-            approx_size_mb: 35,
+            // 63,201,294 bytes, measured against the live URL.
+            approx_size_mb: 60,
             installed: false,
+            companion_url: Some("https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/lessac/medium/en_US-lessac-medium.onnx.json?download=true".into()),
+            companion_filename: Some("en_US-lessac-medium.onnx.json".into()),
         });
 
         list
@@ -340,13 +372,52 @@ impl DownloadManager {
                 OrionError::Config(format!("failed to finalize downloaded file: {e}"))
             })?;
 
-            // If piper onnx, also fetch its tiny config json
-            if item.id == "piper-lessac-voice" {
-                let json_url = "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/lessac/medium/en_US-lessac-medium.onnx.json?download=true";
-                let json_dest = self.models_dir.join("en_US-lessac-medium.onnx.json");
-                if let Ok(resp) = client.get(json_url).send().await {
-                    if let Ok(bytes) = resp.bytes().await {
-                        std::fs::write(json_dest, bytes).ok();
+            // The companion file, if any. It is not optional: a Piper
+            // voice without its configuration aborts the synthesiser and
+            // produces no audio, and because only *missing* resources are
+            // downloaded, a silently failed fetch here would be permanent.
+            if let (Some(url), Some(name)) = (&item.companion_url, &item.companion_filename) {
+                let companion_dest = self.models_dir.join(name);
+                let companion_part = self.models_dir.join(format!("{name}.part"));
+                let fetched: std::result::Result<Vec<u8>, String> =
+                    match client.get(url).send().await {
+                        Ok(r) if r.status().is_success() => r
+                            .bytes()
+                            .await
+                            .map(|b| b.to_vec())
+                            .map_err(|e| e.to_string()),
+                        Ok(r) => Err(format!("HTTP error: {}", r.status())),
+                        Err(e) => Err(e.to_string()),
+                    };
+                match fetched {
+                    Ok(bytes) => {
+                        std::fs::write(&companion_part, &bytes).map_err(|e| {
+                            OrionError::Config(format!("failed to write {name}: {e}"))
+                        })?;
+                        std::fs::rename(&companion_part, &companion_dest).map_err(|e| {
+                            OrionError::Config(format!("failed to finalize {name}: {e}"))
+                        })?;
+                    }
+                    Err(e) => {
+                        let _ = std::fs::remove_file(&companion_part).ok();
+                        let err = format!("could not download {name}: {e}");
+                        let _ = app.emit(
+                            "download://progress",
+                            DownloadProgressPayload {
+                                item_id: item.id.clone(),
+                                item_name: item.name.clone(),
+                                category: item.category.clone(),
+                                current_bytes: 0,
+                                total_bytes: 0,
+                                percentage: 0.0,
+                                speed_mb_s: 0.0,
+                                current_step: step_index,
+                                total_steps,
+                                status: "error".into(),
+                                error_msg: Some(err.clone()),
+                            },
+                        );
+                        return Err(OrionError::Config(err));
                     }
                 }
             }
@@ -374,5 +445,69 @@ impl DownloadManager {
         // Final completion event
         let _ = app.emit("download://all_complete", ());
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_dir() -> (PathBuf, tempdir::TempDir) {
+        let dir = std::env::temp_dir().join(format!("orion-dl-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        (dir.clone(), tempdir::TempDir(dir))
+    }
+
+    mod tempdir {
+        pub struct TempDir(pub std::path::PathBuf);
+        impl Drop for TempDir {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+    }
+
+    #[test]
+    fn the_piper_voice_declares_its_configuration_as_a_companion() {
+        let items = DownloadManager::new(PathBuf::from("/tmp")).expected_resources("general");
+        let piper = items
+            .iter()
+            .find(|i| i.category == "piper")
+            .expect("the voice is part of the resource list");
+        assert!(piper.companion_filename.is_some());
+        assert!(piper.companion_url.is_some());
+        assert!(piper
+            .companion_filename
+            .as_ref()
+            .unwrap()
+            .ends_with(".onnx.json"));
+    }
+
+    #[test]
+    fn a_voice_without_its_configuration_is_still_missing() {
+        let (dir, _g) = temp_dir();
+        let mgr = DownloadManager::new(dir.clone());
+
+        // The model alone is not enough: Piper aborts without the
+        // configuration, so the resource must still count as missing.
+        std::fs::write(dir.join("en_US-lessac-medium.onnx"), vec![0u8; 4096]).unwrap();
+        let status = mgr.check_status("general");
+        assert!(!status.has_piper);
+        assert!(status.missing_items.iter().any(|i| i.category == "piper"));
+
+        // With the configuration beside it, the voice counts as ready.
+        std::fs::write(dir.join("en_US-lessac-medium.onnx.json"), b"{}").unwrap();
+        let status = mgr.check_status("general");
+        assert!(status.has_piper);
+        assert!(!status.missing_items.iter().any(|i| i.category == "piper"));
+    }
+
+    #[test]
+    fn a_resource_without_a_companion_is_installed_by_its_own_file() {
+        let (dir, _g) = temp_dir();
+        let mgr = DownloadManager::new(dir.clone());
+        std::fs::write(dir.join("ggml-tiny.en.bin"), vec![0u8; 4096]).unwrap();
+        let status = mgr.check_status("general");
+        assert!(status.has_whisper);
     }
 }

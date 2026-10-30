@@ -42,7 +42,7 @@
 | **Target hardware** | 8.0 GB physical RAM, 5.72 GB usable after iGPU reservation |
 | **Hard ceiling** | ≤ 2.0 GiB resident model RAM; ≤ 3B quantized (Q4_K_M); one model in RAM at a time |
 | **Milestones** | M0–M10 complete, M9 and M10 deployed and certified |
-| **Rust tests** | **571 passed / 0 failed** (`cargo test --lib`) |
+| **Rust tests** | **575 passed / 0 failed** (`cargo test --lib`) |
 | **JS assertions** | **54 passed / 0 failed** (`node scripts/test-suite.mjs`) |
 | **Lint** | 0 warnings, 0 errors (oxlint, 19 files) |
 | **Build** | Vite production bundle clean; Rust release binary builds (21 MB) |
@@ -930,7 +930,7 @@ milestones:
 |---|---|---|---|
 | **Compilation and linting** | Oxlint 0 warnings / Vite clean build | **PASSED** | `npm run lint` · `npm run build` |
 | **Automated logic suite** | 54/54 unit assertions green | **PASSED** | `node scripts/test-suite.mjs` |
-| **Rust unit suite** | 571/571 unit tests green | **PASSED** | `cargo test --lib` |
+| **Rust unit suite** | 575/575 unit tests green | **PASSED** | `cargo test --lib` |
 | **Rust static analysis** | Clippy clean under `-D warnings` | **PASSED** | `cargo clippy --all-targets -- -D warnings` |
 | **Release build** | Rust release binary links and runs on the sysroot | **PASSED** | `cargo build --release --bin orion` |
 | **Live embedding model** | bge-small-en-v1.5 served by llama-server, 384 dims | **PASSED** | `scripts/run-eval.sh` |
@@ -1860,6 +1860,66 @@ prompts still leaves room for a question and some history — so a future
 edit that doubles the system prompt fails the build rather than the
 conversation.
 
+### 8.16 M6 — the installer could leave the user with a voice that cannot speak
+
+**Found by:** asking what Piper does when its configuration is missing,
+rather than assuming it works.
+
+**Symptom.** The user completes onboarding, the resource screen says the
+voice is installed, and text-to-speech fails. Not silently: Piper aborts
+with `terminate called after throwing an instance of 'std::runtime_error'
+/ what(): Model config doesn't exist`, and no audio is written.
+
+**Cause.** A Piper voice is two files: `<voice>.onnx` and
+`<voice>.onnx.json`. The second one is the phoneme and metadata
+configuration, and Piper cannot load the voice without it. The in-app
+downloader did fetch the JSON — but three things were wrong with how:
+
+- The fetch ignored its errors. A transient network failure after a
+  2.1 GB download left no JSON and no message.
+- `check_status` treated the resource as installed when the `.onnx`
+  existed, ignoring the JSON entirely.
+- Only *missing* resources are downloaded. So once the `.onnx` was in
+  place, the JSON was never fetched again — the failure was permanent,
+  and the app reported the voice as ready.
+
+**Fix.**
+
+- `ResourceItem` now declares an optional companion file. The voice
+  declares its configuration.
+- `check_status` counts a resource with a companion as installed only
+  when **both** files are present, so the onboarding screen keeps
+  offering the voice until it actually works.
+- The companion is fetched through the same client, written to a `.part`
+  file and renamed into place, and a failure is reported to the UI as an
+  error for that item instead of being swallowed.
+- `voice::tts::find_piper_model` refuses a model without its
+  configuration. A voice that Piper would abort on is not offered to it.
+
+**Verification.** Three tests in `downloader.rs` and one in `voice::tts`:
+a voice without its configuration is still reported as missing; with it,
+the voice is ready; and the voice lookup skips a model that has no
+configuration beside it. The abort was reproduced directly: Piper was
+run against a directory holding only the `.onnx`, and it died with the
+error above.
+
+**Also checked while in there.** Every URL the installer downloads was
+verified live against the CDN:
+
+| Resource | Size | Status |
+|---|---|---|
+| Qwen2.5-3B-Instruct Q4_K_M | 2,104,932,768 B | 200 |
+| Qwen2.5-Coder-3B-Instruct Q4_K_M | 2,104,932,800 B | 200 |
+| DeepSeek-R1-Distill-Qwen-1.5B Q4_K_M | 1,117,321,312 B | 200 |
+| bge-small-en-v1.5 Q8_0 | 36,806,944 B | 200 |
+| ggml-tiny.en | 77,704,715 B | 200 |
+| en_US-lessac-medium.onnx | 63,201,294 B | 200 |
+| en_US-lessac-medium.onnx.json | 4,885 B | 200 |
+
+The voice's advertised size was wrong as well — 35 MB against an actual
+63.2 MB — so the onboarding screen under-reported the download. It now
+says 60 MB.
+
 ---
 
 ## 9. ARCHITECTURE DECISIONS
@@ -2053,8 +2113,15 @@ document.
 
 ### From M1
 
-- **In-app download with progress UI.** Models install via
-  `scripts/fetch-model.sh`; the manager reports state but does not yet fetch.
+- ~~**In-app download with progress UI.** Models install via
+  `scripts/fetch-model.sh`; the manager reports state but does not yet
+  fetch.~~ **Closed.** The downloader exists, is wired to the Tauri
+  commands `start_resource_download` / `check_resource_status` /
+  `cancel_resource_download`, and the onboarding wizard drives it with
+  live progress events. Every URL it uses was verified against the CDN
+  (§8.16). What it has *not* done is download several gigabytes over a
+  real connection on a real machine, so the resume-and-retry behaviour
+  under a flaky link is untested.
 - **Post-load tok/s benchmark** is now measured (§7.7): 31.6 tok/s for
   Qwen2.5-0.5B Q4_K_M and 11.9 tok/s for Qwen2.5-1.5B Q4_K_M on a 2-core
   host. **Automatic step-down** — dropping to a smaller model when the

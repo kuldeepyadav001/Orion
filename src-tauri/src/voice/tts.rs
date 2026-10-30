@@ -38,11 +38,22 @@ pub struct SpeechResult {
     pub elapsed_ms: u128,
 }
 
+/// Whether a Piper voice model has its configuration beside it.
+///
+/// Piper needs `<voice>.onnx.json` next to `<voice>.onnx`. Without it
+/// the process aborts with `Model config doesn't exist` and writes no
+/// audio at all, so a voice without its configuration is not a voice.
+pub fn has_voice_config(model: &Path) -> bool {
+    let mut cfg = model.as_os_str().to_os_string();
+    cfg.push(".json");
+    Path::new(&cfg).is_file()
+}
+
 /// Locate a Piper voice model in the models directory.
 pub fn find_piper_model(models_dir: &Path) -> Option<PathBuf> {
     if let Ok(p) = std::env::var("ORION_PIPER_MODEL_PATH") {
         let p = PathBuf::from(p);
-        if p.is_file() {
+        if p.is_file() && has_voice_config(&p) {
             return Some(p);
         }
     }
@@ -50,21 +61,23 @@ pub fn find_piper_model(models_dir: &Path) -> Option<PathBuf> {
     // Prefer the low/compact model on resource-constrained systems.
     for name in [MODEL_LESSAC_LOW, MODEL_LESSAC_MEDIUM] {
         let p = models_dir.join(name);
-        if p.is_file() {
+        if p.is_file() && has_voice_config(&p) {
             return Some(p);
         }
     }
 
-    // Fall back to any .onnx model present in the models directory.
+    // Fall back to any .onnx model present in the models directory --
+    // but only one that has its configuration beside it.
     std::fs::read_dir(models_dir)
         .ok()?
         .filter_map(|e| e.ok())
         .map(|e| e.path())
-        .find(|p| {
+        .filter(|p| {
             p.extension()
                 .map(|ext| ext.eq_ignore_ascii_case("onnx"))
                 .unwrap_or(false)
         })
+        .find(|p| has_voice_config(p))
 }
 
 /// Where espeak-ng keeps its phoneme tables.
@@ -337,6 +350,26 @@ mod tests {
         // child then inherits whatever the system provides.
         let bare = dir.join("elsewhere").join("piper");
         assert!(find_espeak_data(&bare).is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_voice_without_its_configuration_is_not_a_voice() {
+        let dir = std::env::temp_dir().join(format!("orion-tts-voice-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // The model alone: Piper would abort with "Model config doesn't
+        // exist", so it must not be selected.
+        let model = dir.join("en_US-lessac-low.onnx");
+        std::fs::write(&model, b"not really a model").unwrap();
+        assert!(!has_voice_config(&model));
+        assert!(find_piper_model(&dir).is_none());
+
+        // With the configuration beside it, it is found.
+        std::fs::write(dir.join("en_US-lessac-low.onnx.json"), b"{}").unwrap();
+        assert!(has_voice_config(&model));
+        assert_eq!(find_piper_model(&dir).as_deref(), Some(model.as_path()));
 
         let _ = std::fs::remove_dir_all(&dir);
     }
