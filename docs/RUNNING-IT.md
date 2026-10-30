@@ -289,6 +289,16 @@ node scripts/bench-model.mjs ~/.local/share/orion/models/qwen2.5-0.5b-instruct-q
 
 On Windows the model path is `%APPDATA%\orion\models\`.
 
+**The IPC contract** — the frontend and the backend have to agree on
+every command name, argument name and event name. The application has
+never been run here, so nothing else checks that:
+
+```bash
+node scripts/check-ipc.mjs
+```
+
+It also runs as the last assertion in `node scripts/test-suite.mjs`.
+
 **Voice latency** — the whole loop, against the shipping binaries. It
 synthesises a sentence with Piper, transcribes it back with
 `whisper-cli`, and prints the cold and warm latency of each half:

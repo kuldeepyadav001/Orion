@@ -952,11 +952,72 @@ async fn triage_inbox_email(
     Ok(analysis)
 }
 
+/// Ask the local model to write the reply.
+///
+/// Returns `None` when the engine is unavailable or the generation
+/// fails -- the caller falls back to the template.
+#[allow(clippy::too_many_arguments)]
+async fn generate_reply_with_model(
+    app: &tauri::AppHandle,
+    state: &State<'_, AppState>,
+    sender: &str,
+    sender_name: &str,
+    subject: &str,
+    body: &str,
+    tone: &str,
+    author: &str,
+    directive: &str,
+) -> Option<String> {
+    // The engine may not be running yet: the email page can be the
+    // first thing the user opens.
+    let persona = {
+        let db = state.db.lock().await;
+        persona::get_active_persona(&db).unwrap_or(persona::PersonaKind::General)
+    };
+    let role = residency::ModelRole::for_persona(&persona);
+    if ensure_engine(app, state, role).await.is_err() {
+        tracing::warn!("engine unavailable; falling back to the template reply");
+        return None;
+    }
+
+    let msgs = email::build_reply_prompt(
+        sender, sender_name, subject, body, tone, author, directive,
+    );
+
+    let engine = state.engine.clone();
+    match engine.chat_stream(msgs, |_| {}).await {
+        Ok(reply) => {
+            let cleaned = email::clean_generated_reply(&reply);
+            if cleaned.is_empty() {
+                None
+            } else {
+                Some(cleaned)
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "model reply failed; falling back to the template");
+            None
+        }
+    }
+}
+
+/// Write a reply to an email.
+///
+/// The model writes the reply when it is available, because a template
+/// cannot answer the sender's points or follow the user's instruction.
+/// The template remains as the fallback: an email assistant that refuses
+/// to reply because the engine is loading is worse than one that
+/// replies badly.
+///
+/// Rule R-5 holds either way: the draft is saved for a human to read and
+/// dispatch. Nothing is sent.
 #[tauri::command]
 async fn draft_email_response(
     id: String,
     tone: String,
     user_name: Option<String>,
+    custom_directive: Option<String>,
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<String> {
     let email = {
@@ -965,14 +1026,42 @@ async fn draft_email_response(
             .ok_or_else(|| OrionError::Db(format!("email '{id}' not found")))?
     };
 
-    let author_name = user_name.unwrap_or_else(|| "Orion User".to_string());
-    let draft = generate_draft_reply(
+    let author_name = user_name
+        .filter(|n| !n.trim().is_empty())
+        .unwrap_or_else(|| "Orion User".to_string());
+    let directive = custom_directive
+        .as_deref()
+        .map(|d| d.trim())
+        .filter(|d| !d.is_empty())
+        .unwrap_or("Reply appropriately to what the sender asked.")
+        .to_string();
+
+    // The model path. A failure here is not an error for the user: the
+    // template below is a working reply.
+    let modelled = generate_reply_with_model(
+        &app,
+        &state,
+        &email.sender,
         &email.sender_name,
         &email.subject,
         &email.body_sanitized,
         &tone,
         &author_name,
-    );
+        &directive,
+    )
+    .await;
+
+    let draft = match modelled {
+        Some(text) if !text.trim().is_empty() => text,
+        _ => generate_draft_reply(
+            &email.sender_name,
+            &email.subject,
+            &email.body_sanitized,
+            &tone,
+            &author_name,
+            &directive,
+        ),
+    };
 
     // Save draft in SQLite
     {

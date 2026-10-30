@@ -42,8 +42,8 @@
 | **Target hardware** | 8.0 GB physical RAM, 5.72 GB usable after iGPU reservation |
 | **Hard ceiling** | ≤ 2.0 GiB resident model RAM; ≤ 3B quantized (Q4_K_M); one model in RAM at a time |
 | **Milestones** | M0–M10 complete, M9 and M10 deployed and certified |
-| **Rust tests** | **575 passed / 0 failed** (`cargo test --lib`) |
-| **JS assertions** | **54 passed / 0 failed** (`node scripts/test-suite.mjs`) |
+| **Rust tests** | **580 passed / 0 failed** (`cargo test --lib`) |
+| **JS assertions** | **55 passed / 0 failed** (`node scripts/test-suite.mjs`) |
 | **Lint** | 0 warnings, 0 errors (oxlint, 19 files) |
 | **Build** | Vite production bundle clean; Rust release binary builds (21 MB) |
 | **Retrieval quality** | **recall@8 0.674** over 459 chunks of real documentation against a live embedding model, against 0.488 for keyword search (§7.9). The 22-chunk gate suite is now saturated at 1.000 (§7.1) |
@@ -786,6 +786,17 @@ and embeddings are documented as part of the M6 deliverable set.
 5. **Email Studio UI** (`EmailStudio.jsx`). Modern, minimalist split pane with
    priority triage pills (Urgent, Action Required, Newsletter, Quarantined),
    action-item extractors, tone-adjustable draft generation and an account manager.
+6. **Model-written replies that follow the instruction.** The draft is
+   written by the local model when the engine is up: the email, the tone
+   and the user's own instruction go in, and the reply comes out. The
+   email body is quoted as **untrusted data** in the prompt, because it
+   arrives from a stranger and a reply that follows an instruction
+   embedded in an email is a prompt injection with a send button. The
+   template reply remains as the fallback for when the engine is not
+   loaded — a reply that ignores the instruction is worse than a reply
+   that is generic, and both are better than refusing to reply. Rule R-5
+   is unaffected: the draft is written to SQLite for a human to read and
+   dispatch, and nothing is ever sent.
 
 ### 3.9 M8 — sandboxed browser automation
 
@@ -930,7 +941,7 @@ milestones:
 |---|---|---|---|
 | **Compilation and linting** | Oxlint 0 warnings / Vite clean build | **PASSED** | `npm run lint` · `npm run build` |
 | **Automated logic suite** | 54/54 unit assertions green | **PASSED** | `node scripts/test-suite.mjs` |
-| **Rust unit suite** | 575/575 unit tests green | **PASSED** | `cargo test --lib` |
+| **Rust unit suite** | 580/580 unit tests green | **PASSED** | `cargo test --lib` |
 | **Rust static analysis** | Clippy clean under `-D warnings` | **PASSED** | `cargo clippy --all-targets -- -D warnings` |
 | **Release build** | Rust release binary links and runs on the sysroot | **PASSED** | `cargo build --release --bin orion` |
 | **Live embedding model** | bge-small-en-v1.5 served by llama-server, 384 dims | **PASSED** | `scripts/run-eval.sh` |
@@ -948,6 +959,7 @@ milestones:
 | **Registry integrity** | Crate truncation detected by comparison against the `.crate` tarball | **PASSED** | `54b4f78` |
 | **Codebase size** | 27,431 LOC Rust (54 files), 8,595 LOC JS (19 files), 521 `#[test]` fns / 543 cases | **PASSED** | repository survey |
 | **Prompt budget** | the prompt always fits the 4,096-token window | **PASSED** | `cargo test --lib prompt::` — 11 tests |
+| **IPC contract** | every command the frontend invokes exists, and every argument matches | **PASSED** | `node scripts/check-ipc.mjs` — 59 commands, 19 events |
 
 **Toolchain.** `source scripts/rust-env.sh` then `source scripts/sysroot-env.sh`
 before any cargo command in `src-tauri`. `scripts/bootstrap-env.sh` restores the
@@ -1919,6 +1931,67 @@ verified live against the CDN:
 The voice's advertised size was wrong as well — 35 MB against an actual
 63.2 MB — so the onboarding screen under-reported the download. It now
 says 60 MB.
+
+### 8.17 M7 — the email assistant's reply button had never worked
+
+**Found by:** writing a checker for the IPC contract, because the
+application has never been run and there is no other way to know that
+the two halves agree.
+
+**Symptom.** In the Email Studio, "generate reply" always produced the
+same generic paragraph — the one the frontend writes as its own
+fallback. The draft never came from the model, and the instruction the
+user typed was ignored.
+
+**Cause.** The two sides disagreed about the call.
+
+```js
+// src/EmailStudio.jsx
+invoke("draft_email_response", { emailId, tone, customDirective });
+setDraftText(res.draft);
+```
+
+```rust
+// src-tauri/src/lib.rs
+async fn draft_email_response(id: String, tone: String, user_name: Option<String>, …)
+```
+
+Three separate mismatches, all invisible until you look:
+
+1. `emailId` against a parameter named `id`. Tauri rejects an argument
+   it does not know.
+2. `customDirective` did not exist at all — the user's instruction was
+   never plumbed through, so even a working call would have ignored
+   it.
+3. The command returns a `String`; the frontend read `res.draft`, which
+   is `undefined`.
+
+The call threw, and the frontend's `catch` wrote its own template. A
+swallowed error that produces a plausible result is the worst kind: the
+button looked like it worked, and the fallback was indistinguishable
+from the feature.
+
+**Fix.**
+
+- The command takes `id`, `tone`, `user_name` and `custom_directive`,
+  and the frontend passes exactly those.
+- The reply is written by the local model: the email, the tone and the
+  user's instruction go in, the reply comes out. The email body is
+  quoted as **untrusted data** in the prompt and the system prompt says
+  so, because the body arrives from a stranger. The template remains as
+  the fallback and now carries the instruction too.
+- The generated text is cleaned of the code fences and `Subject:` labels
+  a small model likes to add.
+- The frontend's `catch` logs the error instead of swallowing it. A
+  silent fallback is what hid this for so long.
+
+**Verification.** `scripts/check-ipc.mjs` compares both sides: every
+invoked command must be registered, every argument must match a
+parameter in Tauri v2's camelCase convention, every required parameter
+must be supplied, and every event the frontend listens for must be
+emitted. It found this and nothing else — the rest of the 59 commands
+and 19 events line up. It now runs as part of `scripts/test-suite.mjs`,
+so the contract is checked on every run.
 
 ---
 

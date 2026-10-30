@@ -119,23 +119,28 @@ export default function EmailStudio({ isOpen, onClose }) {
   const handleGenerateReply = async () => {
     if (!selectedEmail) return;
     setDrafting(true);
+    // The instruction is the user's own words, passed straight through:
+    // wrapping it in a sentence of our own changes what the model is
+    // being asked to do.
+    const directive = replyInput.trim();
     try {
-      const promptDirective = replyInput.trim()
-        ? `Respond addressing this directive: ${replyInput.trim()}`
-        : "Acknowledge receipt professionally and confirm next steps.";
       const res = await invoke("draft_email_response", {
-        emailId: selectedEmail.id,
+        id: selectedEmail.id,
         tone: "professional",
-        customDirective: promptDirective,
+        customDirective: directive,
       });
-      setDraftText(res.draft);
+      // The command returns the draft itself, not an object.
+      setDraftText(typeof res === "string" ? res : (res && res.draft) || "");
       setReplyInput("");
-    } catch {
-      // Clean fallback generation
+    } catch (e) {
+      // Log it. A swallowed error here is how a broken call survived
+      // for months: the fallback looked like a working feature.
+      console.error("draft_email_response failed:", e);
       const senderFirst = (selectedEmail.sender_name || "there").split(" ")[0];
-      setDraftText(
-        `Hi ${senderFirst},\n\nThank you for reaching out regarding "${selectedEmail.subject}".\n\nI have reviewed the details and will proceed with the requested items. I'll keep you updated on progress.\n\nBest regards,\nSent via Orion`
-      );
+      const reply = directive
+        ? `Hi ${senderFirst},\n\nThank you for reaching out regarding "${selectedEmail.subject}".\n\n${directive}\n\nBest regards,\nSent via Orion`
+        : `Hi ${senderFirst},\n\nThank you for reaching out regarding "${selectedEmail.subject}".\n\nI have reviewed the details and will proceed with the requested items. I'll keep you updated on progress.\n\nBest regards,\nSent via Orion`;
+      setDraftText(reply);
       setReplyInput("");
     } finally {
       setDrafting(false);

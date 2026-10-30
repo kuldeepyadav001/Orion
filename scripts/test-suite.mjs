@@ -6,7 +6,11 @@
  */
 
 import { existsSync, unlinkSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { spawnSync } from "node:child_process";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 let passed = 0;
 let failed = 0;
@@ -395,6 +399,25 @@ async function runTests() {
   const eb = lastWhitespaceBoundary(emSpaceText, 6);
   assert(emSpaceText.slice(eb) === "gap. Another one.", "Em-space boundary lands exactly after the whitespace character");
   assert(lastWhitespaceBoundary("Hello world.", 11) === 6, "ASCII whitespace boundary is unchanged");
+
+  // ------------------------------------------------------------
+  // THE IPC CONTRACT
+  // ------------------------------------------------------------
+  // The application has never been run -- there is no display server --
+  // so a Tauri command invoked with the wrong argument name fails at
+  // runtime and nowhere else. The email assistant's "generate reply"
+  // button was broken exactly this way for months.
+  //
+  // The checker reads both sides and compares them.
+  const ipc = spawnSync("node", [resolve(root, "scripts/check-ipc.mjs")], {
+    encoding: "utf-8",
+  });
+  const ipcOk = ipc.status === 0;
+  assert(
+    ipcOk,
+    "the IPC contract holds: every invoked command exists and every argument matches",
+    ipcOk ? "" : (ipc.stdout || ipc.stderr || "").trim().split("\n").slice(0, 6).join(" | ")
+  );
 
   // ------------------------------------------------------------
   // SUMMARY
