@@ -25,7 +25,7 @@ for an explicit list of what is *not* yet verified.
 |---|---|---|
 | **M0** | App shell: Tauri + llama.cpp sidecar + SQLite + streaming chat | ✅ built and verified |
 | M1 | Hardware profiler + tiered model manager | ✅ built and verified |
-| M2 | Documents: multi-format, hybrid search, citations | ✅ recall@4 **0.962** against a live embedding model |
+| M2 | Documents: multi-format, hybrid search, citations | ✅ recall@8 **0.674** over 459 chunks of real documentation against a live embedding model, against 0.488 for keyword search |
 | M3 | Everywhere: tray, `Win+O` hotkey, file drop | ✅ built; cold-start phases measured |
 | M4 | Voice: speech in, speech out, optional wake word | ✅ built; STT latency measured, TTS not |
 | M5 | Capability broker + read-only tools (propose-only) | ✅ built; **0.0%** BIPIA attack success rate |

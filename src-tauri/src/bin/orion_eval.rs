@@ -277,7 +277,7 @@ fn main() -> ExitCode {
         ("bm25", run_eval(k, |q, kk| harness.bm25_only(q, kk))),
         ("dense", run_eval(k, |q, kk| harness.vector_only(q, kk))),
         (
-            "PRODUCTION dense-3 + lexical-1",
+            "PRODUCTION dense-first",
             run_eval(k, |q, kk| harness.dense_mixed(q, kk, 1)),
         ),
         (

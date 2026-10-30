@@ -241,6 +241,22 @@ confidence intervals and a paired comparison, and stops the server again:
 ./scripts/run-eval.sh --verbose            # per-question table
 ```
 
+**Retrieval quality on a real corpus.** The suite above is 22 chunks, which
+every retriever can ace. This one scores 43 questions against 429 chunks of
+Orion's own documentation, with the ground truth given as text anchors:
+
+```bash
+./scripts/run-eval.sh --real
+./scripts/run-eval.sh --real --k 4 --show 1,25   # inspect individual questions
+```
+
+**How many characters a token costs.** The embedding budget is derived from
+the measured density of real text, not from a guess:
+
+```bash
+python3 scripts/measure-embed-tokens.py 1200
+```
+
 **Retrieval latency and the headless cold-start phases:**
 
 ```bash

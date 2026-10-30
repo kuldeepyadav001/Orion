@@ -61,11 +61,25 @@ pub const EMBED_DIM: usize = 384;
 /// pool was never used — it only cost SQLite work. It also has to match the
 /// prompt size, because the retrieval order reserves one of these slots for
 /// the lexical ranking; a lexical hit sitting at position 7 of an 8-candidate
-/// pool would never reach the 4-chunk prompt.
+/// pool would never reach the prompt.
 const SEARCH_LIMIT: usize = CONTEXT_TOP_K;
 
 /// How many of those actually reach the prompt.
-const CONTEXT_TOP_K: usize = 4;
+///
+/// Eight, not four. The chunk size came down when the embedding budget
+/// became a token budget (`rag::embed`), so a chunk is now about 600
+/// characters where it used to be 1,200: eight of them carry about as many
+/// characters as four used to, and the prompt has not grown.
+///
+/// What that buys is measured, not assumed. Against 429 chunks of Orion's
+/// own documentation (§7.9), recall@4 is 0.605 and recall@8 is 0.674 —
+/// the answer is in the retrieved set 7 points more often — while the mean
+/// reciprocal rank barely moves (0.446 to 0.454), which says the extra
+/// candidates are being *added* rather than *displacing* the right one.
+///
+/// The prompt cost is bounded independently by `MAX_CONTEXT_CHARS`, so a
+/// library of unusually long chunks cannot push the window.
+const CONTEXT_TOP_K: usize = 8;
 
 /// Minimum cosine similarity for a passage to count as relevant.
 ///

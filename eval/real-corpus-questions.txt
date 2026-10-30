@@ -24,14 +24,28 @@ name: orion-docs
 #   probe <paraphrase|exact|heading|disambiguation>
 #   source <path substring>
 #   unanswerable
+#
+# WHY THE CORPUS IS A SNAPSHOT IN eval/corpus/
+#
+# The first version of this suite pointed at the live documents, and the
+# numbers moved every time a document was edited -- including when the
+# edit was *this project recording the numbers*. A benchmark whose corpus
+# is a moving target cannot be compared against last week's result, so the
+# corpus is frozen. To score the live documents instead, pass them
+# explicitly:
+#
+#   orion_eval_real --corpus docs/PROJECT-STATE.md,docs/ORION-PLAN.md,...
+#
+# and expect the numbers to differ: the live corpus is larger, and the
+# anchors still resolve because they are text, not chunk ids.
 
 [corpus]
-docs/PROJECT-STATE.md
-docs/ORION-PLAN.md
-docs/ARCHITECTURE.md
-docs/SECURITY.md
-docs/RUNNING-IT.md
-README.md
+eval/corpus/PROJECT-STATE.md
+eval/corpus/ORION-PLAN.md
+eval/corpus/ARCHITECTURE.md
+eval/corpus/SECURITY.md
+eval/corpus/RUNNING-IT.md
+eval/corpus/README.md
 
 [questions]
 # --- Paraphrase: the wording differs from the document ------------------

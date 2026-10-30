@@ -26,10 +26,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::rag::search::Hit;
 
-/// Default number of chunks placed in the prompt. Four chunks at ~1200 chars
-/// is ~1200 tokens, which leaves room for history and the answer inside the
-/// 4096-token window a Tier T1 model runs with.
-pub const DEFAULT_TOP_K: usize = 4;
+/// Default number of chunks placed in the prompt.
+///
+/// Eight chunks at ~600 characters is about the same number of characters as
+/// four chunks at ~1,200 used to be, so the prompt does not grow — but it
+/// can carry twice as many separate facts. Measured against 429 chunks of
+/// real documentation, recall@4 is 0.605 and recall@8 is 0.674
+/// (`docs/PROJECT-STATE.md` §7.9).
+pub const DEFAULT_TOP_K: usize = 8;
 
 /// Hard ceiling on total context characters, independent of `top_k`. Protects
 /// the small-tier context window when chunks run long.

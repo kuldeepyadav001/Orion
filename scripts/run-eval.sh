@@ -148,9 +148,14 @@ if [ "$REAL" = "1" ]; then
     exit 1
   fi
   echo "==> real-corpus suite: $SUITE"
+  # Run from the repository root: the suite names its corpus files
+  # relative to it, and running the binary from src-tauri would resolve
+  # them against the wrong directory.
+  cd "$ROOT"
   ORION_EVAL_URL="http://127.0.0.1:$PORT" \
   ORION_EVAL_TOKEN="$TOKEN" \
-    cargo run --quiet --release --bin orion_eval_real -- \
+    cargo run --quiet --release \
+      --manifest-path "$ROOT/src-tauri/Cargo.toml" --bin orion_eval_real -- \
       --questions "$SUITE" \
       --url "http://127.0.0.1:$PORT" \
       --token "$TOKEN" \

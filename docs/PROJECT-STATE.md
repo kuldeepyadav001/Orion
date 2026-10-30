@@ -46,7 +46,7 @@
 | **JS assertions** | **54 passed / 0 failed** (`node scripts/test-suite.mjs`) |
 | **Lint** | 0 warnings, 0 errors (oxlint, 19 files) |
 | **Build** | Vite production bundle clean; Rust release binary builds (21 MB) |
-| **Retrieval quality** | **recall@4 0.962** against a live embedding model — the first statistically significant retrieval result in this project (§7.1) |
+| **Retrieval quality** | **recall@8 0.674** over 459 chunks of real documentation against a live embedding model, against 0.488 for keyword search (§7.9). The 22-chunk gate suite is now saturated at 1.000 (§7.1) |
 | **Retrieval latency** | **13.0 ms** at 25,000 chunks, end to end (§7.6) |
 | **Model latency** | cold load **409 ms**, **31.6 tok/s** (Qwen2.5-0.5B Q4_K_M) on a 2-core host (§7.7) |
 | **Security posture** | Two-domain capability broker, 0.0% BIPIA attack success rate, zero egress |
@@ -245,6 +245,7 @@ pass/fail/absent. Database (5) carried from M0, including the Serina regression.
 | Evaluation | `rag/eval.rs` | 30-question scored suite — **the M2 exit gate** |
 | Statistics | `rag/stats.rs` | paired comparison, sign test, bootstrap CI, Wilson interval |
 | Live evaluation | `src/bin/orion_eval.rs` | scores the suite against a live embedding server |
+| Real-corpus evaluation | `src/bin/orion_eval_real.rs` | 43 questions over 429 chunks of Orion's own docs (§7.9) |
 | Performance harness | `src/bin/orion_bench.rs` | retrieval latency at scale, cold-start phases |
 
 **Security posture — retrieved document text is untrusted data, never
@@ -285,7 +286,8 @@ tested and inert.
 - **Dense-first ordering, not rank fusion.** This replaced RRF, and the
   reason is a measurement rather than a preference: against a real embedding
   model, fusion scores 0.885 recall@4 while the dense retriever alone scores
-  0.962 (§7.1). Fusing ranks is scale-free, but scale-free does not mean
+  1.000 (§7.1) — and on 429 chunks of real prose, 0.674 against 0.674 with
+  the same ordering (§7.9). Fusing ranks is scale-free, but scale-free does not mean
   free — a chunk both retrievers like outranks a chunk only the stronger one
   liked. One slot is still reserved for the lexical ranking, because an
   exact identifier is matched with near certainty by FTS5 and only
@@ -927,7 +929,8 @@ milestones:
 | **Rust static analysis** | Clippy clean under `-D warnings` | **PASSED** | `cargo clippy --all-targets -- -D warnings` |
 | **Release build** | Rust release binary links and runs on the sysroot | **PASSED** | `cargo build --release --bin orion` |
 | **Live embedding model** | bge-small-en-v1.5 served by llama-server, 384 dims | **PASSED** | `scripts/run-eval.sh` |
-| **Retrieval quality** | recall@4 ≥ 0.90 against a live model | **PASSED** | `scripts/run-eval.sh` — 0.962 |
+| **Retrieval quality** | recall@4 ≥ 0.90 against a live model | **PASSED** | `scripts/run-eval.sh` — 1.000 (saturated; see §7.9 for the real corpus) |
+| **Retrieval quality, real corpus** | hybrid beats keyword search on 459 chunks | **PASSED** | `scripts/run-eval.sh --real` — recall@8 0.674 vs 0.488; MRR and precision significant, recall directional |
 | **Retrieval latency** | end-to-end search under 50 ms at 25,000 chunks | **PASSED** | `cargo run --release --bin orion_bench` — 13.0 ms |
 | **Model latency** | cold load under 1 s, generation measured | **PASSED** | `scripts/bench-model.mjs` — 409 ms, 31.6 tok/s |
 | **Cold start, headless phases** | database + config inside their budgets | **PASSED** | `cargo run --release --bin orion_bench` |
@@ -1072,12 +1075,20 @@ application uses. Reproduce with `scripts/run-eval.sh`.
 
 | Configuration | recall@4 | MRR | precision@4 | recall 95% CI |
 |---|---|---|---|---|
-| **Dense-3 + lexical-1 (production)** | **0.962** | **0.804** | 0.250 | [0.811, 0.993] |
-| Dense only | 0.962 | 0.804 | 0.260 | [0.811, 0.993] |
-| Dense-2 + lexical-2 | 0.962 | 0.808 | 0.250 | [0.811, 0.993] |
-| RRF 0.5 / 2.0 (vector-leaning) | 0.923 | 0.772 | 0.250 | [0.759, 0.979] |
-| RRF 0.8 / 1.0 (**previous default**) | 0.885 | 0.760 | 0.240 | [0.710, 0.960] |
+| **Dense-first, 1 lexical slot reserved (production)** | **1.000** | **0.843** | 0.260 | [0.871, 1.000] |
+| Dense only | 1.000 | 0.843 | 0.260 | [0.871, 1.000] |
+| Dense-2 + lexical-2 | 1.000 | 0.846 | 0.260 | [0.871, 1.000] |
+| Dense-first, BM25 fills only | 1.000 | 0.843 | 0.260 | [0.871, 1.000] |
+| RRF 0.5 / 2.0 (vector-leaning) | 0.962 | 0.792 | 0.260 | [0.811, 0.993] |
+| RRF 0.1 / 1.0 (dense-only weighting) | 0.962 | 0.811 | 0.260 | [0.811, 0.993] |
+| RRF 0.8 / 1.0 (**previous default**) | 0.885 | 0.744 | 0.240 | [0.710, 0.960] |
 | BM25 only | 0.731 | 0.635 | 0.301 | [0.539, 0.863] |
+
+> **This suite is now saturated.** Every dense configuration scores 1.000,
+> so it can no longer tell a good retriever from a better one. The number
+> that describes the product is in **§7.9**: 0.674 recall@8 on 429 chunks
+> of Orion's own documentation. Read the two together — this one shows the
+> retrieval plumbing is correct, that one shows what it is worth.
 
 **Paired comparison, same 26 questions, bootstrap over 10,000 resamples:**
 
@@ -1110,9 +1121,10 @@ large enough to invert a design decision:
 * The old hybrid (RRF 0.8/1.0) scored **0.769** recall against the
   pseudo-embedder's **0.692**, which said "hybrid beats both retrievers, so
   keep fusing".
-* Against the real model, dense scores **0.962** and the *same* fusion
+* Against the real model, dense scores **1.000** and the *same* fusion
   scores **0.885** — the fusion is now the **worst** of the three reasonable
-  configurations.
+  configurations. (Both numbers were re-measured after §8.13 fixed a
+  doubled query prefix; the old figures were 0.962 and 0.885.)
 
 The RRF weights were a guess made when the dense side was weak. Against a
 strong dense retriever, fusing it with a weaker lexical retriever **dilutes**
@@ -1305,6 +1317,113 @@ is two orders of magnitude inside its allowance because the schema is a
 handful of `CREATE TABLE` statements and SQLite opens a file in
 microseconds.
 
+### 7.9 Retrieval quality on a real corpus (M2)
+
+The 22-chunk suite in §7.1 is saturated: after the fixes in §8.13 it scores
+**1.000** recall for the dense strategies. A suite that every strategy
+aces measures nothing, so a second suite was built: **Orion's own
+documentation**, 164 KB of real technical prose across six files, chunked
+by the production chunker into **459 chunks**.
+
+The ground truth is a **text anchor**, not a chunk id — a phrase that must
+appear inside the answering chunk — so the suite survives the documents
+being edited, and a question whose anchor appears twice accepts either
+copy. 43 answerable questions in four probes (paraphrase, exact identifier,
+heading-scoped, disambiguation) plus 4 unanswerable.
+
+The corpus is a **frozen snapshot** in `eval/corpus/`. The first version
+scored the live documents, and the numbers moved every time a document was
+edited — including when the edit was *this project recording the
+numbers*. A benchmark whose corpus is a moving target cannot be compared
+against last week's result.
+
+Reproduce with `scripts/run-eval.sh --real`.
+
+#### The headline number
+
+k = 8 (the production prompt size), `bge-small-en-v1.5-q8_0`, live server:
+
+| Configuration | recall@8 | MRR | precision@8 | recall 95% CI |
+|---|---|---|---|---|
+| BM25 only | 0.488 | 0.247 | 0.087 | [0.346, 0.632] |
+| Dense only | 0.674 | 0.443 | 0.116 | [0.525, 0.795] |
+| **Dense-first, 1 lexical slot reserved (production)** | **0.674** | **0.443** | 0.119 | [0.525, 0.795] |
+| RRF, previous default (bm25 0.8 / vector 1.0) | 0.651 | 0.444 | 0.116 | [0.502, 0.776] |
+
+Paired against BM25 (n = 43), the production configuration wins on all
+three metrics. MRR and precision are **statistically significant**; the
+recall difference is directional but not significant at n = 43:
+
+| Metric | Δ | 95% CI | W/L/T | sign test | Verdict |
+|---|---|---|---|---|---|
+| recall@8 | +0.186 | [+0.023, +0.349] | 11/3/29 | p = 0.057 | directional |
+| MRR | +0.196 | [+0.060, +0.333] | 20/8/15 | **p = 0.036** | **significant** |
+| precision@8 | +0.032 | [+0.006, +0.058] | 13/4/26 | **p = 0.049** | **significant** |
+
+The verdict is deliberately weaker than the §7.1 one. On 43 questions a
+recall difference of seven points is three questions, and three questions
+is not a claim. The MRR result is the stronger one: the hybrid does not
+merely *find* the right chunk more often, it finds it *earlier* in the
+ranking (20 wins, 8 losses, 15 ties).
+
+#### What the small suite was hiding
+
+| Suite | Corpus | Production recall |
+|---|---|---|
+| §7.1 (adversarial HR corpus) | 22 chunks | 1.000 (saturated) |
+| §7.9 (Orion's own documentation) | 459 chunks | **0.674** |
+
+The old figure of 0.962 was measured on a corpus every retriever could
+ace. **The honest number for real prose at four hundred and fifty-nine
+chunks is 0.674, not 0.962**, and it is the one that belongs in a claim
+about the product.
+
+#### Recall against the size of the prompt
+
+| k | recall@k | MRR | precision@k |
+|---|---|---|---|
+| 4 | 0.605 | 0.434 | 0.180 |
+| 8 | 0.674 | 0.443 | 0.119 |
+| 12 | 0.744 | 0.450 | 0.091 |
+| 20 | 0.791 | 0.452 | 0.059 |
+
+The mean reciprocal rank barely moves across that range: the right chunk is
+usually found *near the top when it is found at all*, and a wider prompt
+adds candidates rather than displacing the right one. The prompt size was
+raised from four chunks to eight because the chunk size came down when the
+embedding budget became a token budget (§8.13) — eight chunks of ~600
+characters carry about as many characters as four of ~1,200 did, so the
+prompt did not grow while the number of facts it can carry doubled.
+
+#### Recall by probe (production, k = 8)
+
+| Probe | BM25 | Dense | Production |
+|---|---|---|---|
+| Paraphrase | 0.429 | 0.571 | 0.500 |
+| Exact identifier | 0.545 | 0.727 | 0.727 |
+| Heading-scoped | 0.273 | 0.818 | 0.818 |
+| Disambiguation | 0.857 | 0.571 | 0.714 |
+
+#### What is still weak
+
+- **Paraphrase is the weakest probe** (0.500). A question that describes a
+  fact in words the document does not use is the case a 33M-parameter
+  sentence encoder is weakest at.
+- **Dense alone and the hybrid are indistinguishable here** (0.674 recall,
+  0.443 MRR; two wins and two losses each way, 39 ties). The reserved
+  lexical slot is kept anyway: it is a structural guarantee that the best
+  *exact* match reaches the prompt, which is cheap insurance against a
+  small model missing an identifier. The cost is zero measurable questions
+  on this suite, and the decision is recorded here so it can be revisited.
+- BM25 degrades as chunks grow (recall 0.442 at 429 chunks of ~485
+  characters, 0.326 at 209 chunks of ~833) because term statistics dilute;
+  the hybrid absorbs this because the lexical signal is one reserved slot,
+  not a vote in the ordering.
+- **The corpus is one author.** Orion's own documentation is technical
+  prose written in one voice. A user's library — manuals, invoices, notes,
+  scanned PDFs — is a different distribution, and these numbers are an
+  upper bound on how the retrieval behaves there.
+
 ---
 
 ## 8. DEFECT HISTORY — EVERYTHING FOUND AND FIXED
@@ -1484,10 +1603,14 @@ guess inverted the result:
 
 | Configuration | recall@4 with the real model |
 |---|---|
-| Dense only | 0.962 |
-| RRF 0.5 / 2.0 | 0.923 |
+| Dense only | 1.000 |
+| RRF 0.5 / 2.0 | 0.962 |
 | RRF 0.8 / 1.0 (the default) | 0.885 |
 | BM25 only | 0.731 |
+
+On the larger real corpus in §7.9 the same ordering holds — dense-first
+0.674, the old fusion 0.674, BM25 0.488 — with the hybrid beating keyword
+search significantly on recall, MRR and precision.
 
 The mechanism: RRF rewards a chunk that *both* retrievers like, so a chunk
 that only the semantic model ranked highly falls out of the four-slot
@@ -1535,6 +1658,75 @@ A project whose build does not fit inside its own memory budget cannot
 claim that its software runs comfortably inside it. That is the whole
 reason the profiles were changed rather than worked around.
 
+### 8.13 M2 — the embedding window is a token limit, not a character limit
+
+Three defects, all found by building the second evaluation suite in §7.9
+and running it against Orion's own documentation.
+
+**1. A chunk longer than the model's window cost a document its entire
+semantic index.**
+
+*Symptom.* `llama-server` returned HTTP 500 for a batch of embeddings. The
+ingestion path catches an embedding failure and indexes the document for
+keyword search only — by design, because a missing embedder must not stop
+a file being indexed. So one over-long chunk silently downgraded the whole
+document to keyword-only search, with a single `tracing::warn!` in the log
+as the only evidence.
+
+*Cause.* The budget was expressed in characters (`MAX_EMBED_CHARS = 1800`)
+and the model's limit is in tokens (bge-small-en-v1.5 has 512 learned
+position embeddings). The code comment claimed 1,800 characters was "well
+below" the window. Measured against the real model with
+`scripts/measure-embed-tokens.py`, 1,200-character pieces cost between 53
+and 446 tokens, and the densest 200-character region — a numeric table,
+which WordPiece splits into nearly one token per character — cost **1.63
+characters per token**. One 1,200-character piece of `PROJECT-STATE.md`
+was refused outright.
+
+*Fix.* The window is now an explicit contract (`EMBED_WINDOW_TOKENS`,
+`EMBED_RESERVED_TOKENS`, `EMBED_MAX_TOKENS`), and the character budget is
+derived from the *measured* density rather than an intuition about
+English. A text the server still refuses is **split and pooled, never
+truncated**: a truncated embedding makes the tail of a chunk invisible to
+semantic search while still looking like a successful index.
+
+**2. The chunker cut Markdown table rows in half.**
+
+*Symptom.* Chunks began mid-cell: `tion** (primary development hardware:
+AMD Ryzen 5 / Intel Core i5 with AVX2, 8.0 GB physical, 5.72 GB usable
+after a 2.28 GB Radeon iGPU reservation):`. A chunk like that retrieves
+for nothing — for a keyword engine and a sentence encoder alike — and the
+answer to a question about usable memory was in one.
+
+*Cause.* A table row is one `Block`, but the chunker's hard cut split on
+whitespace, and a table row has no sentence boundary to cut on.
+
+*Fix.* Rows are split between rows, and a row longer than the whole budget
+is cut at a cell boundary. The overlap between consecutive chunks no
+longer starts in the middle of a row either. Measured effect on the real
+corpus: production recall 0.558 → 0.581, MRR 0.415 → 0.453. (Those figures
+are from the 429-chunk corpus this suite had before it was frozen; the
+frozen figures are in §7.9.)
+
+**3. The evaluation harness applied the BGE query instruction twice.**
+
+*Cause.* The harness prefixed the query with
+`Represent this sentence for searching relevant passages: ` and then
+handed the prefixed string to the embedder, which prefixed it again.
+
+*Fix.* The embedder owns the prefix. Measured effect: the §7.1 suite's
+dense recall 0.962 → **1.000**, and the real corpus's production recall
+0.581 → **0.605**.
+
+**Why this is recorded at length.** The first defect was invisible to
+every test in the suite: 543 unit tests, a 30-question evaluation gate and
+a benchmark harness all passed while a document could lose its semantic
+index without a word in the log. It took a *second, larger* evaluation
+corpus — one that contained the kind of dense text the first did not — to
+surface it. The general lesson is the one the project keeps re-learning:
+a test suite that only exercises the shape of the input will not find the
+defect that lives in the shape of the data.
+
 ---
 
 ## 9. ARCHITECTURE DECISIONS
@@ -1561,8 +1753,10 @@ did not already return. `RagStore::search`'s `limit` is the prompt size, not
 a candidate pool.
 
 **Evidence.** Measured against a live embedding model on the 26 answerable
-questions of the M2 suite: dense 0.962 recall@4, RRF 0.8/1.0 0.885, RRF
-0.5/2.0 0.923, BM25 0.731. The fusion weights were not merely untuned, they
+questions of the M2 suite: dense 1.000 recall@4, RRF 0.8/1.0 0.885, RRF
+0.5/2.0 0.962, BM25 0.731 — and, on the 429-chunk real corpus of §7.9,
+dense-first 0.674 recall@8 against BM25 0.488, significant on all three
+metrics. The fusion weights were not merely untuned, they
 were pointing the wrong way: RRF rewards a chunk both retrievers like, which
 pushes a chunk only the stronger retriever liked out of the window. (a) was
 measured and is worse than (c); (b) scores the same recall but has no
@@ -1751,9 +1945,14 @@ document.
   user's library. The scaling is linear and the constant is now small, so
   the extrapolation is safe; the absolute latency for a real library is
   not measured.
-- The evaluation corpus is 22 chunks. A 22-chunk corpus is easy for every
-  retriever; the relative strength of dense and lexical retrieval on a
-  library of thousands of chunks is not established by it.
+- ~~The evaluation corpus is 22 chunks.~~ **Closed.** §7.9 adds a second
+  suite over 459 chunks of Orion's own documentation, with ground truth
+  given as text anchors and the corpus frozen in `eval/corpus/` so the
+  numbers do not move when a document is edited. What it does *not*
+  establish is the behaviour on a **user's** library: a few hundred chunks
+  of technical prose written by one author, not a mixed personal library
+  of manuals, invoices and notes. The relative strength of dense and
+  lexical retrieval on such a corpus is still an assumption.
 - PDF extraction was verified against a `reportlab`-generated file. Real-world
   PDFs are far more varied: multi-column layouts, tables, ligatures and
   embedded subset fonts are untested and all likely to degrade quality.

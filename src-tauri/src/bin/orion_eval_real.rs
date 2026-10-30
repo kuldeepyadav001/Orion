@@ -186,7 +186,7 @@ struct Args {
 
 fn parse_args() -> Result<Args, String> {
     let mut corpus: Vec<String> = Vec::new();
-    let mut questions = "eval/real-corpus-questions.json".to_string();
+    let mut questions = "eval/real-corpus-questions.txt".to_string();
     let mut url = std::env::var("ORION_EVAL_URL")
         .unwrap_or_else(|_| "http://127.0.0.1:8082".to_string());
     let mut token =
@@ -466,7 +466,7 @@ fn main() -> ExitCode {
         ("bm25", run_questions(&questions, k, |q, kk| harness.bm25_only(q, kk))),
         ("dense", run_questions(&questions, k, |q, kk| harness.vector_only(q, kk))),
         (
-            "PRODUCTION dense-3 + lexical-1",
+            "PRODUCTION dense-first",
             run_questions(&questions, k, |q, kk| harness.dense_mixed(q, kk, 1)),
         ),
         (

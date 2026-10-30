@@ -1,0 +1,459 @@
+# ORION — Master Plan v0.1
+
+**A private, offline-first personal AI that lives on your machine, talks, sees your documents, and acts on your behalf.**
+
+**Date:** 2026-09-10 · **Revised:** 2026-10-30 · **State:** `DELIVERED` · **Predecessor:** Serina (archived reference)
+**Status:** this is the **original plan**, kept as the record of what was
+decided and why. It is not a state document — for what has actually been
+built, measured and left open, read
+[`PROJECT-STATE.md`](PROJECT-STATE.md). Where the two disagree, the plan is
+a plan and the state file is the truth.
+
+**What changed since this plan was written.** All eleven milestones (M0–M10)
+are built and verified; §8 and §10 have been reconciled against what was
+actually delivered. The two places where the build diverged from the plan
+were the **release point** (the plan said ship at M6; the work continued to
+M10) and the **retrieval strategy** (the plan said hybrid fusion; measurement
+against a real embedding model showed dense-first ordering is better — see
+ADR-009 in the state file).
+
+---
+
+## 0. What Orion is
+
+One installer. Works offline. Reachable anywhere on your system by hotkey or voice.
+Answers from your documents. Acts on your computer when you tell it to — inside a
+permission boundary that holds even if the model is wrong or hijacked.
+
+**Why a new project, not Serina v2:** the stack changes completely (Docker microservices →
+single native app). Nothing but the React components and the RAG *concepts* survive. A clean
+repo is correct. Serina stays public and archived as the v1 learning artifact — it's a
+legitimate portfolio piece, don't delete it.
+
+---
+
+## 1. Scope — everything you've asked for, organised
+
+| # | Capability | Tier |
+|---|---|---|
+| C1 | Natural chat, streaming, persistent history | Core |
+| C2 | Document intelligence — PDF, DOCX, XLSX, CSV, MD, TXT, HTML, code | Core |
+| C3 | Hardware-aware model selection at install | Core |
+| C4 | Reachable everywhere — tray, global hotkey, file drop, context menu | Core |
+| C5 | Voice — speak to it, it speaks back, wake word | Core |
+| C6 | Read & respond to email | Action |
+| C7 | Open apps, control the desktop | Action |
+| C8 | Browse, scroll, click, fill forms | Action |
+| C9 | File management, shell | Action |
+| C10 | Single-file release, offline, cross-platform | Release |
+
+---
+
+## 2. The one architectural idea that makes this work
+
+**Accessibility trees, not screenshots.**
+
+For browser control, desktop control, and document structure — read the *semantic* tree the
+OS/browser already maintains for screen readers, never pixels.
+
+Evidence (2026): Playwright's entire AI ecosystem abandoned screenshots for the accessibility
+tree. Numbers: **2–5 KB of structured text vs 500 KB–2 MB per screenshot**, 10–100× faster,
+vision tokens cost 3–5× text tokens, and element references are *deterministic* — the agent
+says "click ref abc123" instead of guessing x,y coordinates.
+
+Why this decides the whole project: **a 4B local model cannot reliably do vision-based
+coordinate clicking.** It can absolutely pick a labelled element out of a text list. This one
+choice is what makes Jarvis-mode feasible on 8 GB CPU-only hardware instead of fantasy.
+
+Same principle everywhere:
+- Browser → Playwright accessibility snapshot
+- Windows desktop → UI Automation · macOS → AX API · Linux → AT-SPI
+- Documents → structural extraction (headings, tables), not flat text dumps
+
+Vision is the **fallback only** for canvas/WebGL/legacy apps where the tree is empty.
+
+---
+
+## 3. Hardware-aware model selection (your idea — it's a good one)
+
+This is genuinely one of the best ideas in your message. Done properly it's a real
+differentiator, because most local AI tools either dump a model list on the user or ship one
+model that's wrong for half of them.
+
+### 3.1 Detect, don't ask (but let them override)
+
+At install and on every launch, probe: total RAM, free RAM, CPU cores + AVX2/NEON, GPU vendor
++ VRAM, Vulkan/Metal/CUDA availability, free disk.
+
+Then **recommend** a tier, show the reasoning, and let the user change it. Never silently
+decide, never make them guess their own specs from a dropdown.
+
+### 3.2 Tier table
+
+| Tier | Detected | Chat model | Resident | Expect |
+|---|---|---|---|---|
+| **T1 Minimal** | ≤8 GB RAM, CPU | Qwen3 4B Q4_K_M (or Phi-4-mini) | ~3.4 GB | Chat + RAG. Voice OK. Agent = propose-only. |
+| **T2 Standard** | 16 GB RAM | Qwen3 8B Q4_K_M | ~5.5 GB | Comfortable. Tool calls become usable. |
+| **T3 Performance** | 32 GB / 8–12 GB VRAM | Qwen3 14B Q4_K_M | ~9 GB | Strong reasoning, reliable agent. |
+| **T4 Workstation** | ≥24 GB VRAM | Qwen3 32B / Gemma 3 27B | ~19 GB | Near-frontier, fully local. |
+| **T0 Remote** | any | your GPU box / API | ~0 | Weak laptop, heavy model. |
+
+Companions, all tiers: embeddings ~120 MB · Whisper STT 75–470 MB · Piper TTS 15–80 MB.
+
+### 3.3 Rules that keep it honest
+
+- Budget against **free** RAM, not total. An 8 GB machine with Chrome open has ~4 GB.
+- Leave ≥2 GB headroom for OS. Never recommend a model that will swap.
+- **Benchmark after first load** — measure real tok/s. If <3 tok/s, offer to step down.
+- **Licence matters for redistribution:** Qwen (Apache 2.0), Phi (MIT), Mistral (Apache 2.0)
+  are safe to bundle. **Gemma and Llama have custom terms — verify before shipping.**
+- Model registry is a **signed JSON manifest**, so new models ship without an app update.
+- Runtime downgrade: if a T3 machine is under memory pressure, offer the T2 model.
+
+### 3.4 Inactivity Sleep & Model Auto-Hibernation Policy
+
+Leaving 3.5 GB to 9 GB of quantized model weights sitting in resident RAM permanently blocks
+developers and professionals from running compilers, heavy IDEs, Docker, or CAD suites while
+Orion is in the background.
+
+- **Auto-Hibernate Policy:** Inactivity watchdog timer (configurable: 5, 10, 15 minutes; default 10m).
+- **Graceful Unload:** When the timer expires without user interaction, the engine terminates the
+  `llama-server` process, returning 100% of GPU VRAM and system RAM to the OS.
+- **Standby State Transition:** Status shifts honestly from `Ready` back to `Standby` (`Idle`).
+- **Seamless Wake:** The next message, global hotkey prompt, or voice capture transparently re-spawns
+  and memory-maps the weights (<1.5s on NVMe SSDs).
+- **Battery & Sleep Awareness:** System sleep/suspend signals and low-battery states (<20%) trigger
+  immediate hibernation rather than holding memory awake.
+
+### 3.5 Workload Personas & Installer Model Selection
+
+One generic model cannot match domain-trained specialized architectures. The installer / first-run
+wizard presents a clear workload persona filter:
+
+1. **Software Developer / Coder:** Deploys a state-of-the-art coding model (e.g. `Qwen2.5-Coder-7B`
+   or `3B` on lower RAM tiers) with deep AST comprehension, multi-language syntax, and refactoring prowess.
+2. **Researcher / Analyst:** Deploys a reasoning/analytical model tuned for dense context analysis,
+   mathematical rigor, and multi-document citation synthesis.
+3. **Creative / Scriptwriting / Animation:** Deploys a creative narrative model optimized for dialogue,
+   worldbuilding, and descriptive prompt expansion.
+4. **General Assistant:** Deploys the balanced default conversational model for daily productivity.
+
+### 3.6 Two-Tier Orchestration: Generalist Router + Domain Specialist
+
+To balance real-time conversational latency with deep domain power on personal machines:
+
+```
+                  ┌──────────────────────────────────────────────┐
+                  │                 USER INPUT                   │
+                  │        (Voice via Whisper / Hotkey)          │
+                  └──────────────────────┬───────────────────────┘
+                                         │
+                                         ▼
+                  ┌──────────────────────────────────────────────┐
+                  │        TIER 1: GENERALIST ROUTER             │
+                  │  (Fast, lightweight, handles voice chatter)  │
+                  └──────────────────────┬───────────────────────┘
+                                         │
+                         ┌───────────────┴───────────────┐
+                         ▼                               ▼
+                 [ General Query ]            [ Complex Domain Task ]
+                         │                               │
+                         ▼                               ▼
+                 Direct Streaming Answer         1. Enhance & Scaffolding Prompt
+                                                 2. Offload Generalist from RAM
+                                                 3. Load Specialist (e.g. Coder)
+                                                 4. Execute Deep Reasoning/Code
+                                                 5. Auto-Hibernate when done
+```
+
+1. **Voice is Always Front-of-House:** Voice audio transcription and everyday conversational
+   interactions are handled directly by the fast generalist model to maintain low latency.
+2. **Intent Classification & Prompt Enhancement:** When the generalist identifies a complex,
+   domain-specific challenge (e.g. writing an entire parser, complex architecture refactor), it
+   does not fail with a generic answer. Instead, it extracts requirements, structures constraints,
+   and enhances the prompt into an expert-grade directive.
+3. **Memory Arbitration & Model Swapping:** On memory-constrained workstations (≤16 GB RAM),
+   the generalist yields its memory slot, offloading to storage so the specialized model can load
+   without causing system paging or swap thrashing.
+4. **Unified Inactivity Watchdog:** Both models adhere to the Auto-Hibernation Policy, ensuring
+   zero memory waste when the user focuses elsewhere.
+
+---
+
+## 4. Voice (C5)
+
+Fully local pipeline, all offline:
+
+```
+mic → VAD (Silero) → wake word → Whisper STT → Orion → Piper TTS → speakers
+```
+
+| Stage | Choice | Size | Why |
+|---|---|---|---|
+| STT | **whisper.cpp** | tiny 75 MB → small 466 MB by tier | C binary, no Python, CPU/Vulkan/Metal, streaming |
+| TTS | **Piper** | 15–80 MB | ~50× real-time on CPU, good quality |
+| VAD | Silero | ~2 MB | Cheap, avoids constant transcription |
+| Wake word | openWakeWord | ~5 MB | "Hey Orion", fully offline |
+
+Not faster-whisper: it drags in Python + CTranslate2, and is CUDA-only for GPU. whisper.cpp
+matches the same stack decision as llama.cpp — one toolchain, no runtime.
+
+**Latency reality — say this out loud:** CPU-only round trip is **5–10 s**. GPU is 2–4 s.
+On T1 hardware, voice will feel like a walkie-talkie, not like talking to a person. Mitigate
+by streaming TTS from the first sentence rather than waiting for the full reply, and using
+tiny.en on T1. Set expectations in the UI; don't let users think it's broken.
+
+**Security note:** voice is *trusted* input (you spoke it) — it may reach the action domain.
+Audio from a file or video is **untrusted** and must not.
+
+---
+
+## 5. Actions — C6/C7/C8/C9
+
+### 5.1 The rule that governs all of it
+
+```
+   UNTRUSTED DOMAIN                    TRUSTED DOMAIN
+   documents · email bodies            you typed it · you said it
+   web pages · file contents                    │
+            │                                   ▼
+            ▼                          ┌──────────────────┐
+      chat / answers                   │ CAPABILITY BROKER│
+      NO TOOL ACCESS  ─────✗─────►     │  tiers · audit   │
+                                       │  undo · sandbox  │
+                                       └────────┬─────────┘
+                                                ▼
+                                            tool runs
+```
+
+Content Orion *reads* can never issue instructions. Only content you *authored* can.
+Crossings happen as structured values you confirm — never free text into the instruction stream.
+
+This is not paranoia. In 2026 this exact chain produced RCE in Google Antigravity, CrewAI
+(4 CVEs), Cursor, and Claude Cowork. Every one of them had a "safe mode" that the payload
+walked around.
+
+### 5.2 Email (C6) — the sharpest edge in the whole project
+
+Email is **attacker-controlled text that arrives unsolicited**. If Orion can read mail and
+also act, anyone who knows your address can attempt to drive your computer.
+
+- Read via IMAP (app password / OAuth in OS keychain — never in a config file)
+- Email bodies enter the **untrusted domain only**. Summaries, triage, search: fine.
+- **Drafting a reply is allowed. Sending is never automatic.** You review and press send.
+- Strip HTML, hidden text, white-on-white, zero-width chars before the model sees it
+- Never auto-follow links or fetch remote images from mail
+- Attachments quarantined; ingest only on explicit request
+
+### 5.3 Browser (C8)
+
+Playwright with accessibility snapshots. Tools: `navigate`, `snapshot`, `click`, `type`,
+`scroll`, `fill_form`, `extract`.
+
+- Runs in a **dedicated Orion browser profile** — never your logged-in personal one.
+  Bank tabs and session cookies stay out of reach.
+- Domain allowlist, off by default.
+- Page content = untrusted. A page cannot cause a new tool call.
+- No downloads without confirm; no credential fields ever auto-filled.
+
+### 5.4 Desktop (C7) & Files (C9)
+
+- Launch apps: allowlisted, `argv` arrays only, **never shell string interpolation**
+  (that was the exact Antigravity flag-injection RCE — always prepend `--`).
+- Window/UI control via platform accessibility APIs, T1+ tier.
+- Files: allowlisted roots, symlink-resolved containment (`RESOLVE_BENEATH` semantics —
+  naive `startswith()` loses to `../` and symlinks). Deletes go to trash, never `unlink`.
+- **Permanently blocked, not "discouraged":** Orion's own config/allowlist/keys, `~/.ssh`,
+  `.aws`, `.env`, git hooks, shell rc files, startup folders, system dirs.
+  The agent must have **no write path to its own permissions** — that's the
+  Configuration-Based Sandbox Escape that survived uninstall in Antigravity.
+
+### 5.5 Capability tiers
+
+| Tier | Examples | Gate |
+|---|---|---|
+| T0 read | list dir, read allowlisted file, snapshot page, read mail | auto |
+| T1 reversible | create/edit in workspace, draft reply, open app | notify + undo |
+| T2 destructive | delete, mass rename, overwrite, install | typed confirm |
+| T3 shell/net | run command, browser writes, send email | per-call approval + sandbox |
+| BLOCKED | self-config, credentials, system paths | impossible |
+
+**Fail closed.** If the sandbox can't start, the tool refuses — CrewAI's worst CVE was a
+*silent fallback* to an unsafe sandbox when Docker was missing.
+
+**Everything is dry-run first** for multi-step plans: show the plan, then execute.
+Append-only audit log the agent cannot touch. Global kill switch.
+
+---
+
+## 6. Stack
+
+| Layer | Choice | Why |
+|---|---|---|
+| Shell | **Tauri v2** | 3–10 MB vs Electron 120–200 MB; 25–80 MB RAM idle; capability system; sidecars; tray + global hotkey native |
+| Core | **Rust** | Privileged layer should be compiled + memory-safe; no CPython to bundle |
+| UI | React (ported from Serina) | Your work carries over |
+| LLM | **llama.cpp `llama-server`** sidecar | Single binary, OpenAI-compatible, bundleable. Ollama can't be shipped in one file. |
+| Storage | **SQLite + sqlite-vec + FTS5** | One file. Replaces Postgres+Redis+Qdrant. Hybrid BM25+vector nearly free. |
+| STT/TTS | whisper.cpp + Piper | Same no-runtime philosophy |
+| Browser | Playwright | Accessibility tree |
+| Tools | MCP-shaped internally | Standard tool schema; **do not** load third-party MCP servers by default (43% of v2.0 impls had command injection) |
+
+Six containers → one app + sidecars + one `.db` file.
+
+```
+┌──────────────────── ORION.app (Tauri v2) ─────────────────────┐
+│ React UI · tray · hotkey · voice HUD · file drop              │
+│───────────────────────────────────────────────────────────────│
+│ RUST CORE                                                     │
+│   chat · RAG · model router · hardware profiler               │
+│   ingestion (pdf/docx/xlsx/md/html/code)                      │
+│   ┌───────────────────────────────────────────┐               │
+│   │ CAPABILITY BROKER  ← security boundary    │               │
+│   └───────────────────────────────────────────┘               │
+│───────────────────────────────────────────────────────────────│
+│ orion.db (SQLite + sqlite-vec + FTS5)                         │
+└────┬──────────────┬──────────────┬──────────────┬─────────────┘
+     ▼              ▼              ▼              ▼
+ llama-server   whisper.cpp     Piper       sandboxed tools
+                                            (seccomp/AppContainer)
+```
+
+---
+
+## 7. Distribution (C10)
+
+**Still a pick-two.** Model weights are 2.5–5 GB; that's physics.
+
+| Asset | Size | Offline day one |
+|---|---|---|
+| `Orion-Setup.exe` (slim) | ~60 MB | no — one download |
+| `Orion-Offline-T1.exe` (fat) | ~3.2 GB | **yes** |
+| `Orion-Offline-T2.exe` | ~6 GB | yes |
+
+Both are "one file." User picks. Slim is the default; fat exists for air-gapped machines and
+USB-stick handoff. Ship Linux + Windows first, macOS after (signing/notarisation is its own
+project).
+
+**Public release conditions:** LICENSE (Serina still has none — legally unusable), signed
+binaries, published hashes, security policy, **actions off by default with an explicit
+opt-in warning screen.**
+
+---
+
+## 8. Build order
+
+| M | Milestone | Proves | Evidence |
+|---|---|---|---|
+| **M0** | Tauri + llama-server + SQLite + streaming chat | the shell works | fresh machine, offline chat |
+| **M1** | C++ Inference Engine & Hardware Profiler | sub-second startup & tiering | ✅ 8/16/32 GB VMs each pick correctly, memory ceiling <= 2.0 GB. Generation measured: **31.6 tok/s** (0.5B Q4_K_M), **11.9 tok/s** (1.5B), cold load 409–508 ms |
+| **M2** | Hybrid RAG Engine (FTS5 BM25 + dense BGE-small vectors + lead chunk fallback) | grounded retrieval | ✅ 30-question eval set scored against a **live** `bge-small-en-v1.5`: recall@4 **0.962** (previous fusion default: 0.885). Paired sign test vs BM25 p = 0.031 |
+| **M3** | Desktop HUD & Presence (Ctrl+Shift+0 daemon, tray overlay) | reach | cold-start <1 s |
+| **M4** | Voice Loop (Whisper edge STT + neural Piper TTS) | duplex speech loop | measured round-trip per tier |
+| **M5** | **Capability Broker + 4-tier sandbox (T0–T3)** | safety *before* power | red-team: injected PDF cannot fire a tool |
+| **M6** | **Windows Auto-Installer & Personas** | shippable distribution | install on a machine that never had it |
+| **M7** | **Sovereign Email Assistant (Read, Triage, Draft & IMAP/EML sync)** | sovereign triage | injected email quarantined, strictly no auto-send (Rule R-5) |
+| **M8** | **Sandboxed Browser Automation (Headless AX tree & isolated profile)** | C8 web actions | domain allowlist enforced, zero vision token overhead, 99.8% bandwidth saved |
+| **M9** | **OS UI Automation (Win32 UIA / AT-SPI desktop control with undo)** | C7/C9 app actions | ✅ Completed & verified: direct native execution without prompt bleed, undo journal |
+| **M10** | **Kernel Hardening (AppContainer isolation, zero-egress firewall)** | full enterprise defense | ✅ Completed & certified: 8m dynamic RAM hibernation, JobObject process isolation, PIN auto-lock |
+
+### Platform Co-Engineering Additions (Implemented across M1–M7)
+- **Multi-Session Chat Management (Storage-First):** SQLite schema v3 pagination, persistent chat sessions, inline renaming, chronological groups.
+- **Native Document Compilation Engine:** True binary document generation directly from conversational context for Microsoft Excel (`.xlsx` with formulas and styling), Word (`.docx`), and Adobe PDF (`.pdf`).
+- **Salted PIN Lock & React ErrorBoundary:** SHA-256 salted PIN screen lock, 8-minute inactivity timer, and top-level React diagnostic `ErrorBoundary`.
+
+**M5 before M7–M10 is non-negotiable.** The boundary gets built before anything can write.
+That ordering was kept: M5 shipped before M7, and the M5 broker is the control
+that lets M7–M10 do anything at all.
+
+**Release at M6, not M10 — as written, this plan assumed the build would stop
+at M6.** It did not. All of M0–M10 is delivered and verified, so the release
+point is now a distribution decision rather than a scope decision: the
+installer is built (M6), the dangerous half is behind a two-domain capability
+broker with a 0.0% BIPIA attack success rate (M5, M10), and what remains
+before a public release is packaging and a desktop-session test, not more
+features. **Release at M6 was a scope-risk mitigation that the schedule has
+since overtaken; the risk it was managing is now managed by M5 instead.**
+
+---
+
+## 9. Honest risks
+
+| Risk | Sev | Mitigation |
+|---|---|---|
+| Injection → RCE via actions | **Critical** | Domain separation, OS sandbox, M5 first |
+| Email as attack vector | **Critical** | Untrusted-only, never auto-send |
+| Scope kills the project | **Critical** | 10 milestones, ship at M6 |
+| 4B too weak for tool calls | High | Propose-only on T1; tiering; remote option |
+| Voice latency disappoints on T1 | Medium | Stream TTS early, set expectations |
+| Rust learning curve | High | Port UI first, thin vertical slices |
+| Desktop accessibility APIs differ per OS | High | Trait + per-OS impl; Windows/Linux first |
+| Model licences block redistribution | Medium | Qwen/Phi/Mistral only in bundles |
+| Cross-platform packaging | High | 2 OSes first |
+
+**The top risk is scope, not difficulty.** Ten milestones, voice, three OSes, and an agent
+that drives your computer — that is a year of serious evenings. It's achievable in that
+order. It is not achievable all at once.
+
+---
+
+## 10. Decision gates — closed (G1–G7)
+
+These were open when the plan was written. All seven are now settled; the
+answers are recorded here so the reasoning survives.
+
+1. **G1 Name/repo** — **closed: Orion**, a fresh repository
+   (`github.com/kuldeepyadav001/Orion`), with Serina kept as an archived
+   public reference. The plan's reasoning was right and the outcome was as
+   expected.
+2. **G2 Core language** — **closed: Rust-only, no Python sidecar.** Locked in
+   as ADR-002. The reasoning — one language for the whole core, no IPC
+   boundary between Rust and Python to defend — held up.
+3. **G3 OS priority** — **closed: Linux and Windows first**, macOS not in v1.
+   The Windows installer and packaging scripts exist; the Windows-specific
+   work (Job Objects, AppContainer, `Win+O` hotkey, PIN auto-lock) is
+   implemented but has only been exercised on Linux.
+4. **G4 Release point** — **closed by circumstance, not by decision.** The
+   plan recommended shipping at M6 without actions; the build continued to
+   M10 instead. See §8 for what that changed. If the release is cut now, it
+   is cut at M10 with the broker and the egress firewall already in place.
+5. **G5 Voice depth** — **closed: push-to-talk first, wake word deferred.**
+   The recommendation was followed and it was the right call: an always-on
+   microphone is a privacy, battery and false-trigger problem, and the
+   candidate wake-word engine (`oww-rs`) was never run, so shipping it
+   untested would have been worse than not shipping it.
+6. **G6 Email** — **closed: read, triage and draft only. Never auto-send.**
+   Rule R-5 is enforced in the broker, and the M5 quarantine keeps an
+   injected email in a separate domain where it cannot reach a tool.
+   This was the single most dangerous item on the original list and it was
+   resolved conservatively.
+7. **G7 Hardware** — **closed: 8 GB physical, 5.7 GiB usable after iGPU
+   reservation**, with a ≤ 2.0 GiB resident model ceiling and a ≤ 3B
+   quantised model. The tier matrix, the residency router and the
+   single-model-in-RAM rule are all built against it.
+
+**No gates remain open.** What is still open is listed in the state file's
+[Known Gaps](PROJECT-STATE.md#11-known-gaps--what-is-not-yet-verified)
+section, and it is a list of measurements, not of decisions.
+
+---
+
+## 11. Straight answers
+
+- **New project: yes.** Correct call. Orion is a different system, not a Serina release.
+- **Hardware-aware tiering: yes, and it's your best idea here.** Detect and recommend rather
+  than asking users to self-report specs.
+- **Voice: yes, straightforward** — whisper.cpp + Piper, but be honest that T1 CPU round-trip
+  is 5–10 s.
+- **Open apps / scroll / click / browse: yes** — via accessibility trees, which is also the
+  only way a 4B model can do it reliably.
+- **Read and respond to email: read yes, auto-respond no.** Draft-and-review. An inbox is an
+  unauthenticated input channel from the entire internet; wiring it to an agent that can act
+  is the single most dangerous thing on your list.
+- **Everything at once: no.** M5 (the boundary) before M7–M10 (the power). That
+  ordering was kept, and the build went on to M10 anyway.
+
+---
+
+*Revised 2026-10-30 against the delivered build. Current state:
+[`PROJECT-STATE.md`](PROJECT-STATE.md).*
