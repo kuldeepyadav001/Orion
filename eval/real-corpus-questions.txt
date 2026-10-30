@@ -1,0 +1,193 @@
+name: orion-docs
+
+# The second evaluation suite: Orion's own documentation, chunked by the
+# real chunker into a few hundred chunks of real prose.
+#
+# The M2 suite is 22 chunks. That is easy — a retriever that returns the
+# four nearest neighbours out of twenty-two is not being tested. This suite
+# exists to answer one question: does the ranking decision (dense-first,
+# one reserved lexical slot) survive when the corpus is two hundred chunks
+# of real prose instead of twenty-two synthetic ones?
+#
+# Ground truth is a TEXT ANCHOR, not a chunk id, so the suite survives the
+# documents being edited. Every anchor of a question must appear in the
+# same chunk. If several chunks match, all are accepted: a retriever that
+# finds any copy of the answer has found the answer.
+#
+# `source <substring>` restricts the search to one document. It is used by
+# the disambiguation questions, where two documents legitimately say
+# different things and the question asks about one of them specifically.
+#
+# Format:
+#   question <id> | <text>
+#   anchor <phrase>
+#   probe <paraphrase|exact|heading|disambiguation>
+#   source <path substring>
+#   unanswerable
+
+[corpus]
+docs/PROJECT-STATE.md
+docs/ORION-PLAN.md
+docs/ARCHITECTURE.md
+docs/SECURITY.md
+docs/RUNNING-IT.md
+README.md
+
+[questions]
+# --- Paraphrase: the wording differs from the document ------------------
+question 1 | How much of the installed memory can actually be used by the application?
+anchor 5.72 GB usable after a 2.28 GB
+probe paraphrase
+question 2 | What does the interface layer never get handed by the backend?
+anchor The **webview never receives** the port, the token, or filesystem paths
+probe paraphrase
+question 3 | How long does the application stay resident after you stop using it?
+anchor 8-minute dynamic RAM standby hibernation
+probe paraphrase
+question 4 | How is a sidecar process made unreachable from other machines?
+anchor random 48-char bearer
+probe paraphrase
+question 5 | What happens when content that Orion merely read tries to give the assistant instructions?
+anchor Content Orion **reads** can never issue instructions
+probe paraphrase
+question 6 | How do generated words reach the screen as they are produced?
+anchor emit "chat://token"
+probe paraphrase
+question 7 | Is Orion able to modify the rules that govern what it is allowed to do?
+anchor Orion has no write path to its own
+probe paraphrase
+question 8 | What goes wrong if a multi-byte character is decoded from a partial network frame?
+anchor decoding each network chunk independently corrupts multi-byte characters
+probe paraphrase
+question 9 | How many operating system packages does the native dependency closure need?
+anchor 739 Debian packages
+probe paraphrase
+question 10 | How much memory did refusing a deliberately malicious archive actually cost?
+anchor Refused in **311 ms**
+probe paraphrase
+question 11 | How much smaller is the structured text description of a page than a picture of it?
+anchor 2–5 KB text context vs 1.4 MB screenshots
+probe paraphrase
+question 12 | How many third-party libraries would the obvious choice of PDF reader have brought in?
+anchor against **105** for
+probe paraphrase
+question 13 | Which two sidecars produce speech output, and what does the round trip cost on a cold start?
+anchor `whisper-cli`, cold, including model load | 2.08 s
+probe paraphrase
+question 14 | What does the retrieval benchmark report for a library of twenty five thousand chunks?
+anchor 13.0 ms
+probe paraphrase
+
+# --- Exact: identifiers, numbers, file names -----------------------------
+question 15 | Which model produces the embedding vectors, and how many dimensions does it output?
+anchor bge-small-en-v1.5-q8_0
+probe exact
+question 16 | Which model file does the Windows installation guide tell the user to download by hand?
+anchor qwen2.5-3b-instruct-q4_k_m.gguf
+probe exact
+question 17 | Which voice activity detection model is downloaded alongside the speech recogniser?
+anchor ggml-silero-v5.1.2.bin
+probe exact
+question 18 | Which development package is needed on Linux to draw the notification area icon?
+anchor libayatana-appindicator3-dev
+probe exact
+question 19 | Which vulnerability identifier is quoted for the CrewAI remote code execution?
+anchor CVE-2026-2275
+probe exact
+question 20 | Which environment variable makes the application believe it is running on different hardware?
+anchor ORION_FORCE_PROFILE
+probe exact
+question 21 | Which keyboard shortcut is used when the primary one is already taken by another program?
+anchor `Win+O`
+probe exact
+question 22 | How is the full text index stored so that the document text is not kept twice?
+anchor Contentless FTS5 table
+probe exact
+question 23 | Which SQLite extension is listed alongside FTS5 in the storage layer?
+anchor SQLite + sqlite-vec + FTS5
+probe exact
+question 24 | Which encryption related vulnerability identifier is given for the agent denial of service issue?
+anchor MS-Agent CVE-2026-2256
+probe exact
+question 25 | Which model does the master plan schedule for the smallest memory tier?
+anchor Qwen3 4B Q4_K_M
+probe exact
+
+# --- HeadingScoped: the answer sits under a heading whose words are absent
+question 26 | Which capability level allows a file to be removed?
+anchor delete, mass rename, overwrite, install
+probe heading
+question 27 | Which capability level allows a command to be executed?
+anchor run a command, browser writes, send email
+probe heading
+question 28 | Which paths are refused outright, no matter what is requested?
+anchor `~/.ssh`, `.aws`, `.env`
+probe heading
+question 29 | What is the policy towards third party tool servers?
+anchor Third-party MCP servers are not loaded by default
+probe heading
+question 30 | What is done with hyperlinks inside a received message?
+anchor Links are never auto-followed
+probe heading
+question 31 | What happens to pictures hosted on a remote server inside a received message?
+anchor remote images are never fetched
+probe heading
+question 32 | Which browser profile is used for automated browsing?
+anchor Runs in a dedicated Orion profile
+probe heading
+question 33 | Why is a list of forbidden commands considered a weak control?
+anchor Denylists fall to trivial obfuscation
+probe heading
+question 34 | What happens if the isolation layer cannot be started?
+anchor If the sandbox cannot start, the tool refuses
+probe heading
+question 35 | What is Orion explicitly unable to defend against?
+anchor Physical access** to an unlocked machine
+probe heading
+question 36 | What happens to a message attachment?
+anchor Attachments are quarantined
+probe heading
+
+# --- Disambiguation: two documents say different things -----------------
+question 37 | According to the master plan, how long is the inactivity delay before the model is put away by default?
+anchor default 10m
+probe disambiguation
+source ORION-PLAN.md
+question 38 | According to the master plan, which model does the smallest memory tier ship?
+anchor Qwen3 4B Q4_K_M
+probe disambiguation
+source ORION-PLAN.md
+question 39 | According to the state record, what is the hard ceiling on how much memory the model may occupy?
+anchor ≤ 2.0 GiB resident model RAM
+probe disambiguation
+source PROJECT-STATE.md
+question 40 | According to the architecture document, which module owns the database schema and its migration ladder?
+anchor SQLite schema, migration ladder, message persistence
+probe disambiguation
+source ARCHITECTURE.md
+question 41 | According to the architecture document, how is the streaming of generated text delivered to the renderer?
+anchor Events, not HTTP, for streaming
+probe disambiguation
+source ARCHITECTURE.md
+question 42 | According to the security model, what is the write policy of the record of everything the agent did?
+anchor Append-only audit log
+probe disambiguation
+source SECURITY.md
+question 43 | According to the running guide, what does the Linux notification area icon require?
+anchor draws the tray icon on Linux
+probe disambiguation
+source RUNNING-IT.md
+
+# --- Unanswerable: the corpus does not contain the answer ---------------
+question 44 | How many support tickets were resolved last quarter?
+unanswerable true
+probe unanswerable
+question 45 | What is the temperature in Berlin according to Orion?
+unanswerable true
+probe unanswerable
+question 46 | Which port does the telemetry server listen on by default?
+unanswerable true
+probe unanswerable
+question 47 | Who is the current maintainer of the SQLite project?
+unanswerable true
+probe unanswerable

@@ -309,6 +309,14 @@ pub async fn start_embedder(
             token.clone(),
             "--ctx-size".into(),
             "512".to_string(),
+            // The physical batch defaults to 512, which is exactly the
+            // context size: a sequence that fills the window was then
+            // refused by the batch check ("input is too large to process.
+            // increase the physical batch size") rather than by the
+            // context check that actually applied to it. The window is
+            // 512 tokens; the batch only has to be big enough to hold one.
+            "--ubatch-size".into(),
+            "2048".to_string(),
             "--threads".into(),
             "2".to_string(),
         ])

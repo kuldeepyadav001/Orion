@@ -461,7 +461,21 @@ pub const QUESTIONS: &[EvalQuestion] = &[
 /// `retrieve` takes the question and k, returns ranked chunk ids. This is a
 /// closure so the same suite scores the in-memory harness here, the real
 /// `RagStore`, and any future reranker without being rewritten.
-pub fn run_eval<F>(k: usize, mut retrieve: F) -> EvalReport
+pub fn run_eval<F>(k: usize, retrieve: F) -> EvalReport
+where
+    F: FnMut(&str, usize) -> Vec<i64>,
+{
+    run_questions(QUESTIONS, k, retrieve)
+}
+
+/// Run a list of questions against a retrieval function.
+///
+/// `run_eval` is this with the module's own suite. The general form exists
+/// so that a *different* corpus can be scored with exactly the same
+/// machinery — the M2 suite is 22 chunks, which is easy for every retriever,
+/// and a second suite over a real 200-chunk corpus is the only way to know
+/// whether the ranking decisions survive at a realistic scale.
+pub fn run_questions<F>(questions: &[EvalQuestion], k: usize, mut retrieve: F) -> EvalReport
 where
     F: FnMut(&str, usize) -> Vec<i64>,
 {
@@ -474,7 +488,7 @@ where
 
     let mut probe_scores: Vec<(Probe, f32, usize)> = Vec::new();
 
-    for q in QUESTIONS {
+    for q in questions {
         let got = retrieve(q.question, k);
 
         if q.relevant.is_empty() {
@@ -543,11 +557,11 @@ where
         }
     }
 
-    let scored = QUESTIONS.len() - unanswerable;
+    let scored = questions.len() - unanswerable;
     let n = (scored as f32).max(1.0);
 
     EvalReport {
-        total: QUESTIONS.len(),
+        total: questions.len(),
         scored,
         unanswerable,
         recall_at_k: recall_sum / n,

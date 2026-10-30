@@ -19,6 +19,12 @@
 #   scripts/run-eval.sh --k 6
 #   scripts/run-eval.sh --no-headings   # ablation: heading trail removed
 #   scripts/run-eval.sh --verbose       # print the per-question table
+#   scripts/run-eval.sh --real          # the real-corpus suite (Orion's own docs)
+#
+# The default suite is 22 chunks, which every retriever can ace. `--real`
+# runs the second suite: ~180 KB of Orion's own documentation, chunked into
+# a few hundred chunks of real prose, with ground truth given as a text
+# anchor rather than a chunk id.
 #
 # Environment:
 #   ORION_EVAL_PORT   port for the embedding server (default 8082)
@@ -85,6 +91,7 @@ LD_LIBRARY_PATH="$SIDECAR_DIR:${LD_LIBRARY_PATH:-}" \
     --port "$PORT" \
     --api-key "$TOKEN" \
     -c 512 \
+    -ub 2048 \
     --no-webui \
     > "$LOG" 2>&1 &
 SERVER_PID=$!
@@ -122,6 +129,34 @@ source "$ROOT/scripts/rust-env.sh"
 # shellcheck source=/dev/null
 source "$ROOT/scripts/sysroot-env.sh"
 
-ORION_EVAL_URL="http://127.0.0.1:$PORT" \
-ORION_EVAL_TOKEN="$TOKEN" \
-  cargo run --quiet --bin orion_eval -- "$@"
+# `--real` selects the real-corpus evaluator and is not understood by it,
+# so it is consumed here rather than passed on.
+REAL=0
+ARGS=()
+for arg in "$@"; do
+  if [ "$arg" = "--real" ]; then
+    REAL=1
+  else
+    ARGS+=("$arg")
+  fi
+done
+
+if [ "$REAL" = "1" ]; then
+  SUITE="${ORION_REAL_SUITE:-$ROOT/eval/real-corpus-questions.txt}"
+  if [ ! -f "$SUITE" ]; then
+    echo "!! real-corpus suite not found: $SUITE" >&2
+    exit 1
+  fi
+  echo "==> real-corpus suite: $SUITE"
+  ORION_EVAL_URL="http://127.0.0.1:$PORT" \
+  ORION_EVAL_TOKEN="$TOKEN" \
+    cargo run --quiet --release --bin orion_eval_real -- \
+      --questions "$SUITE" \
+      --url "http://127.0.0.1:$PORT" \
+      --token "$TOKEN" \
+      ${ARGS+"${ARGS[@]}"}
+else
+  ORION_EVAL_URL="http://127.0.0.1:$PORT" \
+  ORION_EVAL_TOKEN="$TOKEN" \
+    cargo run --quiet --bin orion_eval -- ${ARGS+"${ARGS[@]}"}
+fi

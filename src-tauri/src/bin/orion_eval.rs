@@ -233,7 +233,9 @@ fn main() -> ExitCode {
     let qs = questions();
     let query_texts: Vec<String> = qs
         .iter()
-        .map(|q| EmbedKind::Query.apply_prefix(q.question))
+        // The embedder applies the BGE query prefix itself; doing it here
+        // as well would send the instruction twice.
+        .map(|q| q.question.to_string())
         .collect();
     let query_vectors = match rt.block_on(embedder.embed(&query_texts, EmbedKind::Query)) {
         Ok(v) => v,

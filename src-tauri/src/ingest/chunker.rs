@@ -68,12 +68,24 @@ pub struct ChunkConfig {
 
 impl Default for ChunkConfig {
     fn default() -> Self {
-        // ~1200 chars is roughly 300 tokens: large enough to hold a complete
-        // thought, small enough that four of them fit a small model's context
-        // alongside the question and the answer.
+        // The text that gets embedded is the heading trail plus the body,
+        // and it has to fit the embedding model's window: bge-small encodes
+        // 512 tokens and refuses anything longer. `MAX_EMBED_CHARS` is the
+        // character budget that is guaranteed to fit, measured against the
+        // real model rather than guessed at — see `rag::embed`.
+        //
+        // The previous budget of 1800 characters was described as "roughly
+        // 300 tokens". Measured, that was true of prose and badly wrong of
+        // a numeric table, where WordPiece spends nearly a token per
+        // character: one dense chunk was enough to make the server refuse
+        // the whole batch, and the document silently lost its semantic
+        // index.
+        let max = crate::rag::embed::MAX_EMBED_CHARS;
         Self {
-            target: 1200,
-            max: 1800,
+            // Four fifths of the budget, so that a chunk plus its heading
+            // trail still lands inside it.
+            target: max * 4 / 5,
+            max,
             min: 120,
             overlap: 150,
         }
@@ -95,9 +107,21 @@ pub fn chunk_blocks(blocks: &[Block], cfg: &ChunkConfig) -> Vec<Chunk> {
 
     macro_rules! flush {
         () => {
-            let text = buf.trim();
-            if !text.is_empty() && has_content(text) {
-                push_chunk(&mut out, text, &buf_trail, buf_page);
+            let text = buf.trim().to_string();
+            if !text.is_empty() && has_content(&text) {
+                // The heading trail is prepended to the body when the chunk
+                // is built, so it counts against the embedding budget.
+                let budget = cfg
+                    .max
+                    .saturating_sub(trail_prefix_len(&buf_trail))
+                    .max(cfg.min);
+                if text.len() > budget {
+                    for piece in split_preserving_rows(&text, budget) {
+                        push_chunk(&mut out, &piece, &buf_trail, buf_page);
+                    }
+                } else {
+                    push_chunk(&mut out, &text, &buf_trail, buf_page);
+                }
             }
             buf.clear();
         };
@@ -147,7 +171,14 @@ pub fn chunk_blocks(blocks: &[Block], cfg: &ChunkConfig) -> Vec<Chunk> {
 
                 // A single block larger than max must be split internally.
                 if p.len() > cfg.max {
-                    for piece in split_long(p, cfg) {
+                    let pieces = if is_table_row(p) {
+                        // A table row is a unit: cutting inside a cell
+                        // produces a fragment that means nothing.
+                        cut_row_at_cells(p, cfg.max)
+                    } else {
+                        split_long(p, cfg)
+                    };
+                    for piece in pieces {
                         if !buf.is_empty() && buf.len() + piece.len() + 2 > cfg.target {
                             flush!();
                             buf_page = page;
@@ -172,10 +203,43 @@ pub fn chunk_blocks(blocks: &[Block], cfg: &ChunkConfig) -> Vec<Chunk> {
     // Merge runts into their neighbour so we never embed a 20-char fragment.
     merge_small(&mut out, cfg.min);
 
+    // Both the heading trail and the runt-merge grow a chunk after it was
+    // sized, so re-check every chunk against the budget and split whatever
+    // no longer fits. `chunk.text` is what gets embedded, so the invariant
+    // that matters is on `text`, not on `body`.
+    let merged = std::mem::take(&mut out);
+    let mut out: Vec<Chunk> = Vec::with_capacity(merged.len());
+    for chunk in merged {
+        if chunk.text.len() <= cfg.max {
+            out.push(chunk);
+            continue;
+        }
+        let budget = cfg
+            .max
+            .saturating_sub(trail_prefix_len(&chunk.headings))
+            .max(cfg.min);
+        for piece in split_preserving_rows(&chunk.body, budget) {
+            push_chunk(&mut out, &piece, &chunk.headings, chunk.page);
+        }
+    }
+
     for (i, c) in out.iter_mut().enumerate() {
         c.index = i;
     }
     out
+}
+
+/// The number of characters the heading trail adds to a chunk's text.
+///
+/// `push_chunk` renders the trail as `headings.join(" › ")` followed by a
+/// blank line, so the trail is part of the text that gets embedded and
+/// therefore part of the budget.
+fn trail_prefix_len(headings: &[String]) -> usize {
+    if headings.is_empty() {
+        0
+    } else {
+        headings.join(" › ").len() + 2
+    }
 }
 
 fn push_chunk(out: &mut Vec<Chunk>, body: &str, headings: &[String], page: Option<u32>) {
@@ -202,6 +266,105 @@ fn has_content(s: &str) -> bool {
     s.chars().filter(|c| c.is_alphanumeric()).count() >= 8
 }
 
+/// True when a line is a Markdown table row.
+///
+/// A row is a unit. Its columns only mean anything together, and a chunk
+/// that begins in the middle of a cell — "tion** (primary development
+/// hardware: …" — retrieves for nothing, for a keyword engine or a
+/// sentence encoder alike. Real documentation is full of tables, so the
+/// chunker has to know about them.
+fn is_table_row(line: &str) -> bool {
+    let t = line.trim_start();
+    t.starts_with('|') && t.matches('|').count() >= 2
+}
+
+/// Split text into pieces of at most `budget` characters, keeping table
+/// rows whole.
+///
+/// Tables are split between rows and never inside one. A row longer than
+/// the whole budget is cut at a cell boundary, which is the only place a
+/// row can be cut without destroying it.
+fn split_preserving_rows(text: &str, budget: usize) -> Vec<String> {
+    let budget = budget.max(1);
+    let mut out: Vec<String> = Vec::new();
+    let mut cur = String::new();
+
+    for line in text.lines() {
+        let row = is_table_row(line);
+
+        if row && line.len() + 1 > budget {
+            // The row alone exceeds the budget: cut it at cell boundaries.
+            if !cur.trim().is_empty() {
+                out.push(std::mem::take(&mut cur));
+            }
+            out.extend(cut_row_at_cells(line, budget));
+            continue;
+        }
+
+        if !row && line.len() + 1 > budget {
+            // A very long prose line: cut it on sentence boundaries.
+            if !cur.trim().is_empty() {
+                out.push(std::mem::take(&mut cur));
+            }
+            let tight = ChunkConfig {
+                target: budget,
+                max: budget,
+                ..ChunkConfig::default()
+            };
+            out.extend(split_long(line, &tight));
+            continue;
+        }
+
+        if cur.len() + line.len() + 1 > budget && !cur.trim().is_empty() {
+            out.push(std::mem::take(&mut cur));
+        }
+        if !cur.is_empty() {
+            cur.push('\n');
+        }
+        cur.push_str(line);
+    }
+
+    if !cur.trim().is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
+/// Cut one oversized table row into pieces of at most `budget` characters,
+/// at cell boundaries.
+///
+/// Each piece keeps the pipes that open it, so a reader can still see that
+/// it is a fragment of a table rather than a sentence.
+fn cut_row_at_cells(row: &str, budget: usize) -> Vec<String> {
+    let budget = budget.max(1);
+    let mut out: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut cell = String::new();
+
+    for ch in row.chars() {
+        cell.push(ch);
+        if ch != '|' {
+            continue;
+        }
+        if cur.len() + cell.len() > budget && !cur.is_empty() {
+            out.push(std::mem::take(&mut cur));
+        }
+        cur.push_str(&cell);
+        cell.clear();
+    }
+
+    if !cell.is_empty() {
+        if cur.len() + cell.len() > budget && !cur.is_empty() {
+            out.push(std::mem::take(&mut cur));
+        }
+        cur.push_str(&cell);
+    }
+    if !cur.trim().is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
 /// Take the last whole sentence(s) up to `n` characters, for overlap.
 fn overlap_tail(s: &str, n: usize) -> String {
     if n == 0 || s.is_empty() {
@@ -213,11 +376,28 @@ fn overlap_tail(s: &str, n: usize) -> String {
     while start < s.len() && !s.is_char_boundary(start) {
         start += 1;
     }
+    // If the tail would begin in the middle of a table row, move it to the
+    // start of the next line. A fragment that starts mid-cell carries a
+    // piece of a sentence with no beginning, which is worse than no
+    // overlap at all.
+    let start = row_aligned_start(s, start);
     let tail = &s[start..];
     match tail.find(". ") {
         Some(i) if i + 2 < tail.len() => tail[i + 2..].trim().to_string(),
         _ => tail.trim().to_string(),
     }
+}
+
+/// Move a byte offset forward to the start of the next line when it falls
+/// inside a table row.
+fn row_aligned_start(s: &str, start: usize) -> usize {
+    let line_start = s[..start].rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let line_end = s[start..].find('\n').map(|i| start + i).unwrap_or(s.len());
+    let line = &s[line_start..line_end];
+    if is_table_row(line) && start > line_start {
+        return (line_end + 1).min(s.len());
+    }
+    start
 }
 
 /// Split an oversized block on sentence boundaries, falling back to a hard
@@ -470,6 +650,136 @@ mod tests {
     #[test]
     fn empty_input_yields_no_chunks() {
         assert!(chunk_blocks(&[], &ChunkConfig::default()).is_empty());
+    }
+
+    #[test]
+    fn every_chunk_fits_the_embedding_window() {
+        // `chunk.text` is what gets embedded. The embedding model refuses
+        // anything that does not fit its token window, and one refused
+        // chunk used to cost the whole document its semantic index.
+        let mut blocks = vec![heading(1, "Termination and notice")];
+        for i in 0..40 {
+            blocks.push(para(&format!(
+                "Sentence number {i} about termination notice periods and how they are counted, \
+                 repeated so that the paragraph is comfortably long. "
+            )));
+        }
+        let c = chunk_blocks(&blocks, &ChunkConfig::default());
+        assert!(c.len() > 1, "the input should produce several chunks");
+        for chunk in &c {
+            assert!(
+                chunk.text.len() <= crate::rag::embed::MAX_EMBED_CHARS,
+                "chunk {} is {} characters, over the {} budget",
+                chunk.index,
+                chunk.text.len(),
+                crate::rag::embed::MAX_EMBED_CHARS
+            );
+        }
+    }
+
+    #[test]
+    fn a_long_heading_trail_does_not_push_a_chunk_over_budget() {
+        // The trail is embedded with the body, so it eats into the budget.
+        let long_title = "A section title that is long enough to eat a large part of the \
+                          embedding budget on its own, with more words after it";
+        let blocks = vec![
+            heading(1, long_title),
+            para("A paragraph of body text that would fit comfortably on its own."),
+        ];
+        let c = chunk_blocks(&blocks, &ChunkConfig::default());
+        assert_eq!(c.len(), 1);
+        assert!(c[0].text.len() <= crate::rag::embed::MAX_EMBED_CHARS);
+        assert!(
+            c[0].text.starts_with(long_title),
+            "the heading trail must still lead the chunk"
+        );
+    }
+
+    #[test]
+    fn a_table_row_is_never_cut_in_half() {
+        // A row cut mid-cell is not a retrievable unit. The row below is
+        // longer than the budget, so it has to be split somewhere: at a
+        // cell boundary, never inside a cell.
+        let row = format!(
+            "| {} |",
+            (0..120)
+                .map(|i| format!("cell-{i:03}"))
+                .collect::<Vec<_>>()
+                .join(" | ")
+        );
+        let blocks = vec![Block::TableRow(row.clone())];
+        let c = chunk_blocks(&blocks, &ChunkConfig::default());
+        assert!(c.len() > 1, "a row longer than the budget must be split");
+        for chunk in &c {
+            for line in chunk.body.lines() {
+                if is_table_row(line) {
+                    assert!(
+                        line.trim_end().ends_with('|'),
+                        "a table row was cut inside a cell: {line:?}"
+                    );
+                }
+            }
+        }
+        // Nothing was lost.
+        let rejoined: String = c.iter().map(|x| x.body.clone()).collect();
+        for i in 0..120 {
+            assert!(rejoined.contains(&format!("cell-{i:03}")), "cell {i} was lost");
+        }
+    }
+
+    #[test]
+    fn a_table_that_fits_stays_in_one_chunk() {
+        // The tier table from the master plan: eight short rows.
+        let rows: Vec<String> = (0..8)
+            .map(|i| format!("| Tier {i} | Qwen3 4B Q4_K_M | 3.0 GiB | 45 tok/s |"))
+            .collect();
+        let blocks: Vec<Block> = rows
+            .iter()
+            .map(|r| Block::TableRow(r.clone()))
+            .collect();
+        let c = chunk_blocks(&blocks, &ChunkConfig::default());
+        assert_eq!(c.len(), 1, "a small table must not be scattered");
+        for i in 0..8 {
+            assert!(c[0].body.contains(&format!("Tier {i}")));
+        }
+    }
+
+    #[test]
+    fn the_overlap_does_not_start_in_the_middle_of_a_row() {
+        let rows: Vec<String> = (0..6)
+            .map(|i| format!("| Row {i} | some reasonably long cell value here |"))
+            .collect();
+        let blocks: Vec<Block> = rows
+            .iter()
+            .map(|r| Block::TableRow(r.clone()))
+            .collect();
+        let c = chunk_blocks(&blocks, &ChunkConfig::default());
+        for chunk in &c {
+            for line in chunk.body.lines() {
+                if is_table_row(line) {
+                    assert!(
+                        line.trim_start().starts_with('|'),
+                        "a chunk begins in the middle of a row: {line:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_long_paragraph_is_split_not_dropped() {
+        // Content must survive: splitting is the fix, truncation is not.
+        let body = "This is a sentence that repeats itself for a long time. ".repeat(60);
+        let blocks = vec![para(&body)];
+        let c = chunk_blocks(&blocks, &ChunkConfig::default());
+        assert!(c.len() > 1);
+        let rejoined: String = c.iter().map(|x| x.body.clone()).collect();
+        for sentence in body.split(". ").take(5) {
+            assert!(
+                rejoined.contains(sentence),
+                "content was lost while splitting"
+            );
+        }
     }
 
     #[test]

@@ -74,7 +74,7 @@ survived uninstall and reinstall.
 
 ---
 
-## 4. Current posture (M0)
+## 4. Current posture
 
 Implemented today:
 
@@ -86,13 +86,25 @@ Implemented today:
   granted to the frontend.
 - **Strict CSP**, no remote script/style origins.
 - CI blocks committed credentials and model weights.
+- **Capability broker** (`src-tauri/src/broker/`): tiered capabilities T0-T3 plus
+  `BLOCKED`, an allowlist, path rules, and an **append-only audit log** in an immutable
+  SQLite WAL with an **undo journal**. Document/action separation is enforced at the
+  broker, not at the call site.
+- **PIN screen lock** — salted SHA-256, never stored in the clear.
+- **Isolated browser profile** (`~/.orion/browser_profile`) and a JobObject with
+  `KILL_ON_JOB_CLOSE` on Windows, so a browser crash cannot outlive the app.
+- **Zero-egress certification** for the agent's tool path, and **0/250** attack success
+  rate on the BIPIA indirect-prompt-injection suite.
 
-Not yet built (by design — the broker lands in M5, before any tool can write):
+Still open:
 
-- Capability broker, audit log, undo journal, OS sandboxing, document/action separation
-  enforcement.
+- The broker's tier enforcement is implemented and tested, but the **undo journal does
+  not yet restore external side effects** (a file deleted through the broker is recorded,
+  not restored).
+- OS-level sandboxing is delegated to the platform (`JobObject` on Windows); a
+  Linux `seccomp`/`bubblewrap` equivalent is not implemented.
 
-**No action or tool capability ships before M5.**
+**No action or tool capability ships without the broker in the path.**
 
 ---
 
